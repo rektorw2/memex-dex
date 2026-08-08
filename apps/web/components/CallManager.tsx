@@ -210,8 +210,9 @@ function CallEditor({
     try {
       const payload = {
         ...form,
-        entryPriceUsd: form.entryPriceUsd || token?.priceUsd || '',
-        targets,
+        suggestedPct: Number(form.suggestedPct),
+        entryPriceUsd: String(form.entryPriceUsd || token?.priceUsd || ''),
+        targets: targets.map((t) => ({ priceUsd: String(t.priceUsd), pct: Number(t.pct) })),
       };
 
       let id = editingId;
@@ -240,8 +241,29 @@ function CallEditor({
     }
   }
 
-  const canSave = form.tokenId && form.title.length >= 3 && form.thesis.length >= 20
-    && targets.every((t) => Number(t.priceUsd) > 0);
+  /**
+   * Список незаполненного показывается явно.
+   *
+   * Отключённая кнопка без объяснения — худший вид блокировки: человек
+   * видит, что нажатие ничего не даёт, и считает интерфейс сломанным.
+   */
+  const missing: string[] = [];
+  if (!form.tokenId) missing.push('выберите токен');
+  if (form.title.trim().length < 3) missing.push('заголовок от 3 символов');
+  if (form.thesis.trim().length < 20) {
+    missing.push(`тезис — ещё ${20 - form.thesis.trim().length} символов`);
+  }
+  if (!targets.every((t) => Number(t.priceUsd) > 0)) missing.push('заполните цены целей');
+  if (totalPct > 100) missing.push('сумма долей по целям больше 100%');
+  if (!(Number(form.suggestedPct) >= 0.1 && Number(form.suggestedPct) <= 25)) {
+    missing.push('доля портфеля — от 0.1 до 25%');
+  }
+
+  const canSave = missing.length === 0;
+
+  // Цель ниже цены входа — это не цель, а фиксация убытка. Чаще всего
+  // след того, что цену входа поменяли уже после расстановки целей.
+  const targetsBelowEntry = entry > 0 && targets.some((t) => Number(t.priceUsd) > 0 && Number(t.priceUsd) < entry);
 
   return (
     <div className="panel p-4 space-y-4">
@@ -386,9 +408,17 @@ function CallEditor({
         </div>
         <div>
           <label className="label">Доля портфеля, %</label>
-          <input className="input" type="number" step="0.5" min="0.1" max="25"
-                 value={form.suggestedPct}
-                 onChange={(e) => setForm({ ...form, suggestedPct: Number(e.target.value) })} />
+          <input
+            className="input" type="number" step="0.5" min="0.1" max="25"
+            value={form.suggestedPct}
+            onChange={(e) => {
+              // Пустое поле и нечисловой ввод дают NaN, а JSON.stringify(NaN)
+              // превращает его в null — сервер отвечал ошибкой валидации,
+              // из которой причина не следовала.
+              const n = Number(e.target.value);
+              setForm({ ...form, suggestedPct: Number.isFinite(n) ? n : 0 });
+            }}
+          />
         </div>
       </div>
 
@@ -509,17 +539,42 @@ function CallEditor({
         Раздать подписчикам копитрейдинга
       </label>
 
+      {targetsBelowEntry && (
+        <p className="text-xs text-down bg-down/10 border border-down/30 rounded p-2">
+          Есть цель ниже цены входа — колл получится заведомо убыточным.
+          Обычно так выходит, когда цену входа изменили после расстановки
+          целей: нажмите кнопку кратности заново.
+        </p>
+      )}
+
       {error && (
         <p className="text-xs text-down bg-down/10 border border-down/30 rounded p-2">{error}</p>
+      )}
+
+      {missing.length > 0 && (
+        <div className="text-xs bg-bg rounded-md p-3">
+          <p className="text-muted mb-1.5">Чтобы опубликовать, осталось:</p>
+          <ul className="space-y-1">
+            {missing.map((m, i) => (
+              <li key={i} className="flex gap-2 text-muted">
+                <span className="text-accent">•</span>{m}
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
 
       <div className="grid grid-cols-2 gap-2">
         <button onClick={() => save(false)} disabled={!canSave || busy} className="btn-ghost">
           {busy ? '...' : 'Сохранить черновик'}
         </button>
-        <button onClick={() => save(true)} disabled={!canSave || busy}
-                className="btn bg-accent hover:bg-accent/80 text-white">
-          Опубликовать
+        <button
+          onClick={() => save(true)}
+          disabled={!canSave || busy}
+          title={canSave ? 'Опубликовать колл' : `Не заполнено: ${missing.join(', ')}`}
+          className="btn bg-accent hover:bg-accent/80 text-white"
+        >
+          {busy ? '...' : 'Опубликовать'}
         </button>
       </div>
 
