@@ -23,6 +23,11 @@ jobs:
       - run: npm ci
 
       - name: Генерация Prisma Client
+        # Prisma требует, чтобы переменная из datasource существовала, даже
+        # когда просто генерирует типы и никуда не подключается. Настоящая
+        # база в CI не нужна и не должна быть доступна — подставляем заглушку.
+        env:
+          DATABASE_URL: postgresql://ci:ci@localhost:5432/ci?schema=public
         run: npm run db:generate
 
       - name: Сборка ядра

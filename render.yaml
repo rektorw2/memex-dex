@@ -21,7 +21,9 @@ services:
     healthCheckPath: /health
     plan: free
     region: frankfurt
-    preDeployCommand: npx prisma migrate deploy --schema=prisma/schema.prisma
+    # Миграции идут по прямому подключению, а не через пул: pgbouncer
+    # не поддерживает advisory locks, на которых держится Prisma Migrate.
+    preDeployCommand: DATABASE_URL="$DIRECT_DATABASE_URL" npx prisma migrate deploy --schema=prisma/schema.prisma
     envVars:
       - key: NODE_ENV
         value: production
@@ -32,6 +34,11 @@ services:
       # и через pooled-эндпоинт (-pooler в имени хоста): бесплатный
       # Postgres быстро упирается в лимит прямых соединений.
       - key: DATABASE_URL
+        sync: false
+
+      # Прямое подключение (строка БЕЗ -pooler). Нужно для
+      # prisma migrate deploy: через пул миграции не проходят.
+      - key: DIRECT_DATABASE_URL
         sync: false
 
       - key: JWT_SECRET

@@ -55,15 +55,24 @@ jobs:
         env:
           DEPLOY_TARGET: pages
           GITHUB_REPOSITORY: ${{ github.repository }}
-          # Адрес API задаётся в Settings → Secrets and variables →
-          # Actions → Variables. Без него фронт будет стучаться в localhost.
+          # Обе переменные задаются в Settings → Secrets and variables →
+          # Actions → Variables.
+          #   NEXT_PUBLIC_API_URL  — адрес бэкенда, иначе фронт пойдёт в localhost
+          #   PAGES_CUSTOM_DOMAIN  — свой домен; пока пусто, сайт живёт в подпапке
           NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
+          PAGES_CUSTOM_DOMAIN: ${{ vars.PAGES_CUSTOM_DOMAIN }}
         run: npm run build -w @memex/web
 
       - name: Отключить обработку Jekyll
         # Без этого файла Pages игнорирует директории, начинающиеся с
         # подчёркивания, и весь /_next/ просто не публикуется.
         run: touch apps/web/out/.nojekyll
+
+      - name: Записать свой домен
+        # Pages узнаёт о домене из файла CNAME в корне публикации.
+        # Без него настройка сбрасывается при каждом деплое.
+        if: vars.PAGES_CUSTOM_DOMAIN != ''
+        run: echo "${{ vars.PAGES_CUSTOM_DOMAIN }}" > apps/web/out/CNAME
 
       - uses: actions/configure-pages@v5
 

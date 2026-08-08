@@ -8,7 +8,7 @@
 | API + воркеры | Render (free) | бессрочно | засыпает через 15 мин простоя |
 | Postgres | Neon (free) | бессрочно | 0.5 ГБ, лимит соединений |
 
-Итоговый адрес: `https://<пользователь>.github.io/memex-dex/`
+Итоговый адрес: `https://myronos.github.io/memex-dex/`
 
 Главное ограничение — сон Render. После простоя первый запрос ждёт около
 50 секунд, и выглядит это как поломка. Для демонстрации приемлемо, для
@@ -23,7 +23,7 @@
 
 ```bash
 npm test
-DEPLOY_TARGET=pages GITHUB_REPOSITORY=you/memex-dex npm run build -w @memex/web
+DEPLOY_TARGET=pages GITHUB_REPOSITORY=myronos/memex-dex npm run build -w @memex/web
 ls apps/web/out
 ```
 
@@ -44,10 +44,20 @@ git commit -m "Memex DEX: торговый терминал, коллы, коп�
 git ls-files | grep -E '^\.env$' && echo "ОСТАНОВИТЕСЬ: .env в индексе" || echo "секреты не попали"
 ```
 
-Создать репозиторий и запушить (через `gh` или вручную на github.com):
+Создать репозиторий и запушить:
 
 ```bash
 gh repo create memex-dex --private --source=. --push
+```
+
+Если пуш отклонён с текстом `refusing to allow an OAuth App to create or
+update workflow ... without workflow scope` — у токена `gh` нет права на
+запись файлов в `.github/workflows/`. Репозиторий при этом уже создан,
+достаточно расширить права и повторить пуш:
+
+```bash
+gh auth refresh -h github.com -s workflow
+git push -u origin main
 ```
 
 ## 3. База данных: Neon
@@ -76,12 +86,12 @@ Dashboard → **New → Blueprint** → выбрать репозиторий. `
 | Переменная | Значение |
 |---|---|
 | `DATABASE_URL` | pooled-строка из Neon |
-| `CORS_ORIGINS` | `https://<пользователь>.github.io` |
+| `CORS_ORIGINS` | `https://myronos.github.io` |
 | `ZEROX_API_KEY` | можно оставить пустым — нужен только для BNB/EVM |
 
 `CORS_ORIGINS` указывается **без пути к репозиторию**: браузер передаёт
-в заголовке `Origin` только схему и хост. Значение вида
-`https://user.github.io/memex-dex` не совпадёт ни с чем, и все запросы
+в заголовке `Origin` только схему и хост. Значение
+`https://myronos.github.io/memex-dex` не совпадёт ни с чем, и все запросы
 будут заблокированы.
 
 Проверка после деплоя:
@@ -115,7 +125,7 @@ Run workflow**.
 curl https://memex-api.onrender.com/health
 
 # CORS настроен: заголовок должен присутствовать
-curl -I -H "Origin: https://<пользователь>.github.io" \
+curl -I -H "Origin: https://myronos.github.io" \
   https://memex-api.onrender.com/health | grep -i access-control-allow-origin
 ```
 
@@ -123,7 +133,7 @@ curl -I -H "Origin: https://<пользователь>.github.io" \
 экраны, а в логах API при этом будет тишина. Это самая частая причина
 «ничего не работает, но ошибок нет».
 
-Открыть `https://<пользователь>.github.io/memex-dex/` и войти как
+Открыть `https://myronos.github.io/memex-dex/` и войти как
 `admin@memex.local`. Пароль сид напечатал в консоли на шаге 3 — при
 подключении к Neon он генерируется случайно и нигде не сохраняется.
 Задать свой заранее: `SEED_PASSWORD=... npm run db:seed`.

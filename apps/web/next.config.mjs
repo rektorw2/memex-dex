@@ -12,12 +12,20 @@
 
 const isPages = process.env.DEPLOY_TARGET === 'pages';
 
-// Для project pages адрес выглядит как https://user.github.io/memex-dex/,
-// и без basePath все ссылки и ассеты будут ломаться на 404.
-// Для user pages (репозиторий user.github.io) префикс не нужен.
+// Префикс пути нужен только когда сайт лежит в подпапке.
+//
+//   https://user.github.io/memex-dex/  → нужен /memex-dex
+//   https://user.github.io/            → не нужен (user page)
+//   https://memexdex.com/              → не нужен (свой домен)
+//
+// Последний случай важен: при подключении своего домена GitHub Pages
+// отдаёт сайт с корня. Если оставить префикс, все ссылки и стили
+// разъедутся на 404, и выглядеть это будет как сломанная вёрстка.
 const repo = process.env.GITHUB_REPOSITORY?.split('/')[1] ?? '';
 const isUserPage = repo.endsWith('.github.io');
-const basePath = isPages && repo && !isUserPage ? `/${repo}` : '';
+const hasCustomDomain = Boolean(process.env.PAGES_CUSTOM_DOMAIN);
+const needsPrefix = isPages && repo && !isUserPage && !hasCustomDomain;
+const basePath = needsPrefix ? `/${repo}` : '';
 
 /** @type {import('next').NextConfig} */
 export default {
