@@ -6,6 +6,8 @@ import { prisma } from '../lib/prisma.js';
 import { reconcileUser } from '../services/balances.js';
 import { getAdapter, supportedChains } from '../chains/index.js';
 import { fetchPoolForToken } from '../services/market-data.js';
+import { runResearch, serializeResearch } from '../services/research.js';
+import { isAiConfigured } from '../services/ai-research.js';
 
 export const adminRoutes: FastifyPluginAsync = async (app) => {
   app.addHook('preHandler', app.requireAdmin);
@@ -170,6 +172,31 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
   app.post('/admin/tokens/import', async () => {
     const { importTokens } = await import('../workers/token-importer.js');
     return { stats: await importTokens() };
+  });
+
+  /**
+   * Разбор токена: факты о контракте плюс поиск репутационной информации.
+   *
+   * Запускается вручную и кэшируется на сутки — состав держателей и
+   * репутация проекта меняются медленно, а бесплатные лимиты поставщиков
+   * данных лучше тратить на новые токены, а не на повторные запросы.
+   */
+  app.post('/admin/tokens/:id/research', async (req, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    const { force } = z.object({ force: z.boolean().default(false) }).parse(req.body ?? {});
+
+    try {
+      const { research, cached } = await runResearch(id, { force });
+      await prisma.auditLog.create({
+        data: {
+          actorId: req.user.sub, action: 'token.research', entity: 'Token',
+          entityId: id, after: { status: research.status, cached } as never, ip: req.ip,
+        },
+      });
+      return { research: serializeResearch(research), cached, aiEnabled: isAiConfigured() };
+    } catch (e: any) {
+      return reply.code(400).send({ error: e?.message ?? 'Разбор не выполнен' });
+    }
   });
 
   /** Ручной скоринг токена перед публикацией колла. */

@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useState } from 'react';
+import { Suspense, useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import useSWR from 'swr';
@@ -8,6 +8,7 @@ import { fetcher, fmtPrice, fmtUsd, fmtPct } from '@/lib/api';
 import { CHAINS, chainLabel, geckoTerminalPool } from '@/lib/chains';
 import { PriceChart } from '@/components/PriceChart';
 import { TradePanel } from '@/components/TradePanel';
+import { ResearchPanel } from '@/components/ResearchPanel';
 
 /**
  * Страница токена.
@@ -30,8 +31,15 @@ const INTERVALS = ['5m', '1h', '1d'] as const;
 function TokenPage() {
   const id = useSearchParams().get('id');
   const [interval, setInterval] = useState<string>('5m');
+  const [isAdmin, setIsAdmin] = useState(false);
 
-  const { data, error, isLoading } = useSWR<any>(
+  useEffect(() => {
+    // localStorage доступен только на клиенте; читаем после монтирования,
+    // иначе Next выдаст рассинхрон при гидратации.
+    setIsAdmin(localStorage.getItem('role') === 'ADMIN');
+  }, []);
+
+  const { data, error, isLoading, mutate } = useSWR<any>(
     id ? `/tokens/${id}/overview` : null,
     fetcher,
     { refreshInterval: 20_000 },
@@ -212,6 +220,13 @@ function TokenPage() {
               мем-коин может обесцениться до нуля при любых метриках.
             </p>
           </div>
+
+          <ResearchPanel
+            tokenId={t.id}
+            research={data.research}
+            isAdmin={isAdmin}
+            onUpdated={() => mutate()}
+          />
 
           {/* Коллы по токену */}
           {data.calls?.length > 0 && (

@@ -138,6 +138,7 @@ model Token {
   positions Position[]
   calls     Call[]
   candles   Candle[]
+  research  TokenResearch?
 
   @@unique([chain, address])
   @@index([chain, isVerified])
@@ -385,6 +386,51 @@ model Position {
 
   @@unique([userId, tokenId])
   @@index([userId])
+}
+
+// ────────────────────── Исследование токена (факты + AI) ────────────────────
+
+/**
+ * Результат разбора токена: проверяемые факты из открытых источников
+ * и отдельно — трактовка модели.
+ *
+ * Эти две части сознательно не смешиваются. Факт «активен mint authority»
+ * проверяем и воспроизводим; вывод «команда выглядит анонимной» — суждение,
+ * которое может быть ошибочным. Пользователь должен видеть, где что.
+ */
+model TokenResearch {
+  id      String @id @default(cuid())
+  tokenId String @unique
+  token   Token  @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+
+  // ─── Проверяемые факты ───────────────────────────────────────────────
+  /** Ответ сканера безопасности: mint/freeze authority, налоги, ханипот. */
+  securityFlags Json?
+  /** Ссылки на соцсети и сайт проекта, найденные в открытых источниках. */
+  socials       Json?
+  /** Распределение по держателям: топ-10, доля создателя, число адресов. */
+  holderStats   Json?
+  /** Источники фактов: имя сервиса и время получения. */
+  factSources   Json?
+
+  // ─── Трактовка модели ────────────────────────────────────────────────
+  aiSummary     String? @db.Text
+  /** Репутационный риск 0-100. Отдельно от технического riskScore токена. */
+  aiRiskScore   Int?
+  aiRiskFactors Json?
+  /** positive | neutral | negative | unknown */
+  aiSentiment   String?
+  /** Ссылки, на которые опиралась модель. */
+  aiSources     Json?
+  aiModel       String?
+
+  /** ok — всё собрано, partial — часть источников недоступна, failed — нет данных. */
+  status    String   @default("ok")
+  error     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([updatedAt])
 }
 
 // ─────────────────────────── Коллы (сигналы админа) ─────────────────────────

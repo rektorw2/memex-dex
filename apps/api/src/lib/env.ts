@@ -139,6 +139,15 @@ const schema = z.object({
   RHC_RPC_URL: optional(z.string().url()),
   RHC_CHAIN_ID: optional(z.coerce.number().int().positive()),
 
+  /**
+   * Ключ Gemini для AI-разбора токенов. Необязателен: без него разбор
+   * возвращает только проверяемые факты, а трактовка не формируется.
+   * Бесплатный тариф даёт порядка 250-1000 запросов в сутки на моделях
+   * Flash — при ручном запуске админом этого достаточно с запасом.
+   */
+  GEMINI_API_KEY: optional(z.string()),
+  GEMINI_MODEL: z.string().default('gemini-2.5-flash'),
+
   JUPITER_API_URL: z.string().url().default('https://quote-api.jup.ag/v6'),
   ZEROX_API_URL: z.string().url().default('https://api.0x.org'),
   ZEROX_API_KEY: optional(z.string()),

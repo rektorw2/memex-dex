@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { assessToken } from '@memex/core';
 import { prisma } from '../lib/prisma.js';
 import { SUPPORTED_INTERVALS } from '../services/market-data.js';
+import { serializeResearch } from '../services/research.js';
 
 const SORTS = {
   volume: { volume24hUsd: 'desc' },
@@ -107,7 +108,7 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
   app.get('/tokens/:id/overview', async (req, reply) => {
     const { id } = z.object({ id: z.string() }).parse(req.params);
 
-    const token = await prisma.token.findUnique({ where: { id } });
+    const token = await prisma.token.findUnique({ where: { id }, include: { research: true } });
     if (!token || token.isHidden) return reply.code(404).send({ error: 'Токен не найден' });
 
     const ageHours = token.createdAt
@@ -187,6 +188,7 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
         metricsUpdated: token.metricsUpdated,
       },
       risk,
+      research: token.research ? serializeResearch(token.research) : null,
       calls: calls.map((c) => ({
         ...c,
         entryPriceUsd: c.entryPriceUsd.toString(),

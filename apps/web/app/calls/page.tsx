@@ -2,6 +2,7 @@
 
 import useSWR from 'swr';
 import { useState } from 'react';
+import Link from 'next/link';
 import { fetcher, fmtPrice, fmtPct, api, newIdempotencyKey } from '@/lib/api';
 
 interface Call {
@@ -101,12 +102,20 @@ function CallCard({ call }: { call: Call }) {
   return (
     <article className="panel p-4 space-y-3 flex flex-col">
       <div className="flex items-start justify-between gap-2">
-        <div>
-          <h2 className="font-semibold leading-tight">{call.title}</h2>
-          <div className="flex items-center gap-2 mt-1">
-            <span className="text-sm text-muted">${call.token.symbol}</span>
-            <span className="text-xs px-1.5 py-0.5 rounded bg-border text-muted">{call.chain}</span>
-          </div>
+        <div className="min-w-0">
+          {/* Заголовок и тикер ведут на карточку токена: прочитав тезис,
+              человек первым делом хочет проверить цифры и риски. */}
+          <Link href={`/token?id=${call.token.id}`} className="block group">
+            <h2 className="font-semibold leading-tight group-hover:text-accent transition-colors">
+              {call.title}
+            </h2>
+            <div className="flex items-center gap-2 mt-1">
+              <span className="text-sm text-muted group-hover:text-accent transition-colors">
+                ${call.token.symbol}
+              </span>
+              <span className="text-xs px-1.5 py-0.5 rounded bg-border text-muted">{call.chain}</span>
+            </div>
+          </Link>
         </div>
         <span className={`text-xs px-2 py-0.5 rounded border whitespace-nowrap ${RISK_STYLE[call.risk]}`}>
           {RISK_LABEL[call.risk]}
