@@ -212,7 +212,8 @@ export const callRoutes: FastifyPluginAsync = async (app) => {
   /** Создание колла — только админ. */
   app.post('/admin/calls', { preHandler: [app.requireAdmin] }, async (req, reply) => {
     const body = createCallSchema.parse(req.body);
-    const token = await prisma.token.findUniqueOrThrow({ where: { id: body.tokenId } });
+    const token = await prisma.token.findUnique({ where: { id: body.tokenId } });
+    if (!token) return reply.code(404).send({ error: 'Токен не найден' });
 
     // Скоринг перед публикацией: не даём выпустить колл на явный ханипот.
     const risk = assessToken({
@@ -271,23 +272,58 @@ export const callRoutes: FastifyPluginAsync = async (app) => {
   /** Публикация — отдельным действием, чтобы черновик можно было вычитать. */
   app.post('/admin/calls/:id/publish', { preHandler: [app.requireAdmin] }, async (req, reply) => {
     const { id } = z.object({ id: z.string() }).parse(req.params);
-    const call = await prisma.call.findUniqueOrThrow({ where: { id }, include: { token: true } });
+    // findUniqueOrThrow отдаёт 500 на несуществующий id — для интерфейса
+    // это неотличимо от поломки сервера.
+    const call = await prisma.call.findUnique({ where: { id }, include: { token: true } });
+    if (!call) return reply.code(404).send({ error: 'Колл не найден' });
 
     if (call.status !== 'DRAFT') {
-      return reply.code(400).send({ error: 'Публиковать можно только черновик' });
+      return reply.code(400).send({
+        error: `Публиковать можно только черновик, текущий статус: ${call.status}`,
+      });
     }
 
-    // Фиксируем цену входа по факту публикации, а не по факту создания —
-    // иначе результат колла будет посчитан от устаревшей цены.
-    const livePrice = await getAdapter(call.chain).getPriceUsd(call.token.address);
+    /**
+     * Цена входа фиксируется по факту публикации, а не создания — иначе
+     * результат колла считался бы от устаревшей цифры.
+     *
+     * Источники по убыванию надёжности: живой запрос в сеть, цена из базы
+     * (её обновляет воркер), цена из черновика. Сбой любого из них не
+     * должен мешать публикации: getAdapter бросает исключение для сетей
+     * без настроенного RPC, и раньше это роняло весь запрос в 500.
+     */
+    let entryPrice = call.entryPriceUsd;
+
+    try {
+      const livePrice = await getAdapter(call.chain).getPriceUsd(call.token.address);
+      if (livePrice && livePrice > 0) {
+        entryPrice = new P.Decimal(livePrice);
+      } else if (call.token.priceUsd?.gt(0)) {
+        entryPrice = call.token.priceUsd;
+      }
+    } catch (e: any) {
+      req.log.warn(
+        { err: e?.message, chain: call.chain, callId: id },
+        'не удалось получить живую цену при публикации, берём последнюю известную',
+      );
+      if (call.token.priceUsd?.gt(0)) entryPrice = call.token.priceUsd;
+    }
+
+    if (entryPrice.lte(0)) {
+      return reply.code(400).send({
+        error:
+          'Не удалось определить цену входа: у токена нет актуальной цены. ' +
+          'Задайте цену входа вручную в черновике либо дождитесь обновления рыночных данных.',
+      });
+    }
 
     const published = await prisma.call.update({
       where: { id },
       data: {
         status: 'PUBLISHED',
         publishedAt: new Date(),
-        entryPriceUsd: livePrice ? new P.Decimal(livePrice) : call.entryPriceUsd,
-        peakPriceUsd: livePrice ? new P.Decimal(livePrice) : call.entryPriceUsd,
+        entryPriceUsd: entryPrice,
+        peakPriceUsd: entryPrice,
       },
     });
 
@@ -304,13 +340,15 @@ export const callRoutes: FastifyPluginAsync = async (app) => {
     return published;
   });
 
-  app.post('/admin/calls/:id/close', { preHandler: [app.requireAdmin] }, async (req) => {
+  app.post('/admin/calls/:id/close', { preHandler: [app.requireAdmin] }, async (req, reply) => {
     const { id } = z.object({ id: z.string() }).parse(req.params);
     const { status } = z
       .object({ status: z.enum(['HIT_TARGET', 'STOPPED_OUT', 'CANCELLED', 'EXPIRED']) })
       .parse(req.body);
 
-    const call = await prisma.call.findUniqueOrThrow({ where: { id }, include: { token: true } });
+    const call = await prisma.call.findUnique({ where: { id }, include: { token: true } });
+    if (!call) return reply.code(404).send({ error: 'Колл не найден' });
+
     const price = call.token.priceUsd ?? call.entryPriceUsd;
     const resultPct = call.entryPriceUsd.gt(0)
       ? price.minus(call.entryPriceUsd).div(call.entryPriceUsd).mul(100)

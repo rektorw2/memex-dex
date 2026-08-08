@@ -444,11 +444,25 @@ function CallGroup({
 
 function CallRow({ call, onEdit, onChanged }: { call: any; onEdit?: (id: string) => void; onChanged: () => void }) {
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const pnl = call.pnlPct == null ? null : Number(call.pnlPct);
 
+  /**
+   * Ошибку обязательно показываем. Раньше здесь не было catch: неудачная
+   * публикация отклоняла промис, обработчик молча выходил, и кнопка
+   * выглядела просто нерабочей — понять причину было невозможно.
+   */
   async function act(fn: () => Promise<unknown>) {
     setBusy(true);
-    try { await fn(); onChanged(); } finally { setBusy(false); }
+    setError(null);
+    try {
+      await fn();
+      onChanged();
+    } catch (e) {
+      setError(errorMessage(e, 'Действие не выполнено'));
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -530,6 +544,12 @@ function CallRow({ call, onEdit, onChanged }: { call: any; onEdit?: (id: string)
           </span>
         )}
       </div>
+
+      {error && (
+        <p className="text-xs text-down bg-down/10 border border-down/30 rounded p-2 mt-2">
+          {error}
+        </p>
+      )}
     </div>
   );
 }
