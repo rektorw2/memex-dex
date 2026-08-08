@@ -111,13 +111,49 @@ function CallEditor({
   const [busy, setBusy] = useState(false);
   const [loadedId, setLoadedId] = useState<string | null>(null);
 
+  const [lookupChain, setLookupChain] = useState('SOLANA');
+  const [lookupError, setLookupError] = useState<string | null>(null);
+
   // Поиск по токенам, а не выпадающий список: в витрине сотни позиций,
   // и прокручивать их до нужной невозможно.
-  const { data: tokens } = useSWR<any[]>(
-    `/tokens?limit=40${tokenSearch ? `&search=${encodeURIComponent(tokenSearch)}` : ''}`,
+  const { data: tokens, mutate: mutateTokens } = useSWR<any[]>(
+    `/tokens?limit=60${tokenSearch ? `&search=${encodeURIComponent(tokenSearch)}` : ''}`,
     fetcher,
   );
   const token = tokens?.find((t) => t.id === form.tokenId);
+
+  /**
+   * Порядок в списке: сначала добавленные вручную, потом проверенные,
+   * дальше по объёму. Токен, который админ только что завёл сам, —
+   * почти всегда тот, ради которого он и открыл форму колла.
+   */
+  const candidates = useMemo(() => {
+    const list = (tokens ?? []).filter((t) => !t.isQuote);
+    const weight = (t: any) => (t.source === 'manual' ? 0 : t.isVerified ? 1 : 2);
+    return [...list].sort((a, b) => weight(a) - weight(b)).slice(0, 30);
+  }, [tokens]);
+
+  // Адреса Solana и EVM: длинная строка без пробелов. Точную валидацию
+  // делает сервер, здесь достаточно отличить адрес от тикера.
+  const looksLikeAddress = /^[A-Za-z0-9]{32,}$/.test(tokenSearch.trim());
+
+  async function addByAddress() {
+    setBusy(true);
+    setLookupError(null);
+    try {
+      const r: any = await api('/admin/tokens/lookup', {
+        method: 'POST',
+        body: JSON.stringify({ chain: lookupChain, address: tokenSearch.trim(), verify: true }),
+      });
+      await mutateTokens();
+      setForm({ ...form, tokenId: r.token.id });
+      setTokenSearch('');
+    } catch (e) {
+      setLookupError(errorMessage(e, 'Не удалось добавить токен'));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   // Подгружаем черновик в форму при переходе в режим правки
   if (editingId && editingId !== loadedId && existing) {
@@ -241,26 +277,76 @@ function CallEditor({
           <>
             <input
               className="input font-sans text-sm"
-              placeholder="Начните вводить тикер"
+              placeholder="Тикер или адрес контракта"
               value={tokenSearch}
               onChange={(e) => setTokenSearch(e.target.value)}
             />
-            {tokenSearch && (
-              <div className="mt-1 max-h-48 overflow-auto bg-bg rounded-md border border-border">
-                {tokens?.filter((t) => !t.isQuote).slice(0, 20).map((t) => (
+
+            {/* Если введён адрес контракта, а токена в витрине ещё нет —
+                добавляем его на месте. Иначе пришлось бы уходить во вкладку
+                «Токены» и терять заполненную форму колла. */}
+            {looksLikeAddress && candidates.length === 0 && (
+              <div className="mt-2 bg-bg rounded-md border border-border p-3 space-y-2">
+                <p className="text-xs text-muted">
+                  Такого токена в витрине нет. Добавить по адресу?
+                </p>
+                <div className="flex gap-2">
+                  <select
+                    className="input text-sm"
+                    value={lookupChain}
+                    onChange={(e) => setLookupChain(e.target.value)}
+                  >
+                    <option value="SOLANA">Solana</option>
+                    <option value="BNB">BNB Chain</option>
+                    <option value="BASE">Base</option>
+                    <option value="ETHEREUM">Ethereum</option>
+                    <option value="ROBINHOOD">Robinhood Chain</option>
+                  </select>
+                  <button
+                    onClick={addByAddress}
+                    disabled={busy}
+                    className="btn bg-accent hover:bg-accent/80 text-white text-sm whitespace-nowrap"
+                  >
+                    {busy ? '...' : 'Добавить'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Список показываем сразу, не дожидаясь ввода: чаще всего
+                нужный токен только что добавлен вручную и лежит наверху. */}
+            <div className="mt-1 max-h-56 overflow-auto bg-bg rounded-md border border-border">
+              {candidates.length > 0 ? (
+                candidates.map((t) => (
                   <button
                     key={t.id}
                     onClick={() => { setForm({ ...form, tokenId: t.id }); setTokenSearch(''); }}
-                    className="w-full text-left px-3 py-2 hover:bg-border text-sm flex justify-between gap-2"
+                    className="w-full text-left px-3 py-2 hover:bg-border text-sm flex justify-between gap-2 items-center"
                   >
-                    <span>{t.symbol}<span className="text-muted text-xs ml-2">{t.chain}</span></span>
-                    <span className="num text-xs text-muted">{fmtUsd(t.liquidityUsd)}</span>
+                    <span className="min-w-0 truncate">
+                      {t.symbol}
+                      <span className="text-muted text-xs ml-2">{t.chain}</span>
+                      {t.source === 'manual' && (
+                        <span className="text-accent text-[10px] ml-2" title="Добавлен вами вручную">
+                          свой
+                        </span>
+                      )}
+                      {t.isVerified && t.source !== 'manual' && (
+                        <span className="text-accent text-[10px] ml-2" title="Проверен">✓</span>
+                      )}
+                    </span>
+                    <span className="num text-xs text-muted shrink-0">{fmtUsd(t.liquidityUsd)}</span>
                   </button>
-                ))}
-                {!tokens?.length && (
-                  <p className="px-3 py-2 text-xs text-muted">Ничего не найдено</p>
-                )}
-              </div>
+                ))
+              ) : (
+                <p className="px-3 py-2 text-xs text-muted">
+                  {tokenSearch ? 'Ничего не найдено' : 'В витрине пока нет токенов'}
+                </p>
+              )}
+            </div>
+
+            {lookupError && (
+              <p className="text-xs text-down mt-2">{lookupError}</p>
             )}
           </>
         )}
