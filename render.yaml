@@ -21,9 +21,28 @@ services:
     healthCheckPath: /health
     plan: free
     region: frankfurt
-    # Миграции идут по прямому подключению, а не через пул: pgbouncer
-    # не поддерживает advisory locks, на которых держится Prisma Migrate.
-    preDeployCommand: DATABASE_URL="$DIRECT_DATABASE_URL" npx prisma migrate deploy --schema=prisma/schema.prisma
+
+    # preDeployCommand здесь сознательно отсутствует по двум причинам:
+    #
+    #   1. Он доступен только на платных тарифах Render — на free
+    #      деплой отвергается при разборе конфигурации.
+    #   2. Каталога prisma/migrations в проекте нет: схема наливается
+    #      командой `prisma db push`, а `migrate deploy` без файлов
+    #      миграций завершается ошибкой.
+    #
+    # Схема применяется вручную с локальной машины, по прямому
+    # подключению (строка без -pooler):
+    #
+    #   DATABASE_URL="<прямая строка>" npm run db:push
+    #
+    # Когда проект дорастёт до платного тарифа и настоящих миграций,
+    # сюда вернётся:
+    #
+    #   preDeployCommand: DATABASE_URL="$DIRECT_DATABASE_URL" npx prisma migrate deploy --schema=prisma/schema.prisma
+    #
+    # Прямое подключение для миграций принципиально: pgbouncer не
+    # поддерживает advisory locks, на которых держится Prisma Migrate.
+
     envVars:
       - key: NODE_ENV
         value: production
