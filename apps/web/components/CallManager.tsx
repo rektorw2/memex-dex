@@ -26,10 +26,13 @@ const emptyForm = {
 };
 
 export function CallManager() {
-  const { data: calls, mutate } = useSWR<any[]>('/admin/calls?limit=100', fetcher, {
-    refreshInterval: 30_000,
-  });
+  const { data: calls, mutate, error, isLoading } = useSWR<any[]>(
+    '/admin/calls?limit=100',
+    fetcher,
+    { refreshInterval: 30_000, shouldRetryOnError: false },
+  );
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const drafts = calls?.filter((c) => c.status === 'DRAFT') ?? [];
   const published = calls?.filter((c) => c.status === 'PUBLISHED') ?? [];
@@ -40,21 +43,51 @@ export function CallManager() {
       <CallEditor
         editingId={editingId}
         existing={calls?.find((c) => c.id === editingId)}
-        onDone={() => { setEditingId(null); mutate(); }}
+        onDone={(msg) => { setEditingId(null); setNotice(msg); mutate(); }}
         onCancel={() => setEditingId(null)}
       />
 
       <div className="space-y-4">
-        <CallGroup
-          title="Черновики"
-          hint="Видны только вам. Публикация фиксирует цену входа по рынку."
-          calls={drafts}
-          onEdit={setEditingId}
-          onChanged={mutate}
-        />
-        <CallGroup title="Опубликованные" calls={published} onChanged={mutate} />
-        {closed.length > 0 && (
-          <CallGroup title="Закрытые" calls={closed} onChanged={mutate} collapsed />
+        {notice && (
+          <div className="panel p-3 text-sm border-up/40 bg-up/5 flex items-start gap-2">
+            <span className="text-up">✓</span>
+            <span className="flex-1">{notice}</span>
+            <button onClick={() => setNotice(null)} className="text-muted hover:text-white text-xs">
+              ×
+            </button>
+          </div>
+        )}
+
+        {/* Ошибка загрузки списка обязана быть видна: иначе неудачный
+            запрос выглядит как пустой список, то есть как «колл не создался». */}
+        {error && (
+          <div className="panel p-4 border-down/40">
+            <p className="text-sm text-down">Не удалось загрузить список коллов</p>
+            <p className="text-xs text-muted mt-1">{errorMessage(error)}</p>
+            <button onClick={() => mutate()} className="btn-ghost text-xs mt-3">
+              Повторить
+            </button>
+          </div>
+        )}
+
+        {isLoading && !calls && (
+          <div className="panel p-4 text-sm text-muted">Загрузка списка…</div>
+        )}
+
+        {!error && (
+          <>
+            <CallGroup
+              title="Черновики"
+              hint="Видны только вам. Публикация фиксирует цену входа по рынку."
+              calls={drafts}
+              onEdit={setEditingId}
+              onChanged={mutate}
+            />
+            <CallGroup title="Опубликованные" calls={published} onChanged={mutate} />
+            {closed.length > 0 && (
+              <CallGroup title="Закрытые" calls={closed} onChanged={mutate} collapsed />
+            )}
+          </>
         )}
       </div>
     </div>
@@ -68,7 +101,7 @@ function CallEditor({
 }: {
   editingId: string | null;
   existing?: any;
-  onDone: () => void;
+  onDone: (notice: string) => void;
   onCancel: () => void;
 }) {
   const [tokenSearch, setTokenSearch] = useState('');
@@ -159,7 +192,11 @@ function CallEditor({
 
       setForm({ ...emptyForm });
       setTargets([{ priceUsd: '', pct: 50 }]);
-      onDone();
+      onDone(
+        publish
+          ? 'Колл опубликован — он появился в общей ленте и в списке ниже.'
+          : 'Черновик сохранён. Он в списке ниже, опубликовать можно оттуда.',
+      );
     } catch (e) {
       setError(errorMessage(e, 'Не удалось сохранить колл'));
     } finally {

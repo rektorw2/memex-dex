@@ -114,6 +114,7 @@ function TokenLister() {
         body: JSON.stringify({ chain, address: address.trim(), verify: true }),
       });
       setFound(r);
+      setMsg(`${r.token.symbol} добавлен в витрину`);
       setAddress('');
       mutate();
     } catch (e) {
