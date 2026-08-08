@@ -41,8 +41,13 @@ export async function api<T = unknown>(
   init: RequestInit & { idempotencyKey?: string } = {},
 ): Promise<T> {
   const token = getToken();
+
   const headers: Record<string, string> = {
-    'content-type': 'application/json',
+    // Заголовок ставится только когда тело действительно есть.
+    // Fastify отклоняет запрос с content-type: application/json и пустым
+    // телом — а такие у нас все действия без параметров: публикация колла,
+    // запуск импорта, выход из сессии.
+    ...(init.body != null ? { 'content-type': 'application/json' } : {}),
     ...(init.headers as Record<string, string>),
   };
   if (token) headers.authorization = `Bearer ${token}`;

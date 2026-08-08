@@ -54,6 +54,29 @@ export async function buildServer() {
   await app.register(websocket);
   await app.register(authPlugin);
 
+  /**
+   * Пустое тело при content-type: application/json — не ошибка.
+   *
+   * Стандартный парсер Fastify отвергает такой запрос с сообщением
+   * «Body cannot be empty», хотя у действий без параметров тела и не
+   * должно быть: публикация колла, запуск импорта, выход из сессии.
+   * Клиент теперь не ставит заголовок без тела, но сервер не обязан
+   * зависеть от аккуратности клиента — их может быть несколько.
+   */
+  app.addContentTypeParser(
+    'application/json',
+    { parseAs: 'string' },
+    (_req, body: string, done) => {
+      if (!body || body.trim() === '') return done(null, {});
+      try {
+        done(null, JSON.parse(body));
+      } catch (err) {
+        (err as { statusCode?: number }).statusCode = 400;
+        done(err as Error, undefined);
+      }
+    },
+  );
+
   // Единый формат ошибок: клиент не должен парсить пять разных структур.
   app.setErrorHandler((error: unknown, req, reply) => {
     if (error instanceof ZodError) {
