@@ -1,0 +1,76 @@
+# Render Blueprint — бесплатный тариф.
+# Создать: Dashboard → New → Blueprint → выбрать этот репозиторий.
+#
+# Что здесь сознательно не используется:
+#   • Postgres от Render — на free-тарифе база удаляется через 30 дней.
+#     Вместо неё Neon: там бесплатный тариф бессрочный.
+#   • Отдельный worker-сервис — фоновые процессы на Render платные.
+#     Воркеры поднимаются внутри API через RUN_WORKERS_IN_API=true.
+#   • Redis — в проекте не используется, оставлен в зависимостях на вырост.
+#
+# Ограничение free-тарифа: сервис засыпает после 15 минут простоя,
+# первый запрос после сна ждёт около 50 секунд. Это нормально для демо
+# и неприемлемо для торговли — там задержка означает проскальзывание.
+
+services:
+  - type: web
+    name: memex-api
+    runtime: docker
+    dockerfilePath: ./apps/api/Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    plan: free
+    region: frankfurt
+    preDeployCommand: npx prisma migrate deploy --schema=prisma/schema.prisma
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: API_PORT
+        value: 10000
+
+      # Строка подключения из Neon. Обязательно с ?sslmode=require
+      # и через pooled-эндпоинт (-pooler в имени хоста): бесплатный
+      # Postgres быстро упирается в лимит прямых соединений.
+      - key: DATABASE_URL
+        sync: false
+
+      - key: JWT_SECRET
+        generateValue: true
+
+      # Адрес фронтенда на GitHub Pages. Без него браузер заблокирует
+      # все запросы, а в логах API будет пусто.
+      # Формат: https://<пользователь>.github.io
+      - key: CORS_ORIGINS
+        sync: false
+
+      # Воркеры внутри API — см. комментарий выше.
+      - key: RUN_WORKERS_IN_API
+        value: 'true'
+
+      # Реальные котировки, транзакции в сеть не отправляются.
+      - key: EXECUTION_MODE
+        value: paper
+
+      - key: KMS_PROVIDER
+        value: local
+      - key: KMS_LOCAL_MASTER_KEY
+        generateValue: true
+
+      - key: PERFORMANCE_FEE_BPS
+        value: 1000
+      - key: MAX_SLIPPAGE_BPS
+        value: 300
+      - key: MIN_LIQUIDITY_USD
+        value: 15000
+      - key: COPY_MAX_ALLOCATION_PCT
+        value: 25
+
+      # Публичные RPC годятся только для демонстрации: лимиты запросов
+      # и задержки превращаются в проскальзывание на реальных сделках.
+      - key: SOLANA_RPC_URL
+        value: https://api.mainnet-beta.solana.com
+      - key: BNB_RPC_URL
+        value: https://bsc-dataseed.binance.org
+
+      - key: ZEROX_API_KEY
+        sync: false

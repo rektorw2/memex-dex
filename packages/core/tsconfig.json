@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "dist",
+    "rootDir": "src",
+    // decimal.js публикует объединение class + namespace + function.
+    // Под NodeNext TypeScript видит его как namespace и отказывается
+    // использовать как тип. Bundler-резолвинг разрешает это корректно,
+    // а на рантайм не влияет — сборка всё равно ESM.
+    "module": "ESNext",
+    "moduleResolution": "Bundler"
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/**/*.test.ts"]
+}

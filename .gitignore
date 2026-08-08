@@ -1,0 +1,26 @@
+# Зависимости и сборки
+node_modules/
+dist/
+.next/
+out/
+*.tsbuildinfo
+
+# Секреты. Ни один из этих файлов не должен попасть в репозиторий:
+# .env содержит JWT_SECRET и мастер-ключ шифрования приватных ключей.
+.env
+.env.local
+.env.production
+.env.*.local
+!.env.example
+!.env.production.example
+
+# Prisma
+prisma/migrations/dev.db*
+
+# Логи и временные файлы
+*.log
+npm-debug.log*
+.DS_Store
+.idea/
+.vscode/
+coverage/

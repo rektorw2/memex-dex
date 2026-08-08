@@ -1,0 +1,22 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color-scheme: dark; }
+
+body {
+  @apply bg-bg text-white antialiased;
+  font-feature-settings: 'tnum';
+}
+
+/* Числа в таблицах должны быть моноширинными — иначе колонки «плывут»
+   и глаз не может быстро сравнить цены. */
+.num { @apply font-mono tabular-nums; }
+
+.panel { @apply bg-panel border border-border rounded-lg; }
+.btn { @apply px-4 py-2 rounded-md font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed; }
+.btn-buy { @apply btn bg-up/90 hover:bg-up text-white; }
+.btn-sell { @apply btn bg-down/90 hover:bg-down text-white; }
+.btn-ghost { @apply btn bg-border hover:bg-border/70 text-white; }
+.input { @apply w-full bg-bg border border-border rounded-md px-3 py-2 num focus:outline-none focus:border-accent; }
+.label { @apply text-xs text-muted mb-1 block; }

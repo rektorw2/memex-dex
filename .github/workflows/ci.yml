@@ -1,0 +1,38 @@
+# Проверка каждого пуша и pull request.
+# Держит в тонусе то, что нельзя проверить глазами: расчёт комиссий,
+# учёт позиций и срабатывание ордеров.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Генерация Prisma Client
+        run: npm run db:generate
+
+      - name: Сборка ядра
+        run: npm run build -w @memex/core
+
+      - name: Проверка типов во всех пакетах
+        run: |
+          npx tsc -p packages/core/tsconfig.json --noEmit
+          npx tsc -p apps/api/tsconfig.json --noEmit
+          npx tsc -p apps/web/tsconfig.json --noEmit
+
+      - name: Тесты
+        run: npm test

@@ -1,0 +1,82 @@
+# Сборка фронтенда и публикация на GitHub Pages.
+#
+# API на Pages жить не может — там только статика. Адрес бэкенда
+# передаётся на этапе сборки: Next вшивает NEXT_PUBLIC_* в бандл,
+# и подменить его потом, без пересборки, нельзя.
+
+name: Deploy web to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/web/**'
+      - 'packages/**'
+      - '.github/workflows/deploy-pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Параллельные деплои отменяем: две одновременные публикации
+# оставляют Pages в неопределённом состоянии.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Установка зависимостей
+        run: npm ci
+
+      - name: Сборка ядра
+        run: npm run build -w @memex/core
+
+      - name: Проверка типов
+        run: |
+          npx tsc -p packages/core/tsconfig.json --noEmit
+          npx tsc -p apps/web/tsconfig.json --noEmit
+
+      - name: Тесты бизнес-логики
+        run: npm test
+
+      - name: Сборка фронтенда
+        env:
+          DEPLOY_TARGET: pages
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          # Адрес API задаётся в Settings → Secrets and variables →
+          # Actions → Variables. Без него фронт будет стучаться в localhost.
+          NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
+        run: npm run build -w @memex/web
+
+      - name: Отключить обработку Jekyll
+        # Без этого файла Pages игнорирует директории, начинающиеся с
+        # подчёркивания, и весь /_next/ просто не публикуется.
+        run: touch apps/web/out/.nojekyll
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: apps/web/out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
