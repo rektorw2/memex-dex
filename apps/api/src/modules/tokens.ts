@@ -1,5 +1,6 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
+import { assessToken } from '@memex/core';
 import { prisma } from '../lib/prisma.js';
 import { SUPPORTED_INTERVALS } from '../services/market-data.js';
 
@@ -83,6 +84,121 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
       volume24hUsd: t.volume24hUsd?.toString() ?? null,
       fdvUsd: t.fdvUsd?.toString() ?? null,
       hasChart: t.poolAddress != null,
+    };
+  });
+
+  /**
+   * Полная карточка токена: метрики, разбор рисков, связанные коллы
+   * и статистика сделок на платформе.
+   *
+   * Собрано в один запрос намеренно: страница токена — то место, где
+   * пользователь решает, входить ли. Четыре последовательных запроса
+   * означали бы, что часть блоков дорисовывается уже после того, как
+   * он нажал «Купить».
+   */
+  app.get('/tokens/:id/overview', async (req, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+
+    const token = await prisma.token.findUnique({ where: { id } });
+    if (!token || token.isHidden) return reply.code(404).send({ error: 'Токен не найден' });
+
+    const ageHours = token.createdAt
+      ? (Date.now() - token.createdAt.getTime()) / 3_600_000
+      : null;
+
+    const risk = assessToken({
+      liquidityUsd: token.liquidityUsd?.toString() ?? null,
+      volume24hUsd: token.volume24hUsd?.toString() ?? null,
+      holders: token.holders,
+      topHolderPct: token.topHolderPct?.toString() ?? null,
+      lpBurnedPct: token.lpBurnedPct?.toString() ?? null,
+      isHoneypot: token.isHoneypot,
+      ageHours,
+    });
+
+    const [calls, tradeAgg, recentTrades, holdersCount] = await Promise.all([
+      prisma.call.findMany({
+        where: { tokenId: id, status: { not: 'DRAFT' } },
+        orderBy: { publishedAt: 'desc' },
+        take: 5,
+        select: {
+          id: true, title: true, thesis: true, risk: true, status: true,
+          entryPriceUsd: true, targets: true, stopLossUsd: true,
+          resultPct: true, peakMultiple: true, publishedAt: true,
+        },
+      }),
+      prisma.trade.aggregate({
+        where: { status: 'CONFIRMED', OR: [
+          { order: { tokenOutId: id, side: 'BUY' } },
+          { order: { tokenInId: id, side: 'SELL' } },
+        ] },
+        _count: true,
+        _sum: { valueUsd: true },
+      }),
+      prisma.trade.findMany({
+        where: { status: 'CONFIRMED', OR: [
+          { order: { tokenOutId: id, side: 'BUY' } },
+          { order: { tokenInId: id, side: 'SELL' } },
+        ] },
+        orderBy: { createdAt: 'desc' },
+        take: 20,
+        select: {
+          id: true, createdAt: true, valueUsd: true, priceUsd: true,
+          order: { select: { side: true, source: true } },
+        },
+      }),
+      // Сколько пользователей платформы держат этот токен — сигнал
+      // популярности внутри сервиса, а не в сети целиком.
+      prisma.position.count({ where: { tokenId: id, quantity: { gt: 0 } } }),
+    ]);
+
+    return {
+      token: {
+        id: token.id,
+        chain: token.chain,
+        address: token.address,
+        symbol: token.symbol,
+        name: token.name,
+        decimals: token.decimals,
+        logoUrl: token.logoUrl,
+        isVerified: token.isVerified,
+        isQuote: token.isQuote,
+        source: token.source,
+        poolAddress: token.poolAddress,
+        hasChart: token.poolAddress != null,
+        priceUsd: token.priceUsd?.toString() ?? null,
+        priceChange24h: token.priceChange24h?.toString() ?? null,
+        liquidityUsd: token.liquidityUsd?.toString() ?? null,
+        volume24hUsd: token.volume24hUsd?.toString() ?? null,
+        fdvUsd: token.fdvUsd?.toString() ?? null,
+        holders: token.holders,
+        lpBurnedPct: token.lpBurnedPct?.toString() ?? null,
+        topHolderPct: token.topHolderPct?.toString() ?? null,
+        isHoneypot: token.isHoneypot,
+        listedAt: token.createdAt,
+        metricsUpdated: token.metricsUpdated,
+      },
+      risk,
+      calls: calls.map((c) => ({
+        ...c,
+        entryPriceUsd: c.entryPriceUsd.toString(),
+        stopLossUsd: c.stopLossUsd?.toString() ?? null,
+        resultPct: c.resultPct?.toString() ?? null,
+        peakMultiple: c.peakMultiple?.toString() ?? null,
+      })),
+      platformStats: {
+        trades: tradeAgg._count,
+        volumeUsd: tradeAgg._sum?.valueUsd?.toString() ?? '0',
+        holders: holdersCount,
+      },
+      recentTrades: recentTrades.map((t) => ({
+        id: t.id,
+        date: t.createdAt,
+        side: t.order.side,
+        source: t.order.source,
+        valueUsd: t.valueUsd.toString(),
+        priceUsd: t.priceUsd.toString(),
+      })),
     };
   });
 

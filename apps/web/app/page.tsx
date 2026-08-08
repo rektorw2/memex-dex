@@ -2,6 +2,7 @@
 
 import useSWR from 'swr';
 import { useState } from 'react';
+import Link from 'next/link';
 import { fetcher, fmtPrice, fmtUsd, fmtPct } from '@/lib/api';
 import { PriceChart } from '@/components/PriceChart';
 import { TradePanel } from '@/components/TradePanel';
@@ -119,6 +120,17 @@ export default function TerminalPage() {
                           {t.isVerified && (
                             <span className="text-accent text-[10px]" title="Проверен админом">✓</span>
                           )}
+                          {/* Отдельная ссылка, а не клик по строке: клик выбирает
+                              токен для графика рядом, уводить со страницы при
+                              каждом просмотре было бы неудобно. */}
+                          <Link
+                            href={`/token?id=${t.id}`}
+                            onClick={(e) => e.stopPropagation()}
+                            className="ml-auto text-[10px] text-muted hover:text-accent"
+                            title="Открыть карточку токена"
+                          >
+                            подробнее
+                          </Link>
                         </div>
                         <div className="text-xs text-muted">
                           {CHAIN_LABEL[t.chain] ?? t.chain} · {fmtUsd(t.liquidityUsd)}
@@ -148,7 +160,9 @@ export default function TerminalPage() {
             {active ? (
               <>
                 <div className="flex flex-wrap items-baseline gap-3 mb-4">
-                  <h1 className="text-xl font-bold">{active.symbol}</h1>
+                  <Link href={`/token?id=${active.id}`} className="text-xl font-bold hover:text-accent">
+                    {active.symbol}
+                  </Link>
                   <span className="text-sm text-muted">{active.name}</span>
                   <span className="text-xs px-2 py-0.5 rounded bg-border text-muted">
                     {CHAIN_LABEL[active.chain] ?? active.chain}
