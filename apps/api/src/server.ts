@@ -123,20 +123,26 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // динамический: при выключенном флаге модули даже не загружаются.
   let stopWorkers: (() => void) | null = null;
   if (env.RUN_WORKERS_IN_API) {
-    const [{ startLimitWatcher, stopLimitWatcher }, { startPriceUpdater, stopPriceUpdater }, { startCopyExecutor, stopCopyExecutor }] =
-      await Promise.all([
-        import('./workers/limit-watcher.js'),
-        import('./workers/price-updater.js'),
-        import('./workers/copy-executor.js'),
-      ]);
+    const [limit, price, copy, importer, candles] = await Promise.all([
+      import('./workers/limit-watcher.js'),
+      import('./workers/price-updater.js'),
+      import('./workers/copy-executor.js'),
+      import('./workers/token-importer.js'),
+      import('./workers/candle-builder.js'),
+    ]);
 
-    startPriceUpdater();
-    startLimitWatcher();
-    startCopyExecutor();
+    price.startPriceUpdater();
+    limit.startLimitWatcher();
+    copy.startCopyExecutor();
+    importer.startTokenImporter();
+    candles.startCandleBuilder();
+
     stopWorkers = () => {
-      stopPriceUpdater();
-      stopLimitWatcher();
-      stopCopyExecutor();
+      price.stopPriceUpdater();
+      limit.stopLimitWatcher();
+      copy.stopCopyExecutor();
+      importer.stopTokenImporter();
+      candles.stopCandleBuilder();
     };
 
     app.log.warn(

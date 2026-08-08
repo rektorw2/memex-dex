@@ -1,0 +1,295 @@
+import type { Chain } from '@prisma/client';
+import { logger } from '../lib/logger.js';
+
+/**
+ * Рыночные данные из GeckoTerminal.
+ *
+ * Почему именно он: бесплатно, без ключа, покрывает Solana и EVM-сети,
+ * и главное — отдаёт готовые свечи OHLCV. У DexScreener свечей в публичном
+ * API нет, у Birdeye они за ключом. Строить свечи самим из тиков цены
+ * означало бы ждать сутки, прежде чем на графике появится хоть что-то.
+ *
+ * Ограничение бесплатного тарифа — 30 запросов в минуту на IP. Это мало,
+ * поэтому все обращения проходят через общий лимитер, а свечи обновляются
+ * по очереди, а не для всех токенов сразу.
+ */
+
+const API = 'https://api.geckoterminal.com/api/v2';
+
+/**
+ * Идентификаторы сетей в GeckoTerminal.
+ * null означает, что сеть не поддерживается — импорт для неё пропускается
+ * без ошибки. Robinhood Chain запущен в июле 2026, агрегаторы данных
+ * подключают такие сети с задержкой в несколько месяцев.
+ */
+const NETWORK: Record<Chain, string | null> = {
+  SOLANA: 'solana',
+  BNB: 'bsc',
+  BASE: 'base',
+  ETHEREUM: 'eth',
+  ROBINHOOD: null,
+};
+
+export function isMarketDataSupported(chain: Chain): boolean {
+  return NETWORK[chain] !== null;
+}
+
+// ─────────────────────────── Ограничитель частоты ───────────────────────────
+
+/**
+ * Token bucket на 25 запросов в минуту — с запасом к лимиту в 30.
+ * Без него импортёр и построитель свечей начнут получать 429 и молча
+ * оставят витрину пустой.
+ */
+class RateLimiter {
+  private tokens: number;
+  private lastRefill = Date.now();
+
+  constructor(private readonly capacity: number, private readonly perMs: number) {
+    this.tokens = capacity;
+  }
+
+  async take(): Promise<void> {
+    for (;;) {
+      const now = Date.now();
+      const elapsed = now - this.lastRefill;
+      if (elapsed >= this.perMs) {
+        this.tokens = this.capacity;
+        this.lastRefill = now;
+      }
+      if (this.tokens > 0) {
+        this.tokens--;
+        return;
+      }
+      await new Promise((r) => setTimeout(r, this.perMs - elapsed + 50));
+    }
+  }
+}
+
+const limiter = new RateLimiter(25, 60_000);
+
+async function get<T>(path: string): Promise<T | null> {
+  await limiter.take();
+  try {
+    const res = await fetch(`${API}${path}`, {
+      headers: { accept: 'application/json;version=20230302' },
+      signal: AbortSignal.timeout(10_000),
+    });
+
+    if (res.status === 429) {
+      logger.warn({ path }, 'GeckoTerminal: превышен лимит запросов');
+      return null;
+    }
+    if (!res.ok) {
+      logger.debug({ path, status: res.status }, 'GeckoTerminal: запрос не удался');
+      return null;
+    }
+    return (await res.json()) as T;
+  } catch (e: any) {
+    logger.debug({ path, err: e?.message }, 'GeckoTerminal: ошибка сети');
+    return null;
+  }
+}
+
+// ───────────────────────────── Пулы и токены ────────────────────────────────
+
+export interface PoolToken {
+  chain: Chain;
+  /** Адрес самого токена (mint для Solana, contract для EVM). */
+  address: string;
+  symbol: string;
+  name: string;
+  decimals: number;
+  /** Адрес пула — по нему запрашиваются свечи. */
+  poolAddress: string;
+  priceUsd: number | null;
+  liquidityUsd: number | null;
+  volume24hUsd: number | null;
+  priceChange24h: number | null;
+  fdvUsd: number | null;
+  poolCreatedAt: Date | null;
+}
+
+interface GeckoPool {
+  attributes: {
+    address: string;
+    name: string;
+    base_token_price_usd: string | null;
+    reserve_in_usd: string | null;
+    fdv_usd: string | null;
+    pool_created_at: string | null;
+    volume_usd?: { h24?: string };
+    price_change_percentage?: { h24?: string };
+  };
+  relationships: {
+    base_token: { data: { id: string } };
+    quote_token: { data: { id: string } };
+  };
+}
+
+interface GeckoIncluded {
+  id: string;
+  type: string;
+  attributes: { address: string; name: string; symbol: string; decimals?: number };
+}
+
+const num = (v: string | null | undefined): number | null => {
+  if (v == null) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+
+/**
+ * Топ пулов сети по объёму за 24 часа.
+ *
+ * Берём именно пулы, а не «топ токенов»: у токена может не быть
+ * ликвидного рынка, и торговать им нельзя. Пул с объёмом — гарантия,
+ * что сделка вообще исполнится.
+ */
+export async function fetchTopPools(chain: Chain, pages = 2): Promise<PoolToken[]> {
+  const network = NETWORK[chain];
+  if (!network) return [];
+
+  const result: PoolToken[] = [];
+
+  for (let page = 1; page <= pages; page++) {
+    const data = await get<{ data: GeckoPool[]; included: GeckoIncluded[] }>(
+      `/networks/${network}/pools?page=${page}&include=base_token,quote_token&sort=h24_volume_usd_desc`,
+    );
+    if (!data?.data?.length) break;
+
+    // included содержит развёрнутые токены — собираем словарь по id
+    const tokens = new Map<string, GeckoIncluded>();
+    for (const item of data.included ?? []) {
+      if (item.type === 'token') tokens.set(item.id, item);
+    }
+
+    for (const pool of data.data) {
+      const baseId = pool.relationships?.base_token?.data?.id;
+      const base = baseId ? tokens.get(baseId) : undefined;
+      if (!base?.attributes?.address) continue;
+
+      result.push({
+        chain,
+        address: base.attributes.address,
+        symbol: (base.attributes.symbol || '???').slice(0, 20),
+        name: (base.attributes.name || base.attributes.symbol || 'Unknown').slice(0, 80),
+        // GeckoTerminal не всегда отдаёт decimals; для Solana обычно 6 или 9,
+        // для EVM — 18. Уточняется при первой сделке через адаптер сети.
+        decimals: base.attributes.decimals ?? (chain === 'SOLANA' ? 9 : 18),
+        poolAddress: pool.attributes.address,
+        priceUsd: num(pool.attributes.base_token_price_usd),
+        liquidityUsd: num(pool.attributes.reserve_in_usd),
+        volume24hUsd: num(pool.attributes.volume_usd?.h24),
+        priceChange24h: num(pool.attributes.price_change_percentage?.h24),
+        fdvUsd: num(pool.attributes.fdv_usd),
+        poolCreatedAt: pool.attributes.pool_created_at
+          ? new Date(pool.attributes.pool_created_at)
+          : null,
+      });
+    }
+  }
+
+  return result;
+}
+
+/** Данные одного пула — для точечного добавления токена админом. */
+export async function fetchPoolForToken(
+  chain: Chain,
+  tokenAddress: string,
+): Promise<PoolToken | null> {
+  const network = NETWORK[chain];
+  if (!network) return null;
+
+  const data = await get<{ data: GeckoPool[]; included: GeckoIncluded[] }>(
+    `/networks/${network}/tokens/${tokenAddress}/pools?include=base_token&page=1`,
+  );
+  if (!data?.data?.length) return null;
+
+  const tokens = new Map<string, GeckoIncluded>();
+  for (const item of data.included ?? []) {
+    if (item.type === 'token') tokens.set(item.id, item);
+  }
+
+  // Самый ликвидный пул: цена в мелком пуле не отражает рынок.
+  const best = [...data.data].sort(
+    (a, b) => (num(b.attributes.reserve_in_usd) ?? 0) - (num(a.attributes.reserve_in_usd) ?? 0),
+  )[0];
+  if (!best) return null;
+
+  const base = tokens.get(best.relationships?.base_token?.data?.id ?? '');
+
+  return {
+    chain,
+    address: tokenAddress,
+    symbol: (base?.attributes?.symbol || '???').slice(0, 20),
+    name: (base?.attributes?.name || 'Unknown').slice(0, 80),
+    decimals: base?.attributes?.decimals ?? (chain === 'SOLANA' ? 9 : 18),
+    poolAddress: best.attributes.address,
+    priceUsd: num(best.attributes.base_token_price_usd),
+    liquidityUsd: num(best.attributes.reserve_in_usd),
+    volume24hUsd: num(best.attributes.volume_usd?.h24),
+    priceChange24h: num(best.attributes.price_change_percentage?.h24),
+    fdvUsd: num(best.attributes.fdv_usd),
+    poolCreatedAt: best.attributes.pool_created_at
+      ? new Date(best.attributes.pool_created_at)
+      : null,
+  };
+}
+
+// ──────────────────────────────── Свечи ─────────────────────────────────────
+
+export interface Ohlcv {
+  openTime: Date;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volumeUsd: number;
+}
+
+/** Соответствие наших интервалов параметрам GeckoTerminal. */
+const TIMEFRAME: Record<string, { unit: 'minute' | 'hour' | 'day'; aggregate: number }> = {
+  '1m': { unit: 'minute', aggregate: 1 },
+  '5m': { unit: 'minute', aggregate: 5 },
+  '15m': { unit: 'minute', aggregate: 15 },
+  '1h': { unit: 'hour', aggregate: 1 },
+  '4h': { unit: 'hour', aggregate: 4 },
+  '1d': { unit: 'day', aggregate: 1 },
+};
+
+export const SUPPORTED_INTERVALS = Object.keys(TIMEFRAME);
+
+export async function fetchOhlcv(
+  chain: Chain,
+  poolAddress: string,
+  interval: string,
+  limit = 300,
+): Promise<Ohlcv[]> {
+  const network = NETWORK[chain];
+  const tf = TIMEFRAME[interval];
+  if (!network || !tf) return [];
+
+  const data = await get<{ data: { attributes: { ohlcv_list: number[][] } } }>(
+    `/networks/${network}/pools/${poolAddress}/ohlcv/${tf.unit}` +
+      `?aggregate=${tf.aggregate}&limit=${Math.min(limit, 1000)}&currency=usd`,
+  );
+
+  const list = data?.data?.attributes?.ohlcv_list;
+  if (!Array.isArray(list)) return [];
+
+  // Формат ответа: [timestamp, open, high, low, close, volume].
+  // Приходит от новых к старым — разворачиваем, график ждёт хронологию.
+  return list
+    .filter((row) => Array.isArray(row) && row.length >= 6)
+    .map((row) => ({
+      openTime: new Date(row[0]! * 1000),
+      open: row[1]!,
+      high: row[2]!,
+      low: row[3]!,
+      close: row[4]!,
+      volumeUsd: row[5]!,
+    }))
+    .filter((c) => Number.isFinite(c.open) && c.open > 0)
+    .reverse();
+}

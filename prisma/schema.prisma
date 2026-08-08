@@ -108,10 +108,21 @@ model Token {
   isQuote    Boolean @default(false) // USDC/SOL/BNB — валюты котировки
   isVerified Boolean @default(false)
 
+  // Адрес основного пула ликвидности. Нужен для запроса свечей:
+  // OHLCV существует у пары, а не у токена — у одного токена может быть
+  // десяток пулов с разной ценой, и брать надо самый ликвидный.
+  poolAddress String?
+  /** Источник появления в списке: auto — импортёр, manual — админ. */
+  source      String? @default("manual")
+  /** Скрыт из витрины вручную, при этом остаётся в истории сделок. */
+  isHidden    Boolean @default(false)
+
   // Риск-метрики, обновляются воркером
   liquidityUsd    Decimal? @db.Decimal(24, 8)
   volume24hUsd    Decimal? @db.Decimal(24, 8)
   priceUsd        Decimal? @db.Decimal(38, 18)
+  priceChange24h  Decimal? @db.Decimal(12, 4)
+  fdvUsd          Decimal? @db.Decimal(24, 8)
   holders         Int?
   isHoneypot      Boolean  @default(false)
   lpBurnedPct     Decimal? @db.Decimal(8, 4)

@@ -2,7 +2,7 @@
 
 import useSWR from 'swr';
 import { useState } from 'react';
-import { fetcher, api, fmtUsd, ApiError } from '@/lib/api';
+import { fetcher, api, fmtUsd, errorMessage } from '@/lib/api';
 
 export default function AdminPage() {
   const { data: overview } = useSWR<any>('/admin/overview', fetcher, { refreshInterval: 20_000 });
@@ -116,7 +116,7 @@ function CallComposer() {
       });
       setResult(r);
     } catch (e) {
-      setError(e instanceof ApiError ? `${e.message}${e.details ? ` — ${JSON.stringify(e.details)}` : ''}` : 'Ошибка');
+      setError(errorMessage(e, 'Не удалось создать колл'));
     }
   }
 
@@ -270,72 +270,175 @@ function CallComposer() {
 }
 
 function TokenLister() {
-  const [form, setForm] = useState({
-    chain: 'SOLANA', address: '', symbol: '', name: '', decimals: 9, isQuote: false,
-  });
+  const { data: tokens, mutate } = useSWR<any[]>('/tokens?limit=200', fetcher);
+  const [chain, setChain] = useState('SOLANA');
+  const [address, setAddress] = useState('');
+  const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
+  const [found, setFound] = useState<any>(null);
+
+  async function lookup() {
+    setBusy(true);
+    setMsg(null);
+    setFound(null);
+    try {
+      // Тикер, decimals, цену и пул подтягиваем по адресу: ручной ввод
+      // decimals — прямой путь к сделке в 10^12 раз больше задуманной.
+      const r: any = await api('/admin/tokens/lookup', {
+        method: 'POST',
+        body: JSON.stringify({ chain, address: address.trim(), verify: true }),
+      });
+      setFound(r);
+      setAddress('');
+      mutate();
+    } catch (e) {
+      setMsg(errorMessage(e, 'Не удалось найти токен'));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runImport() {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const r: any = await api('/admin/tokens/import', { method: 'POST' });
+      const total = (r.stats ?? []).reduce((s: number, x: any) => s + x.created, 0);
+      setMsg(`Импорт завершён, добавлено токенов: ${total}`);
+      mutate();
+    } catch (e) {
+      setMsg(errorMessage(e, 'Импорт не удался'));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function toggleVisibility(id: string, hidden: boolean) {
+    await api(`/admin/tokens/${id}/visibility`, {
+      method: 'POST',
+      body: JSON.stringify({ hidden }),
+    });
+    mutate();
+  }
 
   return (
-    <div className="panel p-4 space-y-3 max-w-lg">
-      <h2 className="font-medium">Добавить токен в листинг</h2>
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <label className="label">Сеть</label>
-          <select className="input" value={form.chain}
-                  onChange={(e) => setForm({ ...form, chain: e.target.value, decimals: e.target.value === 'SOLANA' ? 9 : 18 })}>
-            <option value="SOLANA">Solana</option>
-            <option value="BNB">BNB Chain</option>
-            <option value="ROBINHOOD">Robinhood Chain</option>
-            <option value="ETHEREUM">Ethereum</option>
-            <option value="BASE">Base</option>
-          </select>
+    <div className="grid lg:grid-cols-2 gap-4">
+      <div className="space-y-4">
+        <div className="panel p-4 space-y-3">
+          <h2 className="font-medium">Добавить токен по адресу</h2>
+          <div className="grid grid-cols-3 gap-2">
+            <select className="input" value={chain} onChange={(e) => setChain(e.target.value)}>
+              <option value="SOLANA">Solana</option>
+              <option value="BNB">BNB Chain</option>
+              <option value="BASE">Base</option>
+              <option value="ETHEREUM">Ethereum</option>
+              <option value="ROBINHOOD">Robinhood Chain</option>
+            </select>
+            <input
+              className="input col-span-2 font-mono text-xs"
+              placeholder="Адрес контракта или mint"
+              value={address}
+              onChange={(e) => setAddress(e.target.value)}
+            />
+          </div>
+          <button
+            onClick={lookup}
+            disabled={busy || address.trim().length < 20}
+            className="btn bg-accent hover:bg-accent/80 text-white w-full"
+          >
+            {busy ? '...' : 'Найти и добавить'}
+          </button>
+          <p className="text-xs text-muted">
+            Тикер, decimals, цена, ликвидность и пул для графика определяются
+            автоматически по самому ликвидному рынку токена.
+          </p>
         </div>
-        <div>
-          <label className="label">Decimals</label>
-          <input className="input" type="number" value={form.decimals}
-                 onChange={(e) => setForm({ ...form, decimals: Number(e.target.value) })} />
+
+        <div className="panel p-4 space-y-3">
+          <h2 className="font-medium">Импорт трендов</h2>
+          <p className="text-xs text-muted">
+            Загружает топ пулов по объёму во всех поддерживаемых сетях.
+            Выполняется автоматически раз в час — кнопка запускает вне очереди.
+          </p>
+          <button onClick={runImport} disabled={busy} className="btn-ghost w-full">
+            {busy ? 'Импортируем...' : 'Импортировать сейчас'}
+          </button>
+        </div>
+
+        {msg && <p className="text-xs text-muted panel p-3">{msg}</p>}
+
+        {found && (
+          <div className="panel p-4 space-y-2 text-sm">
+            <h3 className="font-medium">{found.token.symbol} добавлен</h3>
+            <Row label="Цена" value={found.token.priceUsd ?? '—'} />
+            <Row label="Ликвидность" value={fmtUsd(found.token.liquidityUsd)} />
+            <Row label="Риск-скор" value={`${found.risk.score}/100`} />
+            {found.risk.flags?.length > 0 && (
+              <ul className="text-xs text-muted space-y-1 pt-1">
+                {found.risk.flags.map((f: string, i: number) => (
+                  <li key={i}>• {f}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="panel p-4">
+        <h2 className="font-medium mb-3">
+          В витрине: {tokens?.length ?? 0}
+        </h2>
+        <div className="max-h-[600px] overflow-auto">
+          <table className="w-full text-sm">
+            <thead className="text-xs text-muted sticky top-0 bg-panel">
+              <tr>
+                <th className="text-left font-normal pb-2">Токен</th>
+                <th className="text-right font-normal pb-2">Ликвидность</th>
+                <th className="text-right font-normal pb-2">Риск</th>
+                <th className="text-right font-normal pb-2"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {tokens?.map((t) => (
+                <tr key={t.id} className="border-b border-border/40">
+                  <td className="py-1.5">
+                    <div className="flex items-center gap-1.5">
+                      {t.symbol}
+                      {t.source === 'auto' && (
+                        <span className="text-[10px] text-muted" title="Добавлен импортёром">
+                          авто
+                        </span>
+                      )}
+                      {!t.hasChart && (
+                        <span className="text-[10px] text-down" title="Нет пула — график недоступен">
+                          без графика
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-xs text-muted">{t.chain}</div>
+                  </td>
+                  <td className="text-right num text-xs">{fmtUsd(t.liquidityUsd)}</td>
+                  <td className={`text-right num text-xs ${(t.riskScore ?? 0) > 60 ? 'text-down' : 'text-muted'}`}>
+                    {t.riskScore ?? '—'}
+                  </td>
+                  <td className="text-right">
+                    <button
+                      onClick={() => toggleVisibility(t.id, true)}
+                      className="text-xs text-muted hover:text-down px-2"
+                      title="Скрыть из витрины"
+                    >
+                      скрыть
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
-      <div>
-        <label className="label">Адрес контракта / mint</label>
-        <input className="input" value={form.address}
-               onChange={(e) => setForm({ ...form, address: e.target.value })} />
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <label className="label">Тикер</label>
-          <input className="input" value={form.symbol}
-                 onChange={(e) => setForm({ ...form, symbol: e.target.value })} />
-        </div>
-        <div>
-          <label className="label">Название</label>
-          <input className="input" value={form.name}
-                 onChange={(e) => setForm({ ...form, name: e.target.value })} />
-        </div>
-      </div>
-      <label className="flex gap-2 items-center text-sm">
-        <input type="checkbox" checked={form.isQuote} className="accent-accent"
-               onChange={(e) => setForm({ ...form, isQuote: e.target.checked })} />
-        Валюта котировки (USDC, SOL, BNB)
-      </label>
-      {msg && <p className="text-xs text-muted">{msg}</p>}
-      <button
-        onClick={async () => {
-          try {
-            const t: any = await api('/admin/tokens', { method: 'POST', body: JSON.stringify(form) });
-            setMsg(`Добавлен ${t.symbol}, цена ${t.priceUsd ?? 'не определена'}`);
-          } catch (e) {
-            setMsg(e instanceof ApiError ? e.message : 'Ошибка');
-          }
-        }}
-        className="btn bg-accent hover:bg-accent/80 text-white w-full"
-      >
-        Добавить
-      </button>
     </div>
   );
 }
-
 function Row({ label, value }: { label: string; value: string | number }) {
   return (
     <div className="flex justify-between text-xs">

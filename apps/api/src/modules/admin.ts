@@ -5,6 +5,7 @@ import { assessToken } from '@memex/core';
 import { prisma } from '../lib/prisma.js';
 import { reconcileUser } from '../services/balances.js';
 import { getAdapter, supportedChains } from '../chains/index.js';
+import { fetchPoolForToken } from '../services/market-data.js';
 
 export const adminRoutes: FastifyPluginAsync = async (app) => {
   app.addHook('preHandler', app.requireAdmin);
@@ -75,6 +76,100 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
               entityId: token.id, after: token as never, ip: req.ip },
     });
     return reply.code(201).send(token);
+  });
+
+  /**
+   * Добавление токена по одному адресу: тикер, цена, ликвидность и пул
+   * подтягиваются автоматически. Заполнять это руками — источник опечаток
+   * в decimals, из-за которых сумма сделки уезжает в тысячу раз.
+   */
+  app.post('/admin/tokens/lookup', async (req, reply) => {
+    const body = z
+      .object({
+        chain: z.enum(['SOLANA', 'BNB', 'ROBINHOOD', 'ETHEREUM', 'BASE']),
+        address: z.string().min(20),
+        verify: z.boolean().default(true),
+      })
+      .parse(req.body);
+
+    const adapter = getAdapter(body.chain);
+    if (!adapter.isValidAddress(body.address)) {
+      return reply.code(400).send({ error: `Некорректный адрес для сети ${body.chain}` });
+    }
+
+    const pool = await fetchPoolForToken(body.chain, body.address);
+    if (!pool) {
+      return reply.code(404).send({
+        error: 'Пул с этим токеном не найден. Возможно, у него нет ликвидности либо сеть пока не поддерживается поставщиком данных.',
+      });
+    }
+
+    const risk = assessToken({
+      liquidityUsd: pool.liquidityUsd,
+      volume24hUsd: pool.volume24hUsd,
+      ageHours: pool.poolCreatedAt
+        ? (Date.now() - pool.poolCreatedAt.getTime()) / 3_600_000
+        : null,
+    });
+
+    const token = await prisma.token.upsert({
+      where: { chain_address: { chain: body.chain, address: body.address } },
+      create: {
+        chain: body.chain,
+        address: body.address,
+        symbol: pool.symbol,
+        name: pool.name,
+        decimals: pool.decimals,
+        poolAddress: pool.poolAddress,
+        priceUsd: pool.priceUsd != null ? new P.Decimal(pool.priceUsd) : null,
+        liquidityUsd: pool.liquidityUsd != null ? new P.Decimal(pool.liquidityUsd) : null,
+        volume24hUsd: pool.volume24hUsd != null ? new P.Decimal(pool.volume24hUsd) : null,
+        priceChange24h: pool.priceChange24h != null ? new P.Decimal(pool.priceChange24h) : null,
+        fdvUsd: pool.fdvUsd != null ? new P.Decimal(pool.fdvUsd) : null,
+        riskScore: risk.score,
+        isVerified: body.verify,
+        source: 'manual',
+        metricsUpdated: new Date(),
+      },
+      update: {
+        poolAddress: pool.poolAddress,
+        isVerified: body.verify,
+        isHidden: false,
+        priceUsd: pool.priceUsd != null ? new P.Decimal(pool.priceUsd) : undefined,
+        riskScore: risk.score,
+        metricsUpdated: new Date(),
+      },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        actorId: req.user.sub, action: 'token.lookup', entity: 'Token', entityId: token.id,
+        after: { symbol: token.symbol, riskScore: risk.score } as never, ip: req.ip,
+      },
+    });
+
+    return reply.code(201).send({ token, risk });
+  });
+
+  /** Скрыть или вернуть токен в витрину. Удалять нельзя: есть история сделок. */
+  app.post('/admin/tokens/:id/visibility', async (req) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    const { hidden } = z.object({ hidden: z.boolean() }).parse(req.body);
+
+    const token = await prisma.token.update({ where: { id }, data: { isHidden: hidden } });
+    await prisma.auditLog.create({
+      data: {
+        actorId: req.user.sub, action: 'token.visibility', entity: 'Token',
+        entityId: id, after: { hidden } as never, ip: req.ip,
+      },
+    });
+    return { id: token.id, isHidden: token.isHidden };
+  });
+
+  /** Запустить импорт трендовых токенов немедленно, не дожидаясь часового цикла. */
+  app.post('/admin/tokens/import', async () => {
+    const { importTokens } = await import('../workers/token-importer.js');
+    return { stats: await importTokens() };
   });
 
   /** Ручной скоринг токена перед публикацией колла. */
