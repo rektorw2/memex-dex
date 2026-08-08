@@ -151,17 +151,43 @@ const schema = z.object({
   COPY_MAX_ALLOCATION_PCT: z.coerce.number().default(25),
 });
 
-const parsed = schema.safeParse(process.env);
+// Значения из веб-панелей деплоя регулярно приезжают с хвостовым пробелом
+// или переводом строки — их не видно глазом, но валидатор url на них падает
+// с сообщением, которое никак не намекает на причину.
+const rawEnv: Record<string, string | undefined> = {};
+for (const [key, value] of Object.entries(process.env)) {
+  rawEnv[key] = typeof value === 'string' ? value.trim() : value;
+}
+
+const parsed = schema.safeParse(rawEnv);
 
 if (!parsed.success) {
   const errors = parsed.error.flatten().fieldErrors;
+
   console.error('\nНекорректная конфигурация окружения:\n');
   for (const [key, messages] of Object.entries(errors)) {
+    const value = rawEnv[key];
+    // Различаем «не задана» и «задана неверно»: это принципиально разные
+    // причины, а сообщения валидатора для них почти одинаковы.
+    const state =
+      value === undefined
+        ? 'переменная не задана'
+        : value === ''
+          ? 'переменная пуста'
+          : `текущее значение начинается с «${value.slice(0, 24)}…»`;
     console.error(`  ${key}: ${messages?.join(', ')}`);
+    console.error(`    ${state}\n`);
   }
-  console.error(
-    '\nПроверьте .env в корне проекта. Если файла нет — выполните: npm run setup\n',
-  );
+
+  if (process.env.NODE_ENV === 'production') {
+    console.error(
+      'Задайте недостающие переменные в панели хостинга:\n' +
+        '  Render:  сервис → Environment → Add Environment Variable\n' +
+        '  Railway: сервис → Variables\n',
+    );
+  } else {
+    console.error('Проверьте .env в корне проекта. Если файла нет — выполните: npm run setup\n');
+  }
   process.exit(1);
 }
 
