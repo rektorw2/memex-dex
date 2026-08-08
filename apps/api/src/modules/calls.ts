@@ -5,22 +5,49 @@ import { assessToken } from '@memex/core';
 import { prisma } from '../lib/prisma.js';
 import { getAdapter } from '../chains/index.js';
 
-const targetSchema = z.object({ priceUsd: z.string(), pct: z.number().min(1).max(100) });
+/**
+ * Пустые поля формы приходят как "", а не как undefined.
+ * `new Decimal("")` бросает исключение, и запрос падал с 500 вместо
+ * внятной ошибки — незаполненный стоп-лосс ронял создание колла.
+ */
+const optionalDecimal = z.preprocess(
+  (v) => (v === '' || v === null ? undefined : v),
+  z
+    .string()
+    .refine((s) => Number.isFinite(Number(s)) && Number(s) > 0, 'Ожидается положительное число')
+    .optional(),
+);
 
-const createCallSchema = z.object({
+const optionalText = z.preprocess(
+  (v) => (v === '' || v === null ? undefined : v),
+  z.string().max(200).optional(),
+);
+
+const targetSchema = z.object({
+  priceUsd: z
+    .string()
+    .refine((s) => Number.isFinite(Number(s)) && Number(s) > 0, 'Цена цели должна быть числом > 0'),
+  pct: z.number().min(1).max(100),
+});
+
+const callBodySchema = z.object({
   tokenId: z.string(),
   title: z.string().min(3).max(120),
   thesis: z.string().min(20, 'Обоснование обязательно — колл без тезиса это не аналитика'),
   risk: z.enum(['LOW', 'MEDIUM', 'HIGH', 'DEGEN']).default('HIGH'),
-  entryPriceUsd: z.string(),
+  entryPriceUsd: z
+    .string()
+    .refine((s) => Number.isFinite(Number(s)) && Number(s) > 0, 'Некорректная цена входа'),
   targets: z.array(targetSchema).min(1).max(5),
-  stopLossUsd: z.string().optional(),
+  stopLossUsd: optionalDecimal,
   suggestedPct: z.number().min(0.1).max(25).optional(),
-  timeHorizon: z.string().optional(),
+  timeHorizon: optionalText,
   links: z.record(z.string()).optional(),
   isCopyEnabled: z.boolean().default(false),
-  expiresAt: z.coerce.date().optional(),
+  expiresAt: z.preprocess((v) => (v === '' || v === null ? undefined : v), z.coerce.date().optional()),
 });
+
+const createCallSchema = callBodySchema;
 
 export const callRoutes: FastifyPluginAsync = async (app) => {
   /** Публичная лента коллов — то, ради чего пользователи приходят. */
@@ -70,6 +97,116 @@ export const callRoutes: FastifyPluginAsync = async (app) => {
     });
     if (!call || call.status === 'DRAFT') return reply.code(404).send({ error: 'Колл не найден' });
     return call;
+  });
+
+  /** Все коллы админа, включая черновики. */
+  app.get('/admin/calls', { preHandler: [app.requireAdmin] }, async (req) => {
+    const q = z
+      .object({ status: z.string().optional(), limit: z.coerce.number().max(200).default(50) })
+      .parse(req.query);
+
+    const calls = await prisma.call.findMany({
+      where: q.status ? { status: q.status as never } : {},
+      include: { token: true },
+      orderBy: [{ status: 'asc' }, { createdAt: 'desc' }],
+      take: q.limit,
+    });
+
+    return calls.map((c) => {
+      const current = c.token.priceUsd;
+      const pnlPct =
+        current && c.entryPriceUsd.gt(0)
+          ? current.minus(c.entryPriceUsd).div(c.entryPriceUsd).mul(100)
+          : null;
+
+      return {
+        id: c.id,
+        title: c.title,
+        thesis: c.thesis,
+        risk: c.risk,
+        status: c.status,
+        chain: c.chain,
+        tokenId: c.tokenId,
+        symbol: c.token.symbol,
+        entryPriceUsd: c.entryPriceUsd.toString(),
+        currentPriceUsd: current?.toString() ?? null,
+        pnlPct: pnlPct?.toFixed(2) ?? null,
+        targets: c.targets,
+        stopLossUsd: c.stopLossUsd?.toString() ?? null,
+        suggestedPct: c.suggestedPct?.toString() ?? null,
+        timeHorizon: c.timeHorizon,
+        isCopyEnabled: c.isCopyEnabled,
+        peakMultiple: c.peakMultiple?.toString() ?? null,
+        resultPct: c.resultPct?.toString() ?? null,
+        publishedAt: c.publishedAt,
+        createdAt: c.createdAt,
+      };
+    });
+  });
+
+  /** Правка черновика. Опубликованный колл менять нельзя — см. ниже. */
+  app.patch('/admin/calls/:id', { preHandler: [app.requireAdmin] }, async (req, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    const body = callBodySchema.partial().parse(req.body);
+
+    const call = await prisma.call.findUnique({ where: { id } });
+    if (!call) return reply.code(404).send({ error: 'Колл не найден' });
+
+    // Опубликованный колл — это зафиксированное публичное утверждение.
+    // Возможность задним числом поправить цель или цену входа превращает
+    // статистику автора в фикцию, а пользователей, вошедших по старым
+    // цифрам, — в пострадавших. Правится только черновик.
+    if (call.status !== 'DRAFT') {
+      return reply.code(400).send({
+        error: 'Опубликованный колл не редактируется. Закройте его и создайте новый.',
+      });
+    }
+
+    const updated = await prisma.call.update({
+      where: { id },
+      data: {
+        ...(body.title !== undefined ? { title: body.title } : {}),
+        ...(body.thesis !== undefined ? { thesis: body.thesis } : {}),
+        ...(body.risk !== undefined ? { risk: body.risk } : {}),
+        ...(body.entryPriceUsd !== undefined ? { entryPriceUsd: new P.Decimal(body.entryPriceUsd) } : {}),
+        ...(body.targets !== undefined ? { targets: body.targets as never } : {}),
+        ...(body.stopLossUsd !== undefined ? { stopLossUsd: new P.Decimal(body.stopLossUsd) } : {}),
+        ...(body.suggestedPct !== undefined ? { suggestedPct: body.suggestedPct } : {}),
+        ...(body.timeHorizon !== undefined ? { timeHorizon: body.timeHorizon } : {}),
+        ...(body.isCopyEnabled !== undefined ? { isCopyEnabled: body.isCopyEnabled } : {}),
+        ...(body.expiresAt !== undefined ? { expiresAt: body.expiresAt } : {}),
+      },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        actorId: req.user.sub, action: 'call.update', entity: 'Call', entityId: id,
+        before: { title: call.title } as never, after: { title: updated.title } as never, ip: req.ip,
+      },
+    });
+    return updated;
+  });
+
+  /** Удаление черновика. Опубликованные коллы только закрываются. */
+  app.delete('/admin/calls/:id', { preHandler: [app.requireAdmin] }, async (req, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    const call = await prisma.call.findUnique({ where: { id } });
+    if (!call) return reply.code(404).send({ error: 'Колл не найден' });
+
+    if (call.status !== 'DRAFT') {
+      return reply.code(400).send({
+        error: 'Удалять можно только черновики. Опубликованный колл закрывается со статусом результата — история должна оставаться проверяемой.',
+      });
+    }
+
+    await prisma.call.delete({ where: { id } });
+    await prisma.auditLog.create({
+      data: {
+        actorId: req.user.sub, action: 'call.delete', entity: 'Call', entityId: id,
+        before: { title: call.title } as never, ip: req.ip,
+      },
+    });
+    return { ok: true };
   });
 
   /** Создание колла — только админ. */
