@@ -26,7 +26,11 @@ declare module 'fastify' {
 
 export async function buildServer() {
   const app = Fastify({
-    logger,
+    // В Fastify 5 параметр logger принимает только объект настроек.
+    // Готовый экземпляр pino передаётся через loggerInstance — в
+    // четвёртой версии это было одно и то же поле, отсюда и ошибка
+    // «logger options only accepts a configuration object».
+    loggerInstance: logger,
     trustProxy: true,
     // BigInt в JSON: цены токенов и суммы в базовых единицах не влезают в Number.
     bodyLimit: 1_048_576,
