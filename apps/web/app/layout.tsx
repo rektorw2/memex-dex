@@ -20,24 +20,31 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="ru">
       <body>
         <header className="border-b border-border bg-panel/60 backdrop-blur sticky top-0 z-50">
-          <div className="max-w-[1600px] mx-auto px-4 h-14 flex items-center gap-6">
-            <Link href="/" className="font-bold text-lg tracking-tight">
+          <div className="max-w-[1600px] mx-auto px-3 sm:px-4 h-14 flex items-center gap-2 sm:gap-6">
+            <Link href="/" className="font-bold text-lg tracking-tight shrink-0">
               me<span className="text-accent">mex</span>
             </Link>
-            <nav className="flex gap-1 text-sm">
+
+            {/* На узком экране разделы прокручиваются вбок внутри шапки.
+                Перенос на вторую строку сдвигал бы контент вниз при каждом
+                открытии страницы, а сокращать названия до иконок здесь
+                нечем — разделы называются словами. */}
+            <nav className="flex gap-1 text-sm scroll-x flex-1 -mx-1 px-1">
               {nav.map((n) => (
                 <Link
                   key={n.href}
                   href={n.href}
-                  className="px-3 py-1.5 rounded-md text-muted hover:text-white hover:bg-border transition-colors"
+                  className="px-2 sm:px-3 py-1.5 rounded-md text-muted hover:text-white hover:bg-border transition-colors whitespace-nowrap"
                 >
                   {n.label}
                 </Link>
               ))}
             </nav>
-            <div className="ml-auto flex items-center gap-3">
+
+            <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+              {/* Метка режима — справочная, на телефоне место дороже. */}
               <span
-                className="text-xs px-2 py-1 rounded bg-accent/15 text-accent border border-accent/30"
+                className="hidden md:inline text-xs px-2 py-1 rounded bg-accent/15 text-accent border border-accent/30 whitespace-nowrap"
                 title="Ордера исполняются по реальным котировкам, но транзакции в сеть не отправляются"
               >
                 paper mode
@@ -47,7 +54,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </div>
         </header>
 
-        <main className="max-w-[1600px] mx-auto px-4 py-6">{children}</main>
+        <main className="max-w-[1600px] mx-auto px-3 sm:px-4 py-4 sm:py-6 min-w-0">{children}</main>
 
         <footer className="max-w-[1600px] mx-auto px-4 py-8 text-xs text-muted border-t border-border mt-12">
           <p className="max-w-3xl leading-relaxed">

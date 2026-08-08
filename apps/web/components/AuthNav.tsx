@@ -24,13 +24,15 @@ export function AuthNav() {
   }
 
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex items-center gap-1 sm:gap-2">
       {role === 'ADMIN' && (
-        <Link href="/admin" className="text-sm text-accent px-3 py-1.5">
+        <Link href="/admin" className="text-sm text-accent px-2 sm:px-3 py-1.5 whitespace-nowrap">
           Админка
         </Link>
       )}
-      <Link href="/portfolio" className="btn-ghost text-sm">
+      {/* «Кабинет» дублирует раздел «Портфель» в навигации — на телефоне
+          это лишняя кнопка, вытесняющая выход за край экрана. */}
+      <Link href="/portfolio" className="btn-ghost text-sm hidden sm:inline-block whitespace-nowrap">
         Кабинет
       </Link>
       <button
@@ -41,7 +43,7 @@ export function AuthNav() {
           localStorage.removeItem('refreshToken');
           router.push('/login');
         }}
-        className="text-sm text-muted hover:text-white px-2"
+        className="text-sm text-muted hover:text-white px-2 whitespace-nowrap"
       >
         Выйти
       </button>

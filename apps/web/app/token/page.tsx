@@ -66,11 +66,11 @@ function TokenPage() {
       </Link>
 
       {/* Шапка */}
-      <div className="panel p-5">
+      <div className="panel p-4 sm:p-5">
         <div className="flex flex-wrap items-start gap-4">
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="text-2xl font-bold">{t.symbol}</h1>
+              <h1 className="text-xl sm:text-2xl font-bold">{t.symbol}</h1>
               {t.isVerified ? (
                 <span className="text-xs px-2 py-0.5 rounded bg-accent/15 text-accent border border-accent/30">
                   проверен
@@ -88,7 +88,7 @@ function TokenPage() {
           </div>
 
           <div className="ml-auto text-right">
-            <div className="text-3xl num">{fmtPrice(t.priceUsd)}</div>
+            <div className="text-2xl sm:text-3xl num">{fmtPrice(t.priceUsd)}</div>
             {t.priceChange24h != null && (
               <div className={`num ${change >= 0 ? 'text-up' : 'text-down'}`}>
                 {fmtPct(change)} за 24 часа
@@ -107,7 +107,7 @@ function TokenPage() {
           {poolUrl && <ExternalLink href={poolUrl}>GeckoTerminal</ExternalLink>}
           <button
             onClick={() => navigator.clipboard?.writeText(t.address)}
-            className="px-2 py-1 rounded bg-border text-muted hover:text-white font-mono"
+            className="px-2 py-1 rounded bg-border text-muted hover:text-white font-mono break-address text-left"
             title="Скопировать адрес контракта"
           >
             {t.address.slice(0, 6)}…{t.address.slice(-4)}
@@ -251,7 +251,8 @@ function TokenPage() {
             </div>
 
             {data.recentTrades?.length > 0 ? (
-              <table className="w-full text-sm">
+              <div className="scroll-x">
+              <table className="w-full text-sm min-w-[380px]">
                 <thead className="text-xs text-muted border-b border-border">
                   <tr>
                     <th className="text-left font-normal py-2">Время</th>
@@ -278,6 +279,7 @@ function TokenPage() {
                   ))}
                 </tbody>
               </table>
+              </div>
             ) : (
               <p className="text-sm text-muted">Сделок пока не было.</p>
             )}

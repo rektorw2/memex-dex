@@ -26,12 +26,23 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
       })
       .parse(req.query);
 
+    /**
+     * Сортировка по изменению цены требует более строгой отсечки, чем
+     * остальные. В пуле на 20 тысяч долларов одна сделка на тысячу двигает
+     * цену на порядки, и «растущие» без фильтра — это список мёртвых
+     * токенов с ростом на 120000%, а не рынок. Порог поднимаем на порядок
+     * относительно базового и требуем реальный дневной объём.
+     */
+    const isChangeSort = q.sort === 'gainers' || q.sort === 'losers';
+    const liquidityFloor = q.minLiquidity ?? (isChangeSort ? 100_000 : undefined);
+
     const tokens = await prisma.token.findMany({
       where: {
         isHidden: false,
         ...(q.verifiedOnly ? { isVerified: true } : {}),
         ...(q.chain ? { chain: q.chain as never } : {}),
-        ...(q.minLiquidity ? { liquidityUsd: { gte: q.minLiquidity } } : {}),
+        ...(liquidityFloor ? { liquidityUsd: { gte: liquidityFloor } } : {}),
+        ...(isChangeSort ? { volume24hUsd: { gte: 50_000 }, priceChange24h: { not: null } } : {}),
         ...(q.maxRiskScore != null ? { riskScore: { lte: q.maxRiskScore } } : {}),
         ...(q.search
           ? {
@@ -43,9 +54,6 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
             }
           : {}),
       },
-      // Сортировка по gainers без отсечки по ликвидности выносит наверх
-      // мёртвые токены с одной сделкой и ростом на 40000% — фильтр
-      // ликвидности применяется всегда, даже если клиент его не прислал.
       orderBy: [SORTS[q.sort], { volume24hUsd: 'desc' }],
       take: q.limit,
     });

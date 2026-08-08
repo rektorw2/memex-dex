@@ -63,7 +63,7 @@ export default function TerminalPage() {
     <div className="space-y-4">
       {/* Сводка по рынку */}
       {summary && (
-        <div className="flex flex-wrap gap-x-8 gap-y-2 text-sm panel px-4 py-3">
+        <div className="flex flex-wrap gap-x-5 sm:gap-x-8 gap-y-2 text-xs sm:text-sm panel px-3 sm:px-4 py-3">
           <Summary label="Токенов" value={String(summary.tokens)} />
           <Summary label="Объём 24ч" value={fmtUsd(summary.volume24hUsd)} />
           <Summary label="Ликвидность" value={fmtUsd(summary.liquidityUsd)} />
@@ -102,7 +102,7 @@ export default function TerminalPage() {
                 <tr>
                   <th className="text-left font-normal pb-2">Токен</th>
                   <th className="text-right font-normal pb-2">Цена</th>
-                  <th className="text-right font-normal pb-2">24ч</th>
+                  <th className="text-right font-normal pb-2 w-[72px]">24ч</th>
                 </tr>
               </thead>
               <tbody>
@@ -137,7 +137,10 @@ export default function TerminalPage() {
                         </div>
                       </td>
                       <td className="text-right num text-xs">{fmtPrice(t.priceUsd)}</td>
-                      <td className={`text-right num text-xs ${ch >= 0 ? 'text-up' : 'text-down'}`}>
+                      <td
+                        className={`text-right num text-xs whitespace-nowrap ${ch >= 0 ? 'text-up' : 'text-down'}`}
+                        title={t.priceChange24h ?? undefined}
+                      >
                         {t.priceChange24h == null ? '—' : fmtPct(ch)}
                       </td>
                     </tr>
@@ -159,7 +162,7 @@ export default function TerminalPage() {
           <div className="panel p-4">
             {active ? (
               <>
-                <div className="flex flex-wrap items-baseline gap-3 mb-4">
+                <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 mb-4">
                   <Link href={`/token?id=${active.id}`} className="text-xl font-bold hover:text-accent">
                     {active.symbol}
                   </Link>
@@ -210,7 +213,7 @@ export default function TerminalPage() {
                   <Metric label="Риск-скор" value={active.riskScore?.toString() ?? '—'} />
                 </div>
 
-                <div className="mt-3 text-xs text-muted font-mono break-all">
+                <div className="mt-3 text-xs text-muted font-mono break-address">
                   {active.address}
                 </div>
               </>

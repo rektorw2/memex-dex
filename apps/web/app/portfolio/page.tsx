@@ -9,7 +9,7 @@ export default function PortfolioPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold">Портфель</h1>
+      <h1 className="text-xl sm:text-2xl font-bold">Портфель</h1>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <Card label="Стоимость портфеля" value={fmtUsd(p?.totalValueUsd)} />
@@ -24,8 +24,8 @@ export default function PortfolioPage() {
 
       <section>
         <h2 className="font-medium mb-3">Позиции</h2>
-        <div className="panel overflow-auto">
-          <table className="w-full text-sm">
+        <div className="panel scroll-x">
+          <table className="w-full text-sm min-w-[640px]">
             <thead className="text-xs text-muted border-b border-border">
               <tr>
                 <th className="text-left p-3 font-normal">Токен</th>
@@ -67,8 +67,8 @@ export default function PortfolioPage() {
 
       <section>
         <h2 className="font-medium mb-3">История сделок</h2>
-        <div className="panel overflow-auto max-h-[500px]">
-          <table className="w-full text-sm">
+        <div className="panel scroll-x max-h-[500px]">
+          <table className="w-full text-sm min-w-[640px]">
             <thead className="text-xs text-muted border-b border-border sticky top-0 bg-panel">
               <tr>
                 <th className="text-left p-3 font-normal">Дата</th>

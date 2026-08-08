@@ -4,19 +4,47 @@
 
 :root { color-scheme: dark; }
 
+html, body {
+  /* Горизонтальная прокрутка страницы — почти всегда следствие ошибки
+     вёрстки, а не намерения. На телефоне она превращается в постоянное
+     случайное смещение экрана при вертикальном скролле. */
+  overflow-x: hidden;
+  max-width: 100vw;
+}
+
 body {
   @apply bg-bg text-white antialiased;
   font-feature-settings: 'tnum';
 }
 
-/* Числа в таблицах должны быть моноширинными — иначе колонки «плывут»
+/* Числа в таблицах моноширинные — иначе колонки «плывут»
    и глаз не может быстро сравнить цены. */
 .num { @apply font-mono tabular-nums; }
 
-.panel { @apply bg-panel border border-border rounded-lg; }
+.panel { @apply bg-panel border border-border rounded-lg min-w-0; }
 .btn { @apply px-4 py-2 rounded-md font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed; }
 .btn-buy { @apply btn bg-up/90 hover:bg-up text-white; }
 .btn-sell { @apply btn bg-down/90 hover:bg-down text-white; }
 .btn-ghost { @apply btn bg-border hover:bg-border/70 text-white; }
 .input { @apply w-full bg-bg border border-border rounded-md px-3 py-2 num focus:outline-none focus:border-accent; }
 .label { @apply text-xs text-muted mb-1 block; }
+
+/* Элементы flex и grid по умолчанию не сжимаются меньше своего содержимого:
+   одно длинное число или адрес контракта распирает всю сетку. */
+.grid > *,
+.flex > * { min-width: 0; }
+
+/* Горизонтальная прокрутка внутри контейнера, а не всей страницы. */
+.scroll-x {
+  @apply overflow-x-auto;
+  scrollbar-width: thin;
+  -webkit-overflow-scrolling: touch;
+}
+.scroll-x::-webkit-scrollbar { height: 4px; }
+.scroll-x::-webkit-scrollbar-thumb { @apply bg-border rounded; }
+
+/* Длинные адреса контрактов переносятся, а не выталкивают контейнер. */
+.break-address {
+  word-break: break-all;
+  overflow-wrap: anywhere;
+}

@@ -137,8 +137,22 @@ export function fmtPrice(v: string | number | null | undefined): string {
   return `$0.0${sub}${digits}`;
 }
 
+/**
+ * Процент изменения в компактной записи.
+ *
+ * У мем-коинов рост за сутки бывает четырёхзначным, и «+120913.90%»
+ * растягивает колонку так, что таблица уезжает за экран телефона.
+ * Сокращаем до «+120.9K%» — читаемость от этого только выигрывает:
+ * точность до сотых при росте в тысячу раз всё равно бессмысленна.
+ */
 export function fmtPct(v: string | number | null | undefined): string {
   const n = Number(v ?? 0);
   if (!Number.isFinite(n)) return '—';
-  return `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`;
+
+  const sign = n >= 0 ? '+' : '-';
+  const abs = Math.abs(n);
+
+  if (abs >= 1_000_000) return `${sign}${(abs / 1_000_000).toFixed(1)}M%`;
+  if (abs >= 1_000) return `${sign}${(abs / 1_000).toFixed(1)}K%`;
+  return `${sign}${abs.toFixed(2)}%`;
 }

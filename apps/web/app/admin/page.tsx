@@ -11,7 +11,7 @@ export default function AdminPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold">Админ-панель</h1>
+      <h1 className="text-xl sm:text-2xl font-bold">Админ-панель</h1>
 
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
         <Metric label="Пользователей" value={overview?.users ?? '—'} />
@@ -22,13 +22,13 @@ export default function AdminPage() {
         <Metric label="Выплаты лидерам" value={fmtUsd(overview?.leaderPayoutsUsd)} />
       </div>
 
-      <div className="flex gap-1 border-b border-border">
+      <div className="flex gap-1 border-b border-border scroll-x">
         {([['calls', 'Коллы'], ['tokens', 'Токены'], ['withdrawals', `Выводы (${overview?.pendingWithdrawals ?? 0})`]] as const).map(
           ([k, label]) => (
             <button
               key={k}
               onClick={() => setTab(k)}
-              className={`px-4 py-2 text-sm border-b-2 -mb-px ${
+              className={`px-3 sm:px-4 py-2 text-sm border-b-2 -mb-px whitespace-nowrap ${
                 tab === k ? 'border-accent text-accent' : 'border-transparent text-muted hover:text-white'
               }`}
             >
@@ -43,7 +43,7 @@ export default function AdminPage() {
       {tab === 'withdrawals' && (
         <div className="panel divide-y divide-border">
           {withdrawals?.map((w) => (
-            <div key={w.id} className="p-4 flex items-center gap-4">
+            <div key={w.id} className="p-4 flex flex-wrap items-center gap-3">
               <div className="flex-1">
                 <div className="num">{w.amount} → {w.toAddress.slice(0, 16)}…</div>
                 <div className="text-xs text-muted">
@@ -388,7 +388,7 @@ function TokenLister() {
         <h2 className="font-medium mb-3">
           В витрине: {tokens?.length ?? 0}
         </h2>
-        <div className="max-h-[600px] overflow-auto">
+        <div className="max-h-[600px] overflow-y-auto scroll-x">
           <table className="w-full text-sm">
             <thead className="text-xs text-muted sticky top-0 bg-panel">
               <tr>

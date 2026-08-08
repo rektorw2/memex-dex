@@ -36,8 +36,8 @@ export default function CallsPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-baseline gap-4">
-        <h1 className="text-2xl font-bold">Коллы</h1>
+      <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+        <h1 className="text-xl sm:text-2xl font-bold">Коллы</h1>
         <p className="text-sm text-muted">
           Проекты с потенциалом роста, отобранные аналитиками платформы
         </p>

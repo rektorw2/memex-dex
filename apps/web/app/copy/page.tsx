@@ -19,7 +19,7 @@ export default function CopyPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold">Копитрейдинг</h1>
+        <h1 className="text-xl sm:text-2xl font-bold">Копитрейдинг</h1>
         <p className="text-sm text-muted mt-1">
           Ваши сделки повторяют сделки выбранного трейдера автоматически.
           Комиссия — 10% от прибыли, только при выходе из прибыльной позиции.
@@ -60,7 +60,7 @@ export default function CopyPage() {
           <h2 className="font-medium mb-3">Мои подписки</h2>
           <div className="panel divide-y divide-border">
             {subs.subscriptions.map((s: any) => (
-              <div key={s.id} className="p-4 flex items-center gap-4">
+              <div key={s.id} className="p-4 flex flex-wrap items-center gap-3">
                 <div className="flex-1">
                   <div className="font-mono text-sm">{s.leaderId.slice(0, 12)}…</div>
                   <div className="text-xs text-muted">
@@ -129,8 +129,8 @@ export default function CopyPage() {
           <h2 className="font-medium mb-3">
             Удержанные комиссии — {fmtUsd(fees.totalPaidUsd)}
           </h2>
-          <div className="panel overflow-auto">
-            <table className="w-full text-sm">
+          <div className="panel scroll-x">
+            <table className="w-full text-sm min-w-[420px]">
               <thead className="text-xs text-muted border-b border-border">
                 <tr>
                   <th className="text-left p-3 font-normal">Дата</th>
