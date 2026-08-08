@@ -1,9 +1,13 @@
 FROM node:22-alpine AS deps
 WORKDIR /app
 RUN apk add --no-cache libc6-compat
+# Нужны package.json всех воркспейсов из корневого package.json —
+# npm ci сверяет дерево с lock-файлом целиком и падает, если какой-то
+# из объявленных воркспейсов отсутствует на диске.
 COPY package.json package-lock.json ./
 COPY packages/core/package.json packages/core/
 COPY packages/shared/package.json packages/shared/
+COPY apps/api/package.json apps/api/
 COPY apps/web/package.json apps/web/
 RUN npm ci --ignore-scripts
 
