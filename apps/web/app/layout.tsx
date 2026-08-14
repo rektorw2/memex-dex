@@ -11,8 +11,10 @@ export const metadata: Metadata = {
 const nav = [
   { href: '/', label: 'Терминал' },
   { href: '/calls', label: 'Коллы' },
+  { href: '/radar', label: 'Радар' },
   { href: '/copy', label: 'Копитрейдинг' },
   { href: '/portfolio', label: 'Портфель' },
+  { href: '/wallet', label: 'Кошельки' },
 ];
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

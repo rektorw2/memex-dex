@@ -148,6 +148,22 @@ const schema = z.object({
   GEMINI_API_KEY: optional(z.string()),
   GEMINI_MODEL: z.string().default('gemini-2.5-flash'),
 
+  /**
+   * Учётные данные Web3 API OKX для радара новых токенов.
+   * Регистрация бесплатна: web3.okx.com → Developer Portal.
+   * Без них радар работает на бесплатном источнике GeckoTerminal.
+   */
+  OKX_API_KEY: optional(z.string()),
+  OKX_API_SECRET: optional(z.string()),
+  OKX_PASSPHRASE: optional(z.string()),
+  OKX_PROJECT_ID: optional(z.string()),
+
+  /** Токен бота Telegram для уведомлений радара. Получить у @BotFather. */
+  TELEGRAM_BOT_TOKEN: optional(z.string()),
+
+  /** Порог ликвидности, ниже которого радар не уведомляет вообще. */
+  RADAR_MIN_LIQUIDITY_USD: z.coerce.number().default(20_000),
+
   JUPITER_API_URL: z.string().url().default('https://quote-api.jup.ag/v6'),
   ZEROX_API_URL: z.string().url().default('https://api.0x.org'),
   ZEROX_API_KEY: optional(z.string()),

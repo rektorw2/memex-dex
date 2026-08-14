@@ -17,6 +17,8 @@ import { copyRoutes } from './modules/copytrade.js';
 import { portfolioRoutes } from './modules/portfolio.js';
 import { adminRoutes } from './modules/admin.js';
 import { tokenRoutes } from './modules/tokens.js';
+import { walletRoutes } from './modules/wallets.js';
+import { radarRoutes } from './modules/radar.js';
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -132,6 +134,8 @@ export async function buildServer() {
   await app.register(callRoutes, { prefix: '/api/v1' });
   await app.register(copyRoutes, { prefix: '/api/v1' });
   await app.register(portfolioRoutes, { prefix: '/api/v1' });
+  await app.register(walletRoutes, { prefix: '/api/v1' });
+  await app.register(radarRoutes, { prefix: '/api/v1' });
   await app.register(adminRoutes, { prefix: '/api/v1' });
 
   return app;
@@ -146,12 +150,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // динамический: при выключенном флаге модули даже не загружаются.
   let stopWorkers: (() => void) | null = null;
   if (env.RUN_WORKERS_IN_API) {
-    const [limit, price, copy, importer, candles] = await Promise.all([
+    const [limit, price, copy, importer, candles, radar] = await Promise.all([
       import('./workers/limit-watcher.js'),
       import('./workers/price-updater.js'),
       import('./workers/copy-executor.js'),
       import('./workers/token-importer.js'),
       import('./workers/candle-builder.js'),
+      import('./workers/radar-scanner.js'),
     ]);
 
     price.startPriceUpdater();
@@ -159,6 +164,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     copy.startCopyExecutor();
     importer.startTokenImporter();
     candles.startCandleBuilder();
+    radar.startRadarScanner();
 
     stopWorkers = () => {
       price.stopPriceUpdater();
@@ -166,6 +172,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       copy.stopCopyExecutor();
       importer.stopTokenImporter();
       candles.stopCandleBuilder();
+      radar.stopRadarScanner();
     };
 
     app.log.warn(

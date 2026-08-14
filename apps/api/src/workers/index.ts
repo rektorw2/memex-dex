@@ -3,6 +3,7 @@ import { startPriceUpdater, stopPriceUpdater } from './price-updater.js';
 import { startCopyExecutor, stopCopyExecutor } from './copy-executor.js';
 import { startTokenImporter, stopTokenImporter } from './token-importer.js';
 import { startCandleBuilder, stopCandleBuilder } from './candle-builder.js';
+import { startRadarScanner, stopRadarScanner } from './radar-scanner.js';
 import { logger } from '../lib/logger.js';
 import { prisma } from '../lib/prisma.js';
 
@@ -11,6 +12,7 @@ startLimitWatcher();
 startCopyExecutor();
 startTokenImporter();
 startCandleBuilder();
+startRadarScanner();
 
 const shutdown = async () => {
   logger.info('останавливаем воркеры');
@@ -19,6 +21,7 @@ const shutdown = async () => {
   stopCopyExecutor();
   stopTokenImporter();
   stopCandleBuilder();
+  stopRadarScanner();
   await prisma.$disconnect();
   process.exit(0);
 };

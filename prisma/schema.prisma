@@ -51,6 +51,10 @@ model User {
   passwordHash String
   totpSecret   String? // 2FA, обязателен для вывода средств
   role         UserRole  @default(USER)
+
+  /** Чат Telegram для уведомлений радара. Привязывается кодом из бота. */
+  telegramChatId String?
+  telegramLinkCode String? @unique
   kycStatus    KycStatus @default(NONE)
   kycRef       String? // id провайдера (Sumsub/Persona)
   isFrozen     Boolean   @default(false)
@@ -69,6 +73,7 @@ model User {
   calls         Call[]
   sessions      Session[]
   auditLogs     AuditLog[]
+  radarSubs     RadarSubscription[]
 
   @@index([role])
 }
@@ -431,6 +436,81 @@ model TokenResearch {
   updatedAt DateTime @updatedAt
 
   @@index([updatedAt])
+}
+
+// ──────────────────────────── Радар новых токенов ───────────────────────────
+
+/**
+ * Обнаруженный новый токен.
+ *
+ * Отдельная таблица, а не флаг у Token: радар видит гораздо больше, чем
+ * попадает в витрину. Большинство новых пулов — мусор, который не должен
+ * засорять список торгуемых токенов, но должен остаться в истории, чтобы
+ * не уведомлять об одном и том же дважды.
+ */
+model RadarEvent {
+  id      String @id @default(cuid())
+  chain   Chain
+  address String
+  symbol  String
+  name    String
+
+  poolAddress   String?
+  priceUsd      Decimal? @db.Decimal(38, 18)
+  liquidityUsd  Decimal? @db.Decimal(24, 8)
+  volume24hUsd  Decimal? @db.Decimal(24, 8)
+  fdvUsd        Decimal? @db.Decimal(24, 8)
+  /** Возраст пула на момент обнаружения, часы. */
+  poolAgeHours  Decimal? @db.Decimal(12, 4)
+
+  /** Кто нашёл: okx | geckoterminal. */
+  source     String
+  riskScore  Int?
+  riskFlags  Json?
+
+  /** Уведомления по событию уже разосланы. */
+  notified   Boolean  @default(false)
+  /** Токен заведён в витрину по этому событию. */
+  listedTokenId String?
+
+  firstSeenAt DateTime @default(now())
+
+  @@unique([chain, address])
+  @@index([firstSeenAt])
+  @@index([notified, riskScore])
+}
+
+enum RadarChannel {
+  IN_APP
+  TELEGRAM
+}
+
+/** Подписка пользователя на уведомления радара со своими порогами. */
+model RadarSubscription {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  channel RadarChannel @default(IN_APP)
+  isActive Boolean     @default(true)
+
+  chains          Chain[]
+  minLiquidityUsd Decimal? @db.Decimal(24, 8)
+  minVolume24hUsd Decimal? @db.Decimal(24, 8)
+  maxRiskScore    Int?
+  /** Не уведомлять о пулах старше указанного возраста. */
+  maxPoolAgeHours Int?
+
+  /** Защита от лавины: не больше указанного числа сообщений в час. */
+  maxAlertsPerHour Int      @default(20)
+  sentLastHour     Int      @default(0)
+  windowStartedAt  DateTime @default(now())
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, channel])
+  @@index([isActive])
 }
 
 // ─────────────────────────── Коллы (сигналы админа) ─────────────────────────
