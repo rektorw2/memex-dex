@@ -15,8 +15,6 @@ RUN apt-get update \
 
 # npm ci восстанавливает дерево строго по package-lock.json, поэтому ему
 # нужны package.json ВСЕХ воркспейсов, объявленных в корневом package.json.
-# Пропущенный apps/web ломал установку: lock-файл содержит @memex/web,
-# а на диске его нет — npm считает дерево рассинхронизированным.
 COPY package.json package-lock.json ./
 COPY packages/core/package.json packages/core/
 COPY packages/shared/package.json packages/shared/
@@ -28,9 +26,12 @@ COPY apps/web/package.json apps/web/
 RUN npm ci --ignore-scripts
 
 # argon2 — нативный модуль, и его бинарь ставится именно install-скриптом.
-# Без явной пересборки приложение падает на первом же хешировании пароля
-# с ошибкой «Could not locate the bindings file».
+# Без явной пересборки приложение падает на первом же хешировании пароля.
 RUN npm rebuild argon2
+
+# Каталоги вложенных зависимостей должны существовать, даже когда npm всё
+# поднял в корень: COPY с несуществующим путём обрывает сборку.
+RUN mkdir -p apps/api/node_modules packages/core/node_modules
 
 FROM node:22-slim AS build
 WORKDIR /app
@@ -39,7 +40,18 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends openssl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
-COPY --from=deps /app/node_modules ./node_modules
+# Копируется всё дерево зависимостей целиком, включая вложенные
+# node_modules воркспейсов.
+#
+# Иначе теряются пакеты, которые npm не смог поднять в корень из-за
+# конфликта версий: @fastify/jwt 10 требует fastify-plugin 6, тогда как
+# в корне стоит 5, и он оседает в apps/api/node_modules. Сборка падала
+# с «Cannot find module '@fastify/jwt'», а следом сыпались все места
+# с req.user — расширение типов объявлено внутри этого модуля.
+COPY --from=deps /app ./
+
+# .dockerignore исключает node_modules, поэтому исходники накладываются
+# поверх, не затирая установленные зависимости.
 COPY . .
 
 # Запас памяти для компилятора: сборщики на бесплатных тарифах дают
@@ -63,6 +75,9 @@ RUN apt-get update \
 ENV NODE_ENV=production
 
 COPY --from=build /app/node_modules ./node_modules
+# Вложенные зависимости воркспейса нужны и в рантайме — там лежит
+# в том числе @fastify/jwt.
+COPY --from=build /app/apps/api/node_modules ./apps/api/node_modules
 COPY --from=build /app/packages/core/dist ./packages/core/dist
 COPY --from=build /app/packages/core/package.json ./packages/core/
 COPY --from=build /app/packages/shared ./packages/shared
