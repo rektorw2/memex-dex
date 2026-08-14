@@ -42,6 +42,11 @@ RUN apt-get update \
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
+# Запас памяти для компилятора: сборщики на бесплатных тарифах дают
+# около 512 МБ, а tsc на проекте с крупными пакетами типов упирается
+# в предел кучи и падает с кодом 2 без внятного сообщения.
+ENV NODE_OPTIONS=--max-old-space-size=1536
+
 RUN npx prisma generate --schema=prisma/schema.prisma \
  && npm run build -w @memex/core \
  && npm run build -w @memex/api

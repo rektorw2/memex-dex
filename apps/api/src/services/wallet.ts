@@ -1,6 +1,8 @@
 import { Keypair } from '@solana/web3.js';
 import bs58 from 'bs58';
-import { privateKeyToAccount, generatePrivateKey } from 'viem/accounts';
+import { secp256k1 } from '@noble/curves/secp256k1';
+import { keccak_256 } from '@noble/hashes/sha3';
+import { randomBytes } from 'node:crypto';
 import type { Chain } from '@prisma/client';
 import { prisma } from '../lib/prisma.js';
 import { encryptPrivateKey } from '../lib/crypto.js';
@@ -35,10 +37,46 @@ function generateSolana(): KeyMaterial {
   return { address: kp.publicKey.toBase58(), secret: kp.secretKey };
 }
 
+/**
+ * Адрес EVM из приватного ключа.
+ *
+ * Берём @noble/curves вместо viem: оттуда нужны ровно две операции, а
+ * граф типов viem весит under 57 МБ и укладывал компилятор на сборщике
+ * с ограниченной памятью. Реализация ниже — это буквально определение
+ * из спецификации: последние 20 байт keccak256 от несжатого публичного
+ * ключа без префиксного байта.
+ */
+function evmAddressFromSecret(secret: Uint8Array): string {
+  // false = несжатый формат: 0x04 + X(32) + Y(32). Префикс отбрасывается.
+  const pub = secp256k1.getPublicKey(secret, false).slice(1);
+  const hash = keccak_256(pub);
+  return toChecksumAddress(Buffer.from(hash.slice(-20)).toString('hex'));
+}
+
+/**
+ * Контрольная сумма адреса по EIP-55: регистр букв кодирует хеш адреса.
+ * Без неё опечатка в адресе не обнаруживается, а средства уходят в никуда.
+ */
+function toChecksumAddress(hexNoPrefix: string): string {
+  const lower = hexNoPrefix.toLowerCase();
+  const hash = Buffer.from(keccak_256(Buffer.from(lower, 'utf8'))).toString('hex');
+
+  let out = '0x';
+  for (let i = 0; i < lower.length; i++) {
+    out += parseInt(hash[i]!, 16) >= 8 ? lower[i]!.toUpperCase() : lower[i]!;
+  }
+  return out;
+}
+
 function generateEvm(): KeyMaterial {
-  const pk = generatePrivateKey(); // 0x + 64 hex
-  const account = privateKeyToAccount(pk);
-  return { address: account.address, secret: Buffer.from(pk.slice(2), 'hex') };
+  // secp256k1 требует ключ в диапазоне [1, n-1]; библиотека это проверяет,
+  // поэтому перебираем до валидного вместо ручной арифметики.
+  let secret: Uint8Array;
+  do {
+    secret = new Uint8Array(randomBytes(32));
+  } while (!secp256k1.utils.isValidPrivateKey(secret));
+
+  return { address: evmAddressFromSecret(secret), secret };
 }
 
 /**
@@ -79,8 +117,12 @@ function parseEvmKey(input: string): KeyMaterial {
     throw new Error('Приватный ключ EVM должен быть 64 шестнадцатеричных символа');
   }
 
-  const account = privateKeyToAccount(hex as `0x${string}`);
-  return { address: account.address, secret: Buffer.from(hex.slice(2), 'hex') };
+  const secret = new Uint8Array(Buffer.from(hex.slice(2), 'hex'));
+  if (!secp256k1.utils.isValidPrivateKey(secret)) {
+    throw new Error('Ключ вне допустимого диапазона кривой secp256k1');
+  }
+
+  return { address: evmAddressFromSecret(secret), secret };
 }
 
 /** Затирание секрета в памяти. Не даёт гарантий на уровне ОС, но убирает
