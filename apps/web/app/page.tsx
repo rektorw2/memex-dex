@@ -30,10 +30,12 @@ export default function TerminalPage() {
   const [interval, setInterval] = useState<string>('5m');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [tab, setTab] = useState<'market' | 'chart' | 'portfolio'>('market');
+  const [safeOnly, setSafeOnly] = useState(false);
 
   const params = new URLSearchParams({ sort, limit: '60' });
   if (chain) params.set('chain', chain);
   if (search) params.set('search', search);
+  if (safeOnly) params.set('safeOnly', 'true');
 
   const { data: tokens, isLoading } = useSWR<Token[]>(`/tokens?${params}`, fetcher, {
     refreshInterval: 20_000,
@@ -41,6 +43,12 @@ export default function TerminalPage() {
   });
 
   const { data: summary } = useSWR<any>('/market/summary', fetcher, { refreshInterval: 60_000 });
+
+  // Состояние проверки: без него короткий список читается как «ничего
+  // нет», хотя на самом деле проверка ещё идёт.
+  const { data: checkStatus } = useSWR<{
+    total: number; ok: number; warn: number; blocked: number; unchecked: number;
+  }>('/tokens/check-status', fetcher, { refreshInterval: 60_000 });
 
   const active =
     tokens?.find((t) => t.id === selectedId) ?? tokens?.find((t) => !t.isQuote) ?? null;
@@ -72,6 +80,9 @@ export default function TerminalPage() {
       setSort={setSort}
       search={search}
       setSearch={setSearch}
+      safeOnly={safeOnly}
+      setSafeOnly={setSafeOnly}
+      checkStatus={checkStatus}
     />
   );
 
@@ -248,6 +259,9 @@ function Filters({
   setSort,
   search,
   setSearch,
+  safeOnly,
+  setSafeOnly,
+  checkStatus,
 }: {
   chain: string;
   setChain: (v: string) => void;
@@ -255,6 +269,9 @@ function Filters({
   setSort: (v: string) => void;
   search: string;
   setSearch: (v: string) => void;
+  safeOnly: boolean;
+  setSafeOnly: (v: boolean) => void;
+  checkStatus?: { total: number; ok: number; warn: number; blocked: number; unchecked: number };
 }) {
   return (
     <div className="space-y-2">
@@ -312,7 +329,26 @@ function Filters({
             {label}
           </button>
         ))}
+
+        <button
+          onClick={() => setSafeOnly(!safeOnly)}
+          title="Только токены, прошедшие проверку контракта без замечаний"
+          className={`tap shrink-0 rounded-md px-2.5 py-1 text-xs transition-colors ${
+            safeOnly ? 'bg-up/15 text-up' : 'text-muted hover:bg-raised hover:text-white'
+          }`}
+        >
+          Проверенные
+        </button>
       </div>
+
+      {/* Состояние проверки. Показывается только пока она не закончена:
+          у готовой витрины эта строка была бы шумом. */}
+      {checkStatus && checkStatus.unchecked > 0 && (
+        <p className="text-muted text-[11px] leading-relaxed">
+          Проверено {checkStatus.total - checkStatus.unchecked} из {checkStatus.total} токенов.
+          Скрыто как ловушки: {checkStatus.blocked}.
+        </p>
+      )}
     </div>
   );
 }

@@ -1,10 +1,23 @@
 import { Prisma as P } from '@prisma/client';
-import { checkScam, type ScamSignals } from '@memex/core';
+import {
+  checkScam,
+  checkImpersonation,
+  checkSanity,
+  crossCheck,
+  judgeRoundTrip,
+  type ScamSignals,
+  type SourceReading,
+} from '@memex/core';
 import { prisma } from '../lib/prisma.js';
 import { logger } from '../lib/logger.js';
 import { fetchSecurityFacts } from '../services/token-intel.js';
 import { fetchTokenPair, isDexScreenerSupported } from '../services/dexscreener.js';
-import { fetchOkxTokenDetail, isOkxConfigured, isOkxSupported } from '../services/okx.js';
+import {
+  fetchOkxTokenDetail,
+  checkRoundTrip,
+  isOkxConfigured,
+  isOkxSupported,
+} from '../services/okx.js';
 
 /**
  * Проверка токенов витрины на очевидные ловушки.
@@ -69,6 +82,11 @@ export async function checkBatch(limit = BATCH): Promise<CheckResult> {
 
   const result: CheckResult = { checked: 0, blocked: 0, warned: 0, ok: 0 };
 
+  // Одноимённые токены считаются одним запросом на всю пачку: три NVDA
+  // с разными адресами — это не совпадение, а рассылка шаблона, и увидеть
+  // её можно только глядя на витрину целиком, а не на токен по отдельности.
+  const clones = await countClones(tokens.map((t) => t.symbol));
+
   for (const token of tokens) {
     try {
       const [security, pair, okx] = await Promise.all([
@@ -81,24 +99,53 @@ export async function checkBatch(limit = BATCH): Promise<CheckResult> {
           : Promise.resolve(null),
       ]);
 
-      // Ликвидность берём наибольшую из известных: разные источники
-      // видят разные пулы, и заниженное значение привело бы к блокировке
-      // токена, у которого ликвидность на самом деле есть.
-      const liquidityUsd = maxOf([
-        token.liquidityUsd != null ? Number(token.liquidityUsd) : null,
-        pair?.liquidityUsd ?? null,
-        okx?.liquidityUsd ?? null,
-      ]);
-
-      const volume24hUsd = maxOf([
-        token.volume24hUsd != null ? Number(token.volume24hUsd) : null,
-        pair?.volume24hUsd ?? null,
-        okx?.volume24hUsd ?? null,
-      ]);
-
       const poolAgeHours = pair?.pairCreatedAt
         ? (Date.now() - pair.pairCreatedAt.getTime()) / 3_600_000
         : null;
+
+      // ─── Сверка источников ────────────────────────────────────────
+      // Раньше здесь брался максимум из известных значений, и это было
+      // ошибкой: достаточно одному источнику ошибиться в большую
+      // сторону, чтобы завышенное число прошло дальше. Ровно так
+      // в витрину попал токен с ликвидностью в три с половиной
+      // миллиарда долларов на Base.
+      //
+      // Теперь источники проверяют друг друга. У настоящего токена они
+      // видят один пул и сообщают близкие числа; расхождение в разы
+      // означает, что как минимум один читает подделку.
+      const readings: SourceReading[] = [
+        {
+          source: 'GeckoTerminal',
+          priceUsd: token.priceUsd != null ? Number(token.priceUsd) : null,
+          liquidityUsd: token.liquidityUsd != null ? Number(token.liquidityUsd) : null,
+          volume24hUsd: token.volume24hUsd != null ? Number(token.volume24hUsd) : null,
+        },
+      ];
+
+      if (isDexScreenerSupported(token.chain)) {
+        readings.push({
+          source: 'DexScreener',
+          priceUsd: pair?.priceUsd ?? null,
+          liquidityUsd: pair?.liquidityUsd ?? null,
+          volume24hUsd: pair?.volume24hUsd ?? null,
+        });
+      }
+
+      if (isOkxConfigured() && isOkxSupported(token.chain)) {
+        readings.push({
+          source: 'OKX',
+          priceUsd: okx?.priceUsd ?? null,
+          liquidityUsd: okx?.liquidityUsd ?? null,
+          volume24hUsd: okx?.volume24hUsd ?? null,
+        });
+      }
+
+      const cross = crossCheck(readings, { poolAgeHours });
+
+      // Дальше в расчёт идут согласованные значения — медиана,
+      // а не максимум.
+      const liquidityUsd = cross.agreed.liquidityUsd;
+      const volume24hUsd = cross.agreed.volume24hUsd;
 
       const signals: ScamSignals = {
         isHoneypot: security?.isHoneypot ?? null,
@@ -123,6 +170,105 @@ export async function checkBatch(limit = BATCH): Promise<CheckResult> {
 
       const decision = checkScam(signals);
 
+      // ─── Подделки и клоны ─────────────────────────────────────────
+      // Проверка контракта этот класс не ловит вовсе: у токена может
+      // быть всё в порядке с эмиссией и налогами, и при этом он
+      // называется NVDA и выдаёт себя за акцию NVIDIA.
+      const clone = clones.get(token.symbol.toUpperCase()) ?? {
+        count: 1,
+        maxLiquidity: null,
+      };
+
+      const imp = checkImpersonation({
+        symbol: token.symbol,
+        name: token.name,
+        sameSymbolCount: clone.count,
+        liquidityUsd,
+        maxSameSymbolLiquidityUsd: clone.maxLiquidity,
+      });
+
+      const sanity = checkSanity({
+        liquidityUsd,
+        volume24hUsd,
+        fdvUsd: token.fdvUsd != null ? Number(token.fdvUsd) : null,
+        priceChange24h: token.priceChange24h != null ? Number(token.priceChange24h) : null,
+      });
+
+      // Присвоение чужого тикера и заведомо ложные числа блокируют
+      // независимо от состояния контракта: покупка такого токена —
+      // это всегда покупка по недоразумению.
+      if (imp.impersonatesKnown) {
+        decision.verdict = 'BLOCK';
+        decision.blockers.unshift(imp.reasons[0]!);
+        decision.score = 100;
+      } else if (sanity.length > 0) {
+        decision.verdict = 'BLOCK';
+        decision.blockers.unshift(sanity[0]!);
+        decision.score = 100;
+      } else if (imp.isMinorClone) {
+        // Младший клон не блокируем: он может оказаться и настоящим.
+        // Но показывать его наравне с крупнейшим одноимённым нельзя.
+        if (decision.verdict === 'OK') decision.verdict = 'WARN';
+        decision.warnings.unshift(...imp.reasons);
+        decision.score = Math.min(100, decision.score + 30);
+      } else if (imp.hasClones) {
+        if (decision.verdict === 'OK') decision.verdict = 'WARN';
+        decision.warnings.push(...imp.reasons);
+        decision.score = Math.min(100, decision.score + 10);
+      }
+
+      if (decision.verdict !== 'BLOCK' && sanity.length > 0) {
+        decision.warnings.push(...sanity);
+      }
+
+      // Расхождение источников блокирует само по себе: если числа
+      // не сходятся, любая проверка по ним теряет смысл.
+      if (cross.blockers.length > 0) {
+        decision.verdict = 'BLOCK';
+        decision.blockers.unshift(...cross.blockers);
+        decision.score = 100;
+      } else if (cross.warnings.length > 0) {
+        if (decision.verdict === 'OK') decision.verdict = 'WARN';
+        decision.warnings.push(...cross.warnings);
+        decision.score = Math.min(100, decision.score + 15);
+      }
+
+      // ─── Замер выхода через агрегатор OKX ──────────────────────────
+      //
+      // Самая сильная проверка и самая дорогая: два запроса на токен.
+      // Поэтому применяется только к тем, кто прошёл всё остальное —
+      // тратить лимит агрегатора на токен, уже заблокированный
+      // по контракту, незачем.
+      //
+      // Все прочие проверки косвенные: списки отвечают «признаков
+      // не нашли», счётчики — «никто не продавал». Эта отвечает
+      // на сам вопрос: сколько вернётся, если выйти сейчас.
+      let roundTrip: ReturnType<typeof judgeRoundTrip> | null = null;
+
+      if (
+        decision.verdict !== 'BLOCK' &&
+        isOkxConfigured() &&
+        isOkxSupported(token.chain)
+      ) {
+        const rt = await checkRoundTrip(token.chain, token.address).catch(() => null);
+
+        if (rt) {
+          roundTrip = judgeRoundTrip(rt);
+
+          if (roundTrip.verdict === 'BLOCK') {
+            decision.verdict = 'BLOCK';
+            decision.blockers.unshift(roundTrip.reason);
+            decision.score = 100;
+          } else if (roundTrip.verdict === 'WARN') {
+            if (decision.verdict === 'OK') decision.verdict = 'WARN';
+            decision.warnings.push(roundTrip.reason);
+            decision.score = Math.min(100, decision.score + 20);
+          }
+          // UNKNOWN не меняет вердикт: неудавшийся замер — это
+          // отсутствие сведений, а не сведения об отсутствии проблем.
+        }
+      }
+
       await prisma.token.update({
         where: { id: token.id },
         data: {
@@ -134,6 +280,17 @@ export async function checkBatch(limit = BATCH): Promise<CheckResult> {
               goplus: Boolean(security?.source),
               dexscreener: Boolean(pair),
               okx: Boolean(okx),
+              // Согласие источников — часть объяснения вердикта:
+              // «цена подтверждена тремя» и «известен одному» это
+              // разные основания доверять числу.
+              known: cross.known,
+              queried: cross.queried,
+              priceSpread: cross.priceSpread,
+              // Измеренная стоимость выхода — самое конкретное, что
+              // мы знаем о токене, и её стоит хранить отдельно.
+              roundTrip: roundTrip
+                ? { verdict: roundTrip.verdict, lossPct: roundTrip.lossPct }
+                : null,
             },
           } as unknown as P.InputJsonValue,
           scamCheckedAt: new Date(),
@@ -158,6 +315,12 @@ export async function checkBatch(limit = BATCH): Promise<CheckResult> {
                   socials: pair.socials,
                 } as unknown as P.InputJsonValue,
               }
+            : {}),
+          // В базу идут согласованные значения: показывать в терминале
+          // число, которое подтвердил один источник из трёх, значит
+          // выдавать догадку за факт.
+          ...(cross.agreed.priceUsd != null
+            ? { priceUsd: new P.Decimal(cross.agreed.priceUsd) }
             : {}),
           ...(liquidityUsd != null ? { liquidityUsd: new P.Decimal(liquidityUsd) } : {}),
           ...(volume24hUsd != null ? { volume24hUsd: new P.Decimal(volume24hUsd) } : {}),
@@ -195,9 +358,45 @@ export async function checkBatch(limit = BATCH): Promise<CheckResult> {
   return result;
 }
 
-function maxOf(values: Array<number | null>): number | null {
-  const known = values.filter((v): v is number => v != null && Number.isFinite(v) && v > 0);
-  return known.length > 0 ? Math.max(...known) : null;
+/**
+ * Число одноимённых токенов и наибольшая ликвидность среди них.
+ *
+ * Считается по всей витрине, а не по проверяемой пачке: клон мог быть
+ * заведён неделю назад и в текущую пачку не попасть, а сравнивать
+ * нужно именно с ним.
+ */
+async function countClones(
+  symbols: string[],
+): Promise<Map<string, { count: number; maxLiquidity: number | null }>> {
+  const out = new Map<string, { count: number; maxLiquidity: number | null }>();
+  if (symbols.length === 0) return out;
+
+  const unique = [...new Set(symbols.map((s) => s.toUpperCase()))];
+
+  const rows = await prisma.token.findMany({
+    where: {
+      isQuote: false,
+      isHidden: false,
+      symbol: { in: unique, mode: 'insensitive' },
+    },
+    select: { symbol: true, liquidityUsd: true },
+  });
+
+  for (const r of rows) {
+    const key = r.symbol.toUpperCase();
+    const prev = out.get(key) ?? { count: 0, maxLiquidity: null };
+    const liq = r.liquidityUsd != null ? Number(r.liquidityUsd) : null;
+
+    out.set(key, {
+      count: prev.count + 1,
+      maxLiquidity:
+        liq != null && (prev.maxLiquidity == null || liq > prev.maxLiquidity)
+          ? liq
+          : prev.maxLiquidity,
+    });
+  }
+
+  return out;
 }
 
 // ─────────────────────────────── Планировщик ────────────────────────────────

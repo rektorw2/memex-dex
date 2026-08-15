@@ -13,3 +13,6 @@ export * from './withdrawal.js';
 export * from './scam-gate.js';
 export * from './api-scopes.js';
 export * from './exit-presets.js';
+export * from './impersonation.js';
+export * from './cross-source.js';
+export * from './round-trip.js';

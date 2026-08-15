@@ -151,3 +151,111 @@ export async function fetchOkxTokenDetail(
     fdvUsd: num(d.marketCap),
   };
 }
+
+// ─────────────────────── Проверка возможности выхода ────────────────────────
+
+/**
+ * Котировочные токены для проверки обмена.
+ *
+ * Берём нативный токен сети, а не USDC: пул с нативным есть почти
+ * у каждого мем-коина, а с USDC — далеко не у всех, и отсутствие
+ * маршрута через USDC ничего не говорит о токене.
+ */
+const NATIVE_TOKEN: Record<Chain, string | null> = {
+  ETHEREUM: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+  BNB: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+  BASE: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+  SOLANA: 'So11111111111111111111111111111111111111112',
+  ROBINHOOD: null,
+};
+
+export interface RoundTripResult {
+  /** Удалось ли получить котировку на покупку. */
+  canBuy: boolean;
+  /** Удалось ли получить котировку на продажу обратно. */
+  canSell: boolean;
+  /**
+   * Доля от вложенного, которая вернётся при немедленном выходе.
+   * 0.97 означает потерю в 3% — это нормальная цена двух обменов.
+   * 0.1 означает ловушку.
+   */
+  returnRatio: number | null;
+  reason: string;
+}
+
+/**
+ * Замер полного круга: купить и сразу продать обратно.
+ *
+ * Это самая честная проверка из возможных, потому что она не полагается
+ * на чужое мнение о токене. Списки безопасности отвечают «мы не нашли
+ * признаков ловушки»; агрегатор отвечает «вот сколько вы получите,
+ * если решите выйти прямо сейчас».
+ *
+ * Ловушку видно сразу и в двух видах. Либо котировка на продажу вообще
+ * не строится — маршрута наружу нет. Либо она строится, но возвращает
+ * десятую часть вложенного: продать формально можно, фактически некуда.
+ *
+ * Проверка стоит два запроса на токен, поэтому применяется выборочно —
+ * к тем, кто уже прошёл остальные проверки и претендует на попадание
+ * в витрину.
+ */
+export async function checkRoundTrip(
+  chain: Chain,
+  tokenAddress: string,
+  probeUsd = 100,
+): Promise<RoundTripResult> {
+  const chainId = OKX_CHAIN[chain];
+  const native = NATIVE_TOKEN[chain];
+
+  if (!chainId || !native || !isOkxConfigured()) {
+    return { canBuy: false, canSell: false, returnRatio: null, reason: 'Проверка недоступна' };
+  }
+
+  // Сумма пробы в единицах нативного токена. Точность здесь не важна:
+  // проверяется не цена, а сама возможность обмена, и порядок величины
+  // достаточен, чтобы маршрут строился по реальной ликвидности,
+  // а не по пылинке.
+  const probeAmount = chain === 'SOLANA'
+    ? String(Math.round(probeUsd * 1e9 / 150))   // ~SOL в лампортах
+    : String(Math.round((probeUsd / 2500) * 1e18)); // ~ETH/BNB в wei
+
+  const buy = await request<any[]>(
+    `/api/v5/dex/aggregator/quote?chainIndex=${chainId}` +
+      `&fromTokenAddress=${native}&toTokenAddress=${tokenAddress}&amount=${probeAmount}`,
+  );
+
+  const buyOut = Number(buy?.[0]?.toTokenAmount);
+  if (!Number.isFinite(buyOut) || buyOut <= 0) {
+    return {
+      canBuy: false,
+      canSell: false,
+      returnRatio: null,
+      reason: 'Агрегатор не строит маршрут на покупку — ликвидности нет',
+    };
+  }
+
+  // Обратный обмен на то количество, которое реально получили бы.
+  const sell = await request<any[]>(
+    `/api/v5/dex/aggregator/quote?chainIndex=${chainId}` +
+      `&fromTokenAddress=${tokenAddress}&toTokenAddress=${native}&amount=${Math.floor(buyOut)}`,
+  );
+
+  const sellOut = Number(sell?.[0]?.toTokenAmount);
+  if (!Number.isFinite(sellOut) || sellOut <= 0) {
+    return {
+      canBuy: true,
+      canSell: false,
+      returnRatio: 0,
+      reason: 'Купить можно, продать нельзя — маршрут наружу не строится',
+    };
+  }
+
+  const returnRatio = sellOut / Number(probeAmount);
+
+  return {
+    canBuy: true,
+    canSell: true,
+    returnRatio,
+    reason: `Круг покупка-продажа возвращает ${(returnRatio * 100).toFixed(1)}% вложенного`,
+  };
+}

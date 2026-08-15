@@ -14,6 +14,25 @@ const SORTS = {
 } as const;
 
 export const tokenRoutes: FastifyPluginAsync = async (app) => {
+  /**
+   * Состояние проверки витрины.
+   *
+   * Нужно интерфейсу, чтобы пустой или короткий список читался верно:
+   * «ничего не найдено» и «проверено ещё не всё» — разные сообщения,
+   * и второе не должно выглядеть как первое.
+   */
+  app.get('/tokens/check-status', async () => {
+    const [total, ok, warn, blocked, unchecked] = await Promise.all([
+      prisma.token.count({ where: { isQuote: false, isHidden: false } }),
+      prisma.token.count({ where: { isQuote: false, isHidden: false, scamVerdict: 'OK' } }),
+      prisma.token.count({ where: { isQuote: false, isHidden: false, scamVerdict: 'WARN' } }),
+      prisma.token.count({ where: { isQuote: false, isHidden: false, scamVerdict: 'BLOCK' } }),
+      prisma.token.count({ where: { isQuote: false, isHidden: false, scamVerdict: null } }),
+    ]);
+
+    return { total, ok, warn, blocked, unchecked };
+  });
+
   app.get('/tokens', async (req) => {
     const q = z
       .object({
@@ -51,7 +70,17 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
         ...(q.verifiedOnly ? { isVerified: true } : {}),
         ...(q.chain ? { chain: q.chain as never } : {}),
         ...(liquidityFloor ? { liquidityUsd: { gte: liquidityFloor } } : {}),
-        ...(isChangeSort ? { volume24hUsd: { gte: 50_000 }, priceChange24h: { not: null } } : {}),
+        ...(isChangeSort
+          ? {
+              volume24hUsd: { gte: 50_000 },
+              priceChange24h: { not: null },
+              // По списку растущих принимают самые импульсивные решения,
+              // поэтому непроверенным токенам здесь не место. Показывать
+              // «+543%» рядом с вопросительным знаком значит предлагать
+              // сделку, о предмете которой мы сами ничего не знаем.
+              scamVerdict: 'OK',
+            }
+          : {}),
         ...(q.maxRiskScore != null ? { riskScore: { lte: q.maxRiskScore } } : {}),
 
         // Доказанные ловушки скрыты по умолчанию. Непроверенные при этом
