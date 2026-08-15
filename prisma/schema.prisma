@@ -134,6 +134,26 @@ model Token {
   lpBurnedPct     Decimal? @db.Decimal(8, 4)
   topHolderPct    Decimal? @db.Decimal(8, 4)
   riskScore       Int? // 0-100, чем выше — тем опаснее
+
+  // ─── Допуск в терминал ──────────────────────────────────────────────
+  // Отдельно от riskScore: тот отвечает «насколько опасно», этот —
+  // «показывать ли вообще». Скор 78 ничего не говорит человеку,
+  // который смотрит список из двухсот токенов.
+
+  /** BLOCK | WARN | OK. Пусто — проверка ещё не выполнялась. */
+  scamVerdict   String?
+  /** Причины блокировки и поводы для осторожности. */
+  scamReasons   Json?
+  /** Когда последний раз проверяли контракт и поведение пула. */
+  scamCheckedAt DateTime?
+
+  // Счётчики сделок из DexScreener: единственный признак ханипота,
+  // видимый без вызова контракта.
+  buys24h       Int?
+  sells24h      Int?
+  /** Ссылки на сайт и соцсети, если источник их отдал. */
+  socials       Json?
+
   metricsUpdated  DateTime?
 
   createdAt DateTime @default(now())
@@ -149,6 +169,8 @@ model Token {
   @@unique([chain, address])
   @@index([chain, isVerified])
   @@index([volume24hUsd])
+  @@index([scamVerdict, volume24hUsd])
+  @@index([scamCheckedAt])
 }
 
 model Candle {

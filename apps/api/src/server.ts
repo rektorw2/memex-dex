@@ -156,7 +156,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // динамический: при выключенном флаге модули даже не загружаются.
   let stopWorkers: (() => void) | null = null;
   if (env.RUN_WORKERS_IN_API) {
-    const [limit, price, copy, importer, candles, radar, tracker, wallets, auto] = await Promise.all([
+    const [limit, price, copy, importer, candles, radar, tracker, wallets, auto, scam] = await Promise.all([
       import('./workers/limit-watcher.js'),
       import('./workers/price-updater.js'),
       import('./workers/copy-executor.js'),
@@ -166,6 +166,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       import('./workers/radar-tracker.js'),
       import('./workers/wallet-tracker.js'),
       import('./workers/auto-publisher.js'),
+      import('./workers/scam-checker.js'),
     ]);
 
     price.startPriceUpdater();
@@ -177,6 +178,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     tracker.startRadarTracker();
     wallets.startWalletTracker();
     auto.startAutoPublisher();
+    scam.startScamChecker();
 
     stopWorkers = () => {
       price.stopPriceUpdater();
@@ -188,6 +190,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       tracker.stopRadarTracker();
       wallets.stopWalletTracker();
       auto.stopAutoPublisher();
+      scam.stopScamChecker();
     };
 
     app.log.warn(

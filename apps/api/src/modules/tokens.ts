@@ -23,6 +23,14 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
         verifiedOnly: z.coerce.boolean().default(false),
         minLiquidity: z.coerce.number().optional(),
         maxRiskScore: z.coerce.number().optional(),
+        /**
+         * Показать заблокированные. По умолчанию выключено: токен,
+         * который нельзя продать, не должен попадаться в списке
+         * случайно — его показ должен быть осознанным действием.
+         */
+        includeBlocked: z.coerce.boolean().default(false),
+        /** Только проверенные и чистые. */
+        safeOnly: z.coerce.boolean().default(false),
         limit: z.coerce.number().max(200).default(60),
       })
       .parse(req.query);
@@ -45,6 +53,12 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
         ...(liquidityFloor ? { liquidityUsd: { gte: liquidityFloor } } : {}),
         ...(isChangeSort ? { volume24hUsd: { gte: 50_000 }, priceChange24h: { not: null } } : {}),
         ...(q.maxRiskScore != null ? { riskScore: { lte: q.maxRiskScore } } : {}),
+
+        // Доказанные ловушки скрыты по умолчанию. Непроверенные при этом
+        // остаются видимыми: отсутствие проверки — не повод прятать токен,
+        // это повод его пометить, что и делается в ответе ниже.
+        ...(q.includeBlocked ? {} : { scamVerdict: { not: 'BLOCK' } }),
+        ...(q.safeOnly ? { scamVerdict: 'OK' } : {}),
         ...(q.search
           ? {
               OR: [
@@ -77,6 +91,15 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
       riskScore: t.riskScore,
       hasChart: t.poolAddress != null,
       source: t.source,
+
+      // Вердикт отдаётся всегда, включая null: интерфейс должен уметь
+      // отличить «проверен и чист» от «ещё не проверялся».
+      scamVerdict: t.scamVerdict,
+      scamReasons: t.scamReasons,
+      scamCheckedAt: t.scamCheckedAt,
+      buys24h: t.buys24h,
+      sells24h: t.sells24h,
+      socials: t.socials,
     }));
   });
 

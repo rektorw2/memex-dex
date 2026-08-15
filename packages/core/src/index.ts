@@ -10,3 +10,4 @@ export * from './token-ref.js';
 export * from './copy-pending.js';
 export * from './auto-exit.js';
 export * from './withdrawal.js';
+export * from './scam-gate.js';

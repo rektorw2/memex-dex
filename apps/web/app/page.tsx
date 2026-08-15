@@ -13,6 +13,8 @@ interface Token {
   priceUsd: string | null; priceChange24h: string | null;
   liquidityUsd: string | null; volume24hUsd: string | null; fdvUsd: string | null;
   riskScore: number | null; logoUrl: string | null;
+  scamVerdict?: string | null; scamReasons?: any; scamCheckedAt?: string | null;
+  buys24h?: number | null; sells24h?: number | null;
   isVerified: boolean; hasChart: boolean; isQuote: boolean;
 }
 
@@ -127,6 +129,11 @@ export default function TerminalPage() {
                           {t.isVerified && (
                             <span className="text-accent text-[10px]" title="Проверен админом">✓</span>
                           )}
+                          <ScamBadge
+                            verdict={t.scamVerdict}
+                            reasons={t.scamReasons}
+                            checkedAt={t.scamCheckedAt}
+                          />
                           {/* Отдельная ссылка, а не клик по строке: клик выбирает
                               токен для графика рядом, уводить со страницы при
                               каждом просмотре было бы неудобно. */}
@@ -309,5 +316,63 @@ function Row({ label, value, tone, small }: { label: string; value: string; tone
         {value}
       </span>
     </div>
+  );
+}
+
+/**
+ * Метка проверки токена.
+ *
+ * Три состояния, и третье не менее важно первых двух: «не проверялся»
+ * должно отличаться от «проверен и чист». Молчание на непроверенном
+ * токене читается как одобрение, хотя означает лишь то, что до него
+ * ещё не дошла очередь.
+ *
+ * Заблокированные в списке обычно не появляются — их отсекает запрос, —
+ * но метка на них предусмотрена: админ может включить их показ.
+ */
+function ScamBadge({
+  verdict,
+  reasons,
+  checkedAt,
+}: {
+  verdict?: string | null;
+  reasons?: { blockers?: string[]; warnings?: string[] } | null;
+  checkedAt?: string | null;
+}) {
+  if (!verdict) {
+    return (
+      <span
+        title="Проверка контракта ещё не выполнялась — это не значит, что токен чист"
+        className="text-muted text-[10px]"
+      >
+        ?
+      </span>
+    );
+  }
+
+  if (verdict === 'OK') {
+    return (
+      <span
+        title="Явных признаков ловушки не найдено. Мем-коин всё равно может обесцениться"
+        className="text-up text-[10px]"
+      >
+        ✓
+      </span>
+    );
+  }
+
+  const list = verdict === 'BLOCK' ? reasons?.blockers : reasons?.warnings;
+  const hint = list?.length ? list.join('; ') : 'Требует внимания';
+
+  return (
+    <span
+      title={hint}
+      className={`text-[10px] ${verdict === 'BLOCK' ? 'text-down' : 'text-yellow-400'}`}
+    >
+      {verdict === 'BLOCK' ? '⛔' : '⚠'}
+      {list && list.length > 1 && (
+        <span className="text-muted ml-0.5">{list.length}</span>
+      )}
+    </span>
   );
 }
