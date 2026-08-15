@@ -299,8 +299,11 @@ model Order {
   amountIn     Decimal  @db.Decimal(38, 18) // сколько отдаём
   filledIn     Decimal  @default(0) @db.Decimal(38, 18)
   filledOut    Decimal  @default(0) @db.Decimal(38, 18)
-  limitPrice   Decimal? @db.Decimal(38, 18) // цена tokenOut в единицах tokenIn
-  triggerPrice Decimal? @db.Decimal(38, 18) // для стопов
+  // Обе цены — в долларах за торгуемый токен, а не в единицах tokenIn.
+  // Именно так их шлёт интерфейс и так сравнивает воркер отложенных
+  // ордеров: он берёт token.priceUsd и сопоставляет напрямую.
+  limitPrice   Decimal? @db.Decimal(38, 18)
+  triggerPrice Decimal? @db.Decimal(38, 18) // цена срабатывания стопа/тейка, USD
   trailingBps  Int? // для trailing stop
   slippageBps  Int      @default(100)
   expiresAt    DateTime?

@@ -25,8 +25,13 @@ export function AuthNav() {
 
   return (
     <div className="flex items-center gap-1 sm:gap-2">
+      {/* На телефоне админка живёт в выпадающем меню: здесь она вместе
+          с кнопкой выхода не помещалась и наезжала на навигацию. */}
       {role === 'ADMIN' && (
-        <Link href="/admin" className="text-sm text-accent px-2 sm:px-3 py-1.5 whitespace-nowrap">
+        <Link
+          href="/admin"
+          className="text-accent hidden whitespace-nowrap px-2 py-1.5 text-sm md:inline-block sm:px-3"
+        >
           Админка
         </Link>
       )}

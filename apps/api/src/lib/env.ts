@@ -171,6 +171,13 @@ const schema = z.object({
 
   PERFORMANCE_FEE_BPS: z.coerce.number().default(1000),
   PLATFORM_SWAP_FEE_BPS: z.coerce.number().default(0),
+  /**
+   * Комиссия за вывод средств. Отдельная от комиссии за успех: та берётся
+   * с прибыли по копируемым сделкам, эта — с суммы вывода независимо от
+   * результата. Человек, потерявший деньги на торговле, платит её тоже,
+   * поэтому размер удержания показывается до подтверждения, а не после.
+   */
+  WITHDRAWAL_FEE_BPS: z.coerce.number().min(0).max(10_000).default(500),
   MAX_SLIPPAGE_BPS: z.coerce.number().default(300),
   MIN_LIQUIDITY_USD: z.coerce.number().default(15_000),
   COPY_MAX_ALLOCATION_PCT: z.coerce.number().default(25),

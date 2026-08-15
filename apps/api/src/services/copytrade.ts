@@ -263,14 +263,13 @@ export async function mirrorLeaderPendingOrder(leaderOrderId: string): Promise<M
   const tradedToken = leaderOrder.side === 'BUY' ? leaderOrder.tokenOut : leaderOrder.tokenIn;
   const now = new Date();
 
-  // Цена ордера лидера в долларах. limitPrice хранится в единицах
-  // tokenIn, поэтому переводим через цену котировочного токена.
+  // Цены отложенных ордеров хранятся в долларах за торгуемый токен —
+  // никакого пересчёта не требуется. Раньше здесь стоял перевод через
+  // цену котировочного токена: он опирался на комментарий в схеме,
+  // который оказался неверным, и на паре с котировкой дороже доллара
+  // давал зеркальную копию с ценой, отличной от ордера лидера.
   const quotePriceUsd = leaderOrder.tokenIn.priceUsd ?? new P.Decimal(1);
-  const leaderPriceUsd = leaderOrder.limitPrice
-    ? leaderOrder.limitPrice.times(quotePriceUsd)
-    : leaderOrder.triggerPrice
-      ? leaderOrder.triggerPrice.times(quotePriceUsd)
-      : null;
+  const leaderPriceUsd = leaderOrder.limitPrice ?? leaderOrder.triggerPrice ?? null;
 
   for (const sub of subs) {
     try {
@@ -357,9 +356,7 @@ export async function mirrorLeaderPendingOrder(leaderOrderId: string): Promise<M
         continue;
       }
 
-      // Цена копии в единицах tokenIn — обратный перевод из долларов.
-      const toTokenPrice = (usd: string | null) =>
-        usd != null && quotePriceUsd.gt(0) ? new P.Decimal(usd).div(quotePriceUsd) : null;
+      const toTokenPrice = (usd: string | null) => (usd != null ? new P.Decimal(usd) : null);
 
       const child = await serializable(async (tx) => {
         const created = await tx.order.create({

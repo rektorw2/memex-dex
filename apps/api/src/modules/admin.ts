@@ -10,6 +10,65 @@ import { runResearch, serializeResearch } from '../services/research.js';
 import { isAiConfigured } from '../services/ai-research.js';
 
 export const adminRoutes: FastifyPluginAsync = async (app) => {
+
+  /**
+   * Покупка по адресу с автоматическим выходом.
+   *
+   * Одно действие вместо четырёх: найти токен, завести его в базу,
+   * купить, выставить тейк. Каждый ручной шаг здесь — это возможность
+   * забыть последний, а забытый выход и есть та причина, по которой
+   * позиции держат до нуля.
+   */
+  app.post('/admin/quick-buy', { preHandler: [app.requireAdmin] }, async (req, reply) => {
+    const body = z
+      .object({
+        addressOrLink: z.string().min(10).max(500),
+        amountIn: z.string().refine((v) => Number(v) > 0, 'Сумма должна быть больше нуля'),
+        quoteTokenId: z.string(),
+        chain: z.enum(['SOLANA', 'BNB', 'ROBINHOOD', 'ETHEREUM', 'BASE']).optional(),
+        /** Цели выхода. По умолчанию — одна на 3× со всей позицией. */
+        steps: z
+          .array(
+            z.object({
+              multiple: z.number().gt(1).max(1000),
+              fraction: z.number().gt(0).max(1),
+            }),
+          )
+          .max(5)
+          .optional(),
+        stopLossPct: z.number().int().min(1).max(99).nullable().optional(),
+        slippageBps: z.number().int().min(10).max(5000).default(300),
+      })
+      .parse(req.body);
+
+    const { quickBuy } = await import('../services/quick-buy.js');
+
+    const result = await quickBuy(req.user.sub, {
+      addressOrLink: body.addressOrLink,
+      amountIn: body.amountIn,
+      quoteTokenId: body.quoteTokenId,
+      chain: body.chain ?? null,
+      steps: body.steps,
+      stopLossPct: body.stopLossPct ?? null,
+      slippageBps: body.slippageBps,
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        actorId: req.user.sub,
+        action: 'admin.quick_buy',
+        entity: 'Order',
+        entityId: result.buy.orderId,
+        after: {
+          symbol: result.token.symbol,
+          amountIn: body.amountIn,
+          exits: result.exits.length,
+        } as never,
+      },
+    });
+
+    return reply.code(201).send(result);
+  });
   app.addHook('preHandler', app.requireAdmin);
 
   /** Сводка платформы. */

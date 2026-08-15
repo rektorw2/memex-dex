@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import useSWR from 'swr';
 import { fetcher, api, errorMessage } from '@/lib/api';
+import { WalletAssets } from '@/components/WalletAssets';
 import { CHAINS, chainLabel } from '@/lib/chains';
 
 const CHAIN_OPTIONS = ['SOLANA', 'BNB', 'BASE', 'ETHEREUM', 'ROBINHOOD'] as const;
@@ -13,7 +14,11 @@ export default function WalletPage() {
 
   return (
     <div className="space-y-4 max-w-3xl">
-      <h1 className="text-xl sm:text-2xl font-bold">Кошельки</h1>
+      <h1 className="text-xl sm:text-2xl font-bold">Кошелёк</h1>
+
+      {/* Активы идут первыми: это то, ради чего сюда заходят.
+          Управление адресами — служебное действие, оно ниже. */}
+      <WalletAssets />
 
       <div className="panel p-4">
         <h2 className="font-medium mb-3">Ваши адреса</h2>

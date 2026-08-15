@@ -8,3 +8,5 @@ export * from './wallet-score.js';
 export * from './auto-rule.js';
 export * from './token-ref.js';
 export * from './copy-pending.js';
+export * from './auto-exit.js';
+export * from './withdrawal.js';

@@ -5,11 +5,12 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { fetcher, api, fmtUsd, errorMessage } from '@/lib/api';
 import { CallManager } from '@/components/CallManager';
+import { QuickBuy } from '@/components/QuickBuy';
 
 export default function AdminPage() {
   const { data: overview } = useSWR<any>('/admin/overview', fetcher, { refreshInterval: 20_000 });
   const { data: withdrawals, mutate: mutateW } = useSWR<any[]>('/admin/withdrawals', fetcher);
-  const [tab, setTab] = useState<'calls' | 'tokens' | 'withdrawals'>('calls');
+  const [tab, setTab] = useState<'buy' | 'calls' | 'tokens' | 'withdrawals'>('buy');
 
   return (
     <div className="space-y-6">
@@ -33,7 +34,7 @@ export default function AdminPage() {
       </div>
 
       <div className="flex gap-1 border-b border-border scroll-x">
-        {([['calls', 'Коллы'], ['tokens', 'Токены'], ['withdrawals', `Выводы (${overview?.pendingWithdrawals ?? 0})`]] as const).map(
+        {([['buy', 'Покупка'], ['calls', 'Коллы'], ['tokens', 'Токены'], ['withdrawals', `Выводы (${overview?.pendingWithdrawals ?? 0})`]] as const).map(
           ([k, label]) => (
             <button
               key={k}
@@ -48,6 +49,7 @@ export default function AdminPage() {
         )}
       </div>
 
+      {tab === 'buy' && <QuickBuy />}
       {tab === 'calls' && <CallManager />}
       {tab === 'tokens' && <TokenLister />}
       {tab === 'withdrawals' && (
