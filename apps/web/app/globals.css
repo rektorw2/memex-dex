@@ -2,7 +2,13 @@
 @tailwind components;
 @tailwind utilities;
 
-:root { color-scheme: dark; }
+:root {
+  color-scheme: dark;
+  /* Высота, которую занимает всё, кроме рабочей области: шапка плюс
+     вертикальные отступы main. Терминал вычитает её, чтобы занять
+     ровно остаток экрана и не создавать вторую полосу прокрутки. */
+  --shell: 100px;
+}
 
 html, body {
   /* Горизонтальная прокрутка страницы — почти всегда следствие ошибки
@@ -14,37 +20,93 @@ html, body {
 
 body {
   @apply bg-bg text-white antialiased;
-  font-feature-settings: 'tnum';
+  /* Табличные цифры во всём интерфейсе: без них колонка цен «дышит»
+     при каждом обновлении, и глаз не может сравнить два числа. */
+  font-feature-settings: 'tnum', 'cv01';
 }
 
-/* Числа в таблицах моноширинные — иначе колонки «плывут»
-   и глаз не может быстро сравнить цены. */
+/* ─────────────────────────────── Числа ──────────────────────────────── */
+
 .num { @apply font-mono tabular-nums; }
 
+/* ─────────────────────────── Поверхности ────────────────────────────── */
+
 .panel { @apply bg-panel border border-border rounded-lg min-w-0; }
-.btn { @apply px-4 py-2 rounded-md font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed; }
-.btn-buy { @apply btn bg-up/90 hover:bg-up text-white; }
-.btn-sell { @apply btn bg-down/90 hover:bg-down text-white; }
-.btn-ghost { @apply btn bg-border hover:bg-border/70 text-white; }
-.input { @apply w-full bg-bg border border-border rounded-md px-3 py-2 num focus:outline-none focus:border-accent; }
-.label { @apply text-xs text-muted mb-1 block; }
+
+/* ────────────────────────── Элементы управления ─────────────────────── */
+
+.btn {
+  @apply inline-flex items-center justify-center rounded-md px-4 font-medium transition-colors;
+  @apply disabled:cursor-not-allowed disabled:opacity-40;
+  /* Единая высота у всех кнопок: разнобой в пару пикселей особенно
+     заметен, когда кнопки стоят в ряд. */
+  min-height: 36px;
+}
+.btn-buy { @apply btn bg-up text-bg hover:brightness-110; }
+.btn-sell { @apply btn bg-down text-bg hover:brightness-110; }
+.btn-primary { @apply btn bg-accent text-white hover:brightness-110; }
+.btn-ghost { @apply btn bg-raised text-white hover:bg-border; }
+
+.input {
+  @apply w-full rounded-md border border-border bg-bg px-3 num;
+  @apply focus:border-accent focus:outline-none;
+  min-height: 36px;
+}
+.label { @apply mb-1 block text-xs text-muted; }
+
+/* Видимый фокус с клавиатуры. Убирать его нельзя: в плотной таблице
+   без него невозможно понять, где находишься при навигации табом. */
+:focus-visible {
+  @apply outline-none ring-2 ring-accent/70;
+  border-radius: 6px;
+}
+
+/* ─────────────────────────────── Сетка ──────────────────────────────── */
 
 /* Элементы flex и grid по умолчанию не сжимаются меньше своего содержимого:
    одно длинное число или адрес контракта распирает всю сетку. */
 .grid > *,
 .flex > * { min-width: 0; }
 
+/* ──────────────────────────── Прокрутка ─────────────────────────────── */
+
 /* Горизонтальная прокрутка внутри контейнера, а не всей страницы. */
 .scroll-x {
   @apply overflow-x-auto;
-  scrollbar-width: thin;
+  scrollbar-width: none;
   -webkit-overflow-scrolling: touch;
 }
-.scroll-x::-webkit-scrollbar { height: 4px; }
-.scroll-x::-webkit-scrollbar-thumb { @apply bg-border rounded; }
+.scroll-x::-webkit-scrollbar { display: none; }
+
+/* Вертикальная прокрутка внутри панели.
+   scrollbar-gutter резервирует место под полосу заранее — иначе при
+   её появлении содержимое сдвигается, и правая колонка чисел
+   «прыгает» ровно в момент, когда на неё смотрят. */
+.scroll-y {
+  @apply overflow-y-auto;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: theme('colors.border') transparent;
+  -webkit-overflow-scrolling: touch;
+}
+.scroll-y::-webkit-scrollbar { width: 8px; }
+.scroll-y::-webkit-scrollbar-track { background: transparent; }
+.scroll-y::-webkit-scrollbar-thumb {
+  @apply rounded bg-border;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+/* ──────────────────────────── Мелочи ────────────────────────────────── */
 
 /* Длинные адреса контрактов переносятся, а не выталкивают контейнер. */
 .break-address {
   word-break: break-all;
   overflow-wrap: anywhere;
+}
+
+/* Минимальная площадь нажатия на сенсорном экране. Меньше 44 px
+   промахивается каждый десятый тап. */
+@media (pointer: coarse) {
+  .tap { min-height: 44px; min-width: 44px; }
 }

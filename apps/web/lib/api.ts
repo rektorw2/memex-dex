@@ -123,9 +123,38 @@ export function newIdempotencyKey(): string {
 export function fmtUsd(v: string | number | null | undefined): string {
   const n = Number(v ?? 0);
   if (!Number.isFinite(n)) return '—';
-  if (Math.abs(n) >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`;
-  if (Math.abs(n) >= 1_000) return `$${(n / 1_000).toFixed(1)}K`;
-  return `$${n.toFixed(2)}`;
+
+  const abs = Math.abs(n);
+  const sign = n < 0 ? '-' : '';
+
+  // Ступень миллиардов обязательна. Без неё общий объём рынка
+  // выглядел как «$33211.25M» — формально верно, но прочитать
+  // порядок величины с одного взгляда невозможно.
+  if (abs >= 1e9) return `${sign}$${(abs / 1e9).toFixed(2)}B`;
+  if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(2)}M`;
+  if (abs >= 1e3) return `${sign}$${(abs / 1e3).toFixed(1)}K`;
+  return `${sign}$${abs.toFixed(2)}`;
+}
+
+/**
+ * Число для оси графика.
+ *
+ * Отличается от fmtPrice тем, что не показывает лишних знаков:
+ * подпись «2.5000000000» съедает половину ширины оси и ничего
+ * не добавляет к «2.50».
+ */
+export function fmtAxis(v: number): string {
+  if (!Number.isFinite(v)) return '';
+  const abs = Math.abs(v);
+
+  if (abs >= 1e9) return `${(v / 1e9).toFixed(2)}B`;
+  if (abs >= 1e6) return `${(v / 1e6).toFixed(2)}M`;
+  if (abs >= 1e3) return `${(v / 1e3).toFixed(1)}K`;
+  if (abs >= 1) return v.toFixed(2);
+  if (abs >= 0.01) return v.toFixed(4);
+  if (abs >= 0.0001) return v.toFixed(6);
+  // Микроцены: значащие цифры важнее позиции запятой.
+  return v.toPrecision(3);
 }
 
 /** Мем-коины стоят 0.0000000123 — обычный toFixed(2) покажет «0.00». */

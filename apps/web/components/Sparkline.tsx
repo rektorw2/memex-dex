@@ -42,7 +42,7 @@ export function Sparkline({
     .join(' ');
 
   const up = values[values.length - 1]! >= values[0]!;
-  const stroke = up ? 'var(--spark-up, #26a69a)' : 'var(--spark-down, #ef5350)';
+  const stroke = up ? '#22C7B8' : '#FF5C6C';
 
   return (
     <svg

@@ -82,7 +82,11 @@ export function MainNav() {
 
   const linkCls = (href: string) =>
     `whitespace-nowrap rounded-md px-2 py-1.5 text-sm transition-colors sm:px-3 ${
-      isActive(href) ? 'bg-border text-white' : 'text-muted hover:bg-border hover:text-white'
+      isActive(href)
+        // Активный раздел — тем же фиолетовым, что выбор в остальном
+        // интерфейсе. Серая подсветка не отличалась от наведения.
+        ? 'bg-accent/15 text-accent'
+        : 'text-muted hover:bg-raised hover:text-white'
     }`;
 
   return (
@@ -107,10 +111,10 @@ export function MainNav() {
         aria-expanded={open}
         aria-haspopup="menu"
         aria-label="Разделы"
-        className={`rounded-md px-2 py-1.5 transition-colors md:hidden ${
+        className={`tap flex items-center justify-center rounded-md px-2 py-1.5 transition-colors md:hidden ${
           open || SECONDARY.some((m) => isActive(m.href))
-            ? 'bg-border text-white'
-            : 'text-muted hover:bg-border hover:text-white'
+            ? 'bg-accent/15 text-accent'
+            : 'text-muted hover:bg-raised hover:text-white'
         }`}
       >
         <span aria-hidden className="flex flex-col gap-[3px]">
@@ -132,8 +136,8 @@ export function MainNav() {
               role="menuitem"
               className={`block px-4 py-2.5 text-sm transition-colors ${
                 isActive(n.href)
-                  ? 'bg-border text-white'
-                  : 'text-muted hover:bg-border hover:text-white'
+                  ? 'bg-accent/15 text-accent'
+                  : 'text-muted hover:bg-raised hover:text-white'
               }`}
             >
               {n.label}

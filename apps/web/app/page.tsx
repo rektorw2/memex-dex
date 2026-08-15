@@ -2,36 +2,26 @@
 
 import useSWR from 'swr';
 import { useState } from 'react';
-import Link from 'next/link';
-import { fetcher, fmtPrice, fmtUsd, fmtPct } from '@/lib/api';
+import { fetcher, fmtUsd, fmtPrice, fmtPct } from '@/lib/api';
 import { TokenLogo } from '@/components/TokenLogo';
-import { PriceChart } from '@/components/PriceChart';
-import { TradePanel } from '@/components/TradePanel';
+import { TokenList } from '@/components/terminal/TokenList';
+import { ChartPanel } from '@/components/terminal/ChartPanel';
+import { SidePanel } from '@/components/terminal/SidePanel';
+import { CHAIN_LABEL, SORT_OPTIONS, QUICK_FILTERS, type Token } from '@/components/terminal/types';
 
-interface Token {
-  id: string; symbol: string; name: string; chain: string; address: string;
-  priceUsd: string | null; priceChange24h: string | null;
-  liquidityUsd: string | null; volume24hUsd: string | null; fdvUsd: string | null;
-  riskScore: number | null; logoUrl: string | null;
-  scamVerdict?: string | null; scamReasons?: any; scamCheckedAt?: string | null;
-  buys24h?: number | null; sells24h?: number | null;
-  isVerified: boolean; hasChart: boolean; isQuote: boolean;
-}
-
-const CHAIN_LABEL: Record<string, string> = {
-  SOLANA: 'Solana', BNB: 'BNB Chain', ROBINHOOD: 'Robinhood Chain',
-  ETHEREUM: 'Ethereum', BASE: 'Base',
-};
-
-const SORTS = [
-  ['volume', 'По объёму'],
-  ['gainers', 'Растущие'],
-  ['losers', 'Падающие'],
-  ['liquidity', 'По ликвидности'],
-  ['new', 'Новые'],
-] as const;
-
-const INTERVALS = ['5m', '1h', '1d'] as const;
+/**
+ * Терминал.
+ *
+ * На широком экране — три колонки во всю высоту: список рынков,
+ * график, торговля. Каждая прокручивается сама, страница целиком
+ * не прокручивается вовсе. Это принципиально для терминала: когда
+ * при поиске токена в списке уезжает график, работать невозможно.
+ *
+ * На телефоне колонки не складываются друг под друга — вместо этого
+ * три отдельных экрана с переключателем внизу. Вертикальная свалка
+ * означала бы, что до графика нужно пролистать шестьдесят строк
+ * списка, а до торговли — ещё и весь график.
+ */
 
 export default function TerminalPage() {
   const [chain, setChain] = useState('');
@@ -39,19 +29,21 @@ export default function TerminalPage() {
   const [search, setSearch] = useState('');
   const [interval, setInterval] = useState<string>('5m');
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [tab, setTab] = useState<'market' | 'chart' | 'portfolio'>('market');
 
   const params = new URLSearchParams({ sort, limit: '60' });
   if (chain) params.set('chain', chain);
   if (search) params.set('search', search);
 
-  const { data: tokens } = useSWR<Token[]>(`/tokens?${params}`, fetcher, {
+  const { data: tokens, isLoading } = useSWR<Token[]>(`/tokens?${params}`, fetcher, {
     refreshInterval: 20_000,
     keepPreviousData: true,
   });
 
   const { data: summary } = useSWR<any>('/market/summary', fetcher, { refreshInterval: 60_000 });
 
-  const active = tokens?.find((t) => t.id === selectedId) ?? tokens?.find((t) => !t.isQuote) ?? null;
+  const active =
+    tokens?.find((t) => t.id === selectedId) ?? tokens?.find((t) => !t.isQuote) ?? null;
 
   const { data: candles } = useSWR(
     active?.hasChart ? `/tokens/${active.id}/candles?interval=${interval}` : null,
@@ -59,320 +51,306 @@ export default function TerminalPage() {
     { refreshInterval: 15_000 },
   );
 
-  const { data: portfolio } = useSWR<any>('/portfolio', fetcher, { refreshInterval: 15_000 });
-  const usdc = tokens?.find((t) => t.symbol === 'USDC');
+  const { data: portfolio, isLoading: portfolioLoading } = useSWR<any>('/portfolio', fetcher, {
+    refreshInterval: 15_000,
+    shouldRetryOnError: false,
+  });
+
+  const quoteToken = tokens?.find((t) => t.isQuote && t.chain === active?.chain);
+
+  /** Выбор токена на телефоне сразу открывает график. */
+  function selectToken(t: Token) {
+    setSelectedId(t.id);
+    setTab('chart');
+  }
+
+  const filters = (
+    <Filters
+      chain={chain}
+      setChain={setChain}
+      sort={sort}
+      setSort={setSort}
+      search={search}
+      setSearch={setSearch}
+    />
+  );
 
   return (
-    <div className="space-y-4">
-      {/* Сводка по рынку */}
-      {summary && (
-        <div className="flex flex-wrap gap-x-5 sm:gap-x-8 gap-y-2 text-xs sm:text-sm panel px-3 sm:px-4 py-3">
-          <Summary label="Токенов" value={String(summary.tokens)} />
-          <Summary label="Объём 24ч" value={fmtUsd(summary.volume24hUsd)} />
-          <Summary label="Ликвидность" value={fmtUsd(summary.liquidityUsd)} />
-          {Object.entries(summary.byChain ?? {}).map(([c, n]) => (
-            <Summary key={c} label={CHAIN_LABEL[c] ?? c} value={String(n)} />
-          ))}
-        </div>
-      )}
+    <>
+      {/* ══════════════════ Десктоп: три колонки ══════════════════ */}
+      <div className="hidden lg:flex lg:h-[calc(100vh-var(--shell))] lg:flex-col lg:gap-4">
+        <MarketStats summary={summary} />
 
-      <div className="grid grid-cols-12 gap-4">
-        {/* Список рынков */}
-        <aside className="col-span-12 lg:col-span-4 xl:col-span-3 panel p-3 h-fit">
-          <input
-            className="input mb-3 font-sans text-sm"
-            placeholder="Поиск по тикеру или адресу"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-
-          <div className="flex gap-1 mb-2 text-xs flex-wrap">
-            <Chip active={!chain} onClick={() => setChain('')}>Все сети</Chip>
-            {Object.entries(CHAIN_LABEL).map(([k, v]) => (
-              <Chip key={k} active={chain === k} onClick={() => setChain(k)}>{v}</Chip>
-            ))}
-          </div>
-
-          <div className="flex gap-1 mb-3 text-xs flex-wrap">
-            {SORTS.map(([k, label]) => (
-              <Chip key={k} active={sort === k} onClick={() => setSort(k)}>{label}</Chip>
-            ))}
-          </div>
-
-          <div className="max-h-[70vh] overflow-auto -mx-1 px-1">
-            <table className="w-full text-sm">
-              <thead className="text-xs text-muted sticky top-0 bg-panel">
-                <tr>
-                  <th className="text-left font-normal pb-2">Токен</th>
-                  <th className="text-right font-normal pb-2">Цена</th>
-                  <th className="text-right font-normal pb-2 w-[72px]">24ч</th>
-                </tr>
-              </thead>
-              <tbody>
-                {tokens?.filter((t) => !t.isQuote).map((t) => {
-                  const ch = Number(t.priceChange24h ?? 0);
-                  return (
-                    <tr
-                      key={t.id}
-                      onClick={() => setSelectedId(t.id)}
-                      className={`cursor-pointer hover:bg-border/50 ${active?.id === t.id ? 'bg-border/70' : ''}`}
-                    >
-                      <td className="py-1.5">
-                        <div className="flex items-center gap-1.5">
-                          <TokenLogo
-                            symbol={t.symbol}
-                            address={t.address}
-                            logoUrl={t.logoUrl}
-                            size={20}
-                          />
-                          <span className="font-medium">{t.symbol}</span>
-                          {t.isVerified && (
-                            <span className="text-accent text-[10px]" title="Проверен админом">✓</span>
-                          )}
-                          <ScamBadge
-                            verdict={t.scamVerdict}
-                            reasons={t.scamReasons}
-                            checkedAt={t.scamCheckedAt}
-                          />
-                          {/* Отдельная ссылка, а не клик по строке: клик выбирает
-                              токен для графика рядом, уводить со страницы при
-                              каждом просмотре было бы неудобно. */}
-                          <Link
-                            href={`/token?id=${t.id}`}
-                            onClick={(e) => e.stopPropagation()}
-                            className="ml-auto text-[10px] text-muted hover:text-accent"
-                            title="Открыть карточку токена"
-                          >
-                            подробнее
-                          </Link>
-                        </div>
-                        <div className="text-xs text-muted">
-                          {CHAIN_LABEL[t.chain] ?? t.chain} · {fmtUsd(t.liquidityUsd)}
-                        </div>
-                      </td>
-                      <td className="text-right num text-xs">{fmtPrice(t.priceUsd)}</td>
-                      <td
-                        className={`text-right num text-xs whitespace-nowrap ${ch >= 0 ? 'text-up' : 'text-down'}`}
-                        title={t.priceChange24h ?? undefined}
-                      >
-                        {t.priceChange24h == null ? '—' : fmtPct(ch)}
-                      </td>
-                    </tr>
-                  );
-                })}
-                {!tokens?.length && (
-                  <tr><td colSpan={3} className="text-center text-muted py-8 text-xs">
-                    Список пуст. Импортёр наполняет его раз в час — запустить сразу
-                    можно из админки.
-                  </td></tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </aside>
-
-        {/* График */}
-        <section className="col-span-12 lg:col-span-8 xl:col-span-6">
-          <div className="panel p-4">
-            {active ? (
-              <>
-                <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 mb-4">
-                  <Link href={`/token?id=${active.id}`} className="text-xl font-bold hover:text-accent">
-                    {active.symbol}
-                  </Link>
-                  <span className="text-sm text-muted">{active.name}</span>
-                  <span className="text-xs px-2 py-0.5 rounded bg-border text-muted">
-                    {CHAIN_LABEL[active.chain] ?? active.chain}
-                  </span>
-                  <div className="ml-auto text-right">
-                    <div className="text-2xl num">{fmtPrice(active.priceUsd)}</div>
-                    <div className={`text-sm num ${Number(active.priceChange24h ?? 0) >= 0 ? 'text-up' : 'text-down'}`}>
-                      {active.priceChange24h == null ? '' : `${fmtPct(active.priceChange24h)} за 24ч`}
-                    </div>
-                  </div>
-                </div>
-
-                {active.riskScore != null && active.riskScore > 60 && (
-                  <div className="mb-3 text-xs text-down bg-down/10 border border-down/30 rounded p-2">
-                    Риск-скор {active.riskScore}/100. Низкая ликвидность или молодой пул —
-                    выход из позиции может оказаться дороже входа.
-                  </div>
-                )}
-
-                <div className="flex gap-1 mb-3">
-                  {INTERVALS.map((iv) => (
-                    <Chip key={iv} active={interval === iv} onClick={() => setInterval(iv)}>
-                      {iv}
-                    </Chip>
-                  ))}
-                </div>
-
-                {Array.isArray(candles) && candles.length > 0 ? (
-                  <PriceChart candles={candles as never} />
-                ) : (
-                  <div className="h-[420px] flex flex-col items-center justify-center text-muted text-sm gap-1">
-                    <span>Свечи ещё не загружены</span>
-                    <span className="text-xs">
-                      {active.hasChart
-                        ? 'Загрузчик обходит токены по кругу, данные появятся в течение нескольких минут'
-                        : 'Для этого токена не найден пул ликвидности'}
-                    </span>
-                  </div>
-                )}
-
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-4 text-sm">
-                  <Metric label="Объём 24ч" value={fmtUsd(active.volume24hUsd)} />
-                  <Metric label="Ликвидность" value={fmtUsd(active.liquidityUsd)} />
-                  <Metric label="FDV" value={fmtUsd(active.fdvUsd)} />
-                  <Metric label="Риск-скор" value={active.riskScore?.toString() ?? '—'} />
-                </div>
-
-                <div className="mt-3 text-xs text-muted font-mono break-address">
-                  {active.address}
-                </div>
-              </>
-            ) : (
-              <div className="h-[500px] flex items-center justify-center text-muted">
-                Выберите токен слева
-              </div>
-            )}
-          </div>
-        </section>
-
-        {/* Панель торговли */}
-        <aside className="col-span-12 xl:col-span-3 space-y-4">
-          {active && usdc && (
-            <TradePanel
-              tokenId={active.id}
-              tokenSymbol={active.symbol}
-              quoteTokenId={usdc.id}
-              quoteSymbol="USDC"
-              chain={active.chain}
-              currentPriceUsd={Number(active.priceUsd ?? 0)}
-              availableQuote={Number(portfolio?.cashUsd ?? 0)}
-              availableToken={Number(
-                portfolio?.holdings?.find((h: any) => h.tokenId === active.id)?.quantity ?? 0,
-              )}
-            />
-          )}
-
-          <div className="panel p-4">
-            <h3 className="text-sm font-medium mb-3">Портфель</h3>
-            <div className="space-y-2 text-sm">
-              <Row label="Всего" value={fmtUsd(portfolio?.totalValueUsd)} />
-              <Row label="Свободно" value={fmtUsd(portfolio?.cashUsd)} />
-              <Row
-                label="Нереализ. PnL"
-                value={fmtUsd(portfolio?.unrealizedPnlUsd)}
-                tone={Number(portfolio?.unrealizedPnlUsd ?? 0) >= 0 ? 'up' : 'down'}
+        <div className="grid min-h-0 flex-1 grid-cols-[340px_minmax(0,1fr)_300px] gap-4 xl:grid-cols-[380px_minmax(0,1fr)_320px]">
+          {/* Список рынков */}
+          <aside className="panel flex min-h-0 flex-col overflow-hidden">
+            <div className="shrink-0 border-b border-border p-3">{filters}</div>
+            <div className="scroll-y min-h-0 flex-1">
+              <TokenList
+                tokens={tokens}
+                activeId={active?.id ?? null}
+                onSelect={(t) => setSelectedId(t.id)}
+                isLoading={isLoading}
               />
-              <div className="pt-2 border-t border-border">
-                <Row label="Комиссий уплачено" value={fmtUsd(portfolio?.totalFeesPaidUsd)} small />
-              </div>
             </div>
-          </div>
-        </aside>
+          </aside>
+
+          {/* График */}
+          <section className="panel min-h-0 overflow-hidden">
+            <ChartPanel
+              token={active}
+              candles={candles as unknown[] | undefined}
+              interval={interval}
+              onInterval={setInterval}
+              chartHeight={380}
+            />
+          </section>
+
+          {/* Портфель и торговля */}
+          <aside className="scroll-y min-h-0">
+            <SidePanel
+              token={active}
+              quoteToken={quoteToken}
+              portfolio={portfolio}
+              isLoading={portfolioLoading}
+            />
+          </aside>
+        </div>
+      </div>
+
+      {/* ══════════════════ Телефон: три экрана ══════════════════ */}
+      <div className="flex flex-col gap-3 pb-16 lg:hidden">
+        {tab === 'market' && (
+          <>
+            <MarketStats summary={summary} compact />
+            <div className="panel overflow-hidden">
+              <div className="sticky top-header z-20 border-b border-border bg-panel p-3">
+                {filters}
+              </div>
+              <TokenList
+                tokens={tokens}
+                activeId={active?.id ?? null}
+                onSelect={selectToken}
+                isLoading={isLoading}
+                touch
+              />
+            </div>
+          </>
+        )}
+
+        {tab === 'chart' && (
+          <>
+            {active && <MobileTokenHeader token={active} onBack={() => setTab('market')} />}
+            <div className="panel overflow-hidden">
+              <ChartPanel
+                token={active}
+                candles={candles as unknown[] | undefined}
+                interval={interval}
+                onInterval={setInterval}
+                chartHeight={260}
+                showHeader={false}
+              />
+            </div>
+            {active && (
+              <button
+                onClick={() => setTab('portfolio')}
+                className="btn-primary w-full tap text-sm"
+              >
+                Купить / Продать
+              </button>
+            )}
+          </>
+        )}
+
+        {tab === 'portfolio' && (
+          <SidePanel
+            token={active}
+            quoteToken={quoteToken}
+            portfolio={portfolio}
+            isLoading={portfolioLoading}
+          />
+        )}
+
+        {/* Переключатель экранов прижат к низу: до него дотягивается
+            большой палец, а верх экрана на телефоне в 6 дюймов — нет. */}
+        <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-3 border-t border-border bg-panel/95 backdrop-blur">
+          {(
+            [
+              ['market', 'Рынок'],
+              ['chart', 'График'],
+              ['portfolio', 'Портфель'],
+            ] as const
+          ).map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setTab(key)}
+              aria-current={tab === key}
+              className={`tap py-3 text-sm transition-colors ${
+                tab === key ? 'text-accent' : 'text-muted'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </nav>
+      </div>
+    </>
+  );
+}
+
+/* ────────────────────────── Сводка по рынку ────────────────────────── */
+
+function MarketStats({ summary, compact }: { summary: any; compact?: boolean }) {
+  if (!summary) {
+    return (
+      <div className="panel flex h-stats shrink-0 items-center gap-6 px-4">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <div key={i} className="h-3 w-20 animate-pulse rounded bg-raised" />
+        ))}
+      </div>
+    );
+  }
+
+  const items: Array<[string, string]> = [
+    ['Токенов', String(summary.tokens)],
+    ['Объём 24ч', fmtUsd(summary.volume24hUsd)],
+    ['Ликвидность', fmtUsd(summary.liquidityUsd)],
+    ...Object.entries(summary.byChain ?? {}).map(
+      ([c, n]) => [CHAIN_LABEL[c] ?? c, String(n)] as [string, string],
+    ),
+  ];
+
+  return (
+    <div
+      className={`panel scroll-x flex shrink-0 items-center gap-6 px-4 ${
+        compact ? 'py-2.5' : 'h-stats'
+      }`}
+    >
+      {items.map(([label, value]) => (
+        <div key={label} className="shrink-0">
+          <div className="text-[11px] leading-tight text-muted">{label}</div>
+          <div className="num text-sm leading-tight">{value}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ─────────────────────────── Фильтры списка ─────────────────────────── */
+
+function Filters({
+  chain,
+  setChain,
+  sort,
+  setSort,
+  search,
+  setSearch,
+}: {
+  chain: string;
+  setChain: (v: string) => void;
+  sort: string;
+  setSort: (v: string) => void;
+  search: string;
+  setSearch: (v: string) => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <input
+        className="input font-sans text-sm"
+        placeholder="Поиск по тикеру или адресу"
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+      />
+
+      <div className="flex gap-2">
+        {/* Выпадающие списки вместо ряда кнопок: пять сетей и пять
+            сортировок занимали три строки и оставляли списку рынков
+            меньше половины панели. */}
+        <select
+          value={chain}
+          onChange={(e) => setChain(e.target.value)}
+          className="input flex-1 font-sans text-xs"
+          aria-label="Сеть"
+        >
+          <option value="">Все сети</option>
+          {Object.entries(CHAIN_LABEL).map(([k, v]) => (
+            <option key={k} value={k}>
+              {v}
+            </option>
+          ))}
+        </select>
+
+        <select
+          value={SORT_OPTIONS.some(([k]) => k === sort) ? sort : 'volume'}
+          onChange={(e) => setSort(e.target.value)}
+          className="input flex-1 font-sans text-xs"
+          aria-label="Сортировка"
+        >
+          {SORT_OPTIONS.map(([k, v]) => (
+            <option key={k} value={k}>
+              {v}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {/* Быстрые фильтры остаются на виду: ими пользуются постоянно. */}
+      <div className="scroll-x flex gap-1.5">
+        {QUICK_FILTERS.map(([k, label]) => (
+          <button
+            key={k}
+            onClick={() => setSort(sort === k ? 'volume' : k)}
+            className={`tap shrink-0 rounded-md px-2.5 py-1 text-xs transition-colors ${
+              sort === k
+                ? 'bg-accent/15 text-accent'
+                : 'text-muted hover:bg-raised hover:text-white'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
       </div>
     </div>
   );
 }
 
-function Chip({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
-  return (
-    <button
-      onClick={onClick}
-      className={`px-2 py-1 rounded transition-colors ${
-        active ? 'bg-accent/20 text-accent' : 'text-muted hover:text-white hover:bg-border'
-      }`}
-    >
-      {children}
-    </button>
-  );
-}
+/* ──────────────────── Шапка токена на телефоне ──────────────────── */
 
-function Summary({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <span className="text-muted text-xs">{label} </span>
-      <span className="num">{value}</span>
-    </div>
-  );
-}
+function MobileTokenHeader({ token, onBack }: { token: Token; onBack: () => void }) {
+  const ch = token.priceChange24h == null ? null : Number(token.priceChange24h);
 
-function Metric({ label, value }: { label: string; value: string }) {
   return (
-    <div>
-      <div className="text-xs text-muted">{label}</div>
-      <div className="num">{value}</div>
-    </div>
-  );
-}
-
-function Row({ label, value, tone, small }: { label: string; value: string; tone?: 'up' | 'down'; small?: boolean }) {
-  return (
-    <div className="flex justify-between">
-      <span className={`text-muted ${small ? 'text-xs' : ''}`}>{label}</span>
-      <span className={`num ${small ? 'text-xs' : ''} ${tone === 'up' ? 'text-up' : tone === 'down' ? 'text-down' : ''}`}>
-        {value}
-      </span>
-    </div>
-  );
-}
-
-/**
- * Метка проверки токена.
- *
- * Три состояния, и третье не менее важно первых двух: «не проверялся»
- * должно отличаться от «проверен и чист». Молчание на непроверенном
- * токене читается как одобрение, хотя означает лишь то, что до него
- * ещё не дошла очередь.
- *
- * Заблокированные в списке обычно не появляются — их отсекает запрос, —
- * но метка на них предусмотрена: админ может включить их показ.
- */
-function ScamBadge({
-  verdict,
-  reasons,
-  checkedAt,
-}: {
-  verdict?: string | null;
-  reasons?: { blockers?: string[]; warnings?: string[] } | null;
-  checkedAt?: string | null;
-}) {
-  if (!verdict) {
-    return (
-      <span
-        title="Проверка контракта ещё не выполнялась — это не значит, что токен чист"
-        className="text-muted text-[10px]"
+    <div className="panel flex items-center gap-3 p-3">
+      <button
+        onClick={onBack}
+        aria-label="Назад к списку"
+        className="tap -ml-1 flex items-center justify-center rounded-md px-2 text-muted hover:bg-raised hover:text-white"
       >
-        ?
-      </span>
-    );
-  }
+        ←
+      </button>
 
-  if (verdict === 'OK') {
-    return (
-      <span
-        title="Явных признаков ловушки не найдено. Мем-коин всё равно может обесцениться"
-        className="text-up text-[10px]"
-      >
-        ✓
-      </span>
-    );
-  }
+      <TokenLogo symbol={token.symbol} address={token.address} logoUrl={token.logoUrl} size={32} />
 
-  const list = verdict === 'BLOCK' ? reasons?.blockers : reasons?.warnings;
-  const hint = list?.length ? list.join('; ') : 'Требует внимания';
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1.5">
+          <span className="truncate text-sm font-semibold">{token.symbol}</span>
+          <span className="shrink-0 rounded border border-border bg-raised px-1.5 py-0.5 text-[10px] text-muted">
+            {CHAIN_LABEL[token.chain] ?? token.chain}
+          </span>
+        </div>
+        <p className="truncate text-xs text-muted">{token.name}</p>
+      </div>
 
-  return (
-    <span
-      title={hint}
-      className={`text-[10px] ${verdict === 'BLOCK' ? 'text-down' : 'text-yellow-400'}`}
-    >
-      {verdict === 'BLOCK' ? '⛔' : '⚠'}
-      {list && list.length > 1 && (
-        <span className="text-muted ml-0.5">{list.length}</span>
-      )}
-    </span>
+      <div className="shrink-0 text-right">
+        <div className="num text-sm font-semibold leading-tight">{fmtPrice(token.priceUsd)}</div>
+        <div
+          className={`num text-xs leading-tight ${
+            ch == null ? 'text-muted' : ch >= 0 ? 'text-up' : 'text-down'
+          }`}
+        >
+          {ch == null ? '—' : fmtPct(ch)}
+        </div>
+      </div>
+    </div>
   );
 }
