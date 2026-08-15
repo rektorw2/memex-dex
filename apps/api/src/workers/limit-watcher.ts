@@ -1,9 +1,10 @@
 import { Prisma as P } from '@prisma/client';
-import { evaluateTrigger } from '@memex/core';
+import { evaluateTrigger, rescaleRemaining } from '@memex/core';
 import { prisma } from '../lib/prisma.js';
 import { executeOrder } from '../services/execution.js';
 import { logger } from '../lib/logger.js';
 import * as balances from '../services/balances.js';
+import { reservesFunds } from '../services/order-locking.js';
 import { serializable } from '../lib/prisma.js';
 
 /**
@@ -73,7 +74,7 @@ export async function tick() {
         case 'expire':
           await serializable(async (tx) => {
             const remaining = order.amountIn.minus(order.filledIn);
-            if (remaining.gt(0)) {
+            if (reservesFunds(order.type) && remaining.gt(0)) {
               await balances.unlock(tx, {
                 userId: order.userId, tokenId: order.tokenInId,
                 amount: remaining, refId: order.id,
@@ -99,6 +100,16 @@ export async function tick() {
 
           logger.info({ orderId: order.id, reason: decision.reason }, 'сработал отложенный ордер');
 
+          // Стоп ничего не резервировал, поэтому за время ожидания
+          // позиция могла уменьшиться: часть могла уйти по цели или
+          // быть продана вручную. Продаём то, что есть сейчас, —
+          // иначе исполнение отклонится по нехватке средств ровно
+          // тогда, когда стоп нужен.
+          if (!reservesFunds(order.type)) {
+            const clamped = await clampToAvailable(order.id);
+            if (!clamped) break;
+          }
+
           let filled = false;
           await executeOrder(order.id)
             .then(() => {
@@ -122,6 +133,9 @@ export async function tick() {
           // просто у подписчиков не появлялось сделок.
           if (filled) {
             await maybeFanout(order.id);
+            // Остальные ордера выхода по этой же позиции теперь
+            // выставлены на количество, которого уже нет.
+            await rescaleExitOrders(order.id);
           }
           break;
         }
@@ -195,4 +209,149 @@ async function cancelMirrorsFor(
   } catch (e: any) {
     logger.error({ err: e?.message, orderId }, 'снятие зеркальных копий не удалось');
   }
+}
+
+/**
+ * Пересчёт оставшихся ордеров выхода после срабатывания одного из них.
+ *
+ * Проблема, которую это закрывает: план выхода ставит на одну позицию
+ * несколько ордеров — цели на разные кратности и стоп на весь объём.
+ * Когда срабатывает любой из них, позиция уменьшается, а остальные
+ * ордера продолжают висеть на количество, которого уже нет. При их
+ * срабатывании они отклонятся — то есть ровно тогда, когда нужны.
+ *
+ * Особенно это верно для стопа: он выставлен на всю позицию, и после
+ * частичной фиксации по первой цели становится больше остатка.
+ */
+async function rescaleExitOrders(filledOrderId: string): Promise<void> {
+  try {
+    const filled = await prisma.order.findUnique({
+      where: { id: filledOrderId },
+      select: { userId: true, tokenInId: true, side: true, type: true },
+    });
+
+    // Пересчитывать нужно только после продажи: покупка позицию
+    // не уменьшает.
+    if (!filled || filled.side !== 'SELL') return;
+    if (!['TAKE_PROFIT', 'STOP_LOSS', 'LIMIT'].includes(filled.type)) return;
+
+    const [position, siblings] = await Promise.all([
+      prisma.position.findUnique({
+        where: { userId_tokenId: { userId: filled.userId, tokenId: filled.tokenInId } },
+        select: { quantity: true },
+      }),
+      prisma.order.findMany({
+        where: {
+          userId: filled.userId,
+          tokenInId: filled.tokenInId,
+          side: 'SELL',
+          status: { in: ['OPEN', 'PARTIALLY_FILLED'] },
+          id: { not: filledOrderId },
+        },
+        orderBy: { triggerPrice: 'asc' },
+      }),
+    ]);
+
+    if (siblings.length === 0) return;
+
+    const remaining = position?.quantity ?? new P.Decimal(0);
+
+    const scaled = rescaleRemaining(
+      remaining.toString(),
+      siblings.map((o) => ({ id: o.id, quantity: o.amountIn.minus(o.filledIn).toString() })),
+    );
+
+    for (const s of scaled) {
+      const order = siblings.find((o) => o.id === s.id);
+      if (!order) continue;
+
+      if (!reservesFunds(order.type)) continue;
+      const wasLocked = order.amountIn.minus(order.filledIn);
+      const nowLocked = new P.Decimal(s.quantity);
+      if (nowLocked.equals(wasLocked)) continue;
+
+      await serializable(async (tx) => {
+        const freed = wasLocked.minus(nowLocked);
+        if (freed.gt(0)) {
+          await balances.unlock(tx, {
+            userId: order.userId,
+            tokenId: order.tokenInId,
+            amount: freed,
+            refId: order.id,
+          });
+        }
+
+        if (nowLocked.lte(0)) {
+          // Продавать нечего — ордер снимается, а не остаётся нулевым:
+          // нулевой ордер в книге выглядит как действующий план выхода,
+          // которого на самом деле нет.
+          await tx.order.update({
+            where: { id: order.id },
+            data: {
+              status: 'CANCELLED',
+              rejectReason: 'Позиция закрыта другим ордером выхода',
+            },
+          });
+        } else {
+          await tx.order.update({
+            where: { id: order.id },
+            data: { amountIn: nowLocked.plus(order.filledIn) },
+          });
+        }
+      });
+    }
+
+    logger.info(
+      { filledOrderId, adjusted: scaled.length, remaining: remaining.toString() },
+      'ордера выхода пересчитаны под остаток позиции',
+    );
+  } catch (e: any) {
+    // Сбой пересчёта не откатывает уже исполненную продажу.
+    logger.error({ err: e?.message, filledOrderId }, 'пересчёт ордеров выхода не удался');
+  }
+}
+
+/**
+ * Ограничение объёма стопа фактическим остатком.
+ *
+ * Возвращает false, если продавать нечего — тогда ордер снимается:
+ * стоп на закрытую позицию это мусор в книге, который при каждом
+ * проходе воркера пытается исполниться и пишет ошибку в лог.
+ */
+async function clampToAvailable(orderId: string): Promise<boolean> {
+  const order = await prisma.order.findUnique({
+    where: { id: orderId },
+    select: { userId: true, tokenInId: true, amountIn: true, filledIn: true },
+  });
+  if (!order) return false;
+
+  const balance = await prisma.balance.findUnique({
+    where: { userId_tokenId: { userId: order.userId, tokenId: order.tokenInId } },
+    select: { available: true },
+  });
+
+  const available = balance?.available ?? new P.Decimal(0);
+  const wanted = order.amountIn.minus(order.filledIn);
+
+  if (available.lte(0)) {
+    await prisma.order.update({
+      where: { id: orderId },
+      data: { status: 'CANCELLED', rejectReason: 'Позиция уже закрыта' },
+    });
+    logger.info({ orderId }, 'стоп снят: позиция закрыта');
+    return false;
+  }
+
+  if (available.lt(wanted)) {
+    await prisma.order.update({
+      where: { id: orderId },
+      data: { amountIn: available.plus(order.filledIn) },
+    });
+    logger.info(
+      { orderId, wanted: wanted.toString(), available: available.toString() },
+      'объём стопа уменьшен до фактического остатка',
+    );
+  }
+
+  return true;
 }

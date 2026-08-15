@@ -7,23 +7,17 @@ import { usePathname } from 'next/navigation';
 /**
  * Навигация: полный ряд на широком экране, кнопка с меню на телефоне.
  *
- * Раньше все семь разделов прокручивались вбок внутри шапки, и на
- * телефоне это работало плохо: часть названий оставалась за краем
- * экрана, и об их существовании нельзя было догадаться, не начав
- * тянуть строку пальцем.
+ * Терминала в списке нет. Он на главной, а на главную ведёт логотип —
+ * так устроено почти везде, и отдельный пункт рядом с логотипом означал
+ * бы две кнопки в один и тот же адрес. Освободившееся место уходит
+ * остальным разделам.
  *
- * На широком экране прятать разделы незачем — там они помещаются
- * целиком, а лишний клик до нужного раздела в торговом интерфейсе
- * стоит дороже сэкономленного места.
- *
- * «Терминал» на телефоне остаётся снаружи: это раздел, куда
- * возвращаются чаще всего, и прятать его за кнопку значит добавлять
- * клик к самому частому действию.
+ * На широком экране разделы показываются целиком: лишний клик до нужного
+ * в торговом интерфейсе стоит дороже сэкономленного места. На телефоне
+ * они не помещаются, поэтому убраны под кнопку.
  */
 
-const PRIMARY = { href: '/', label: 'Терминал' };
-
-const SECONDARY = [
+const SECTIONS = [
   { href: '/calls', label: 'Коллы' },
   { href: '/radar', label: 'Радар' },
   // Название «Смарт-деньги», а не «Кошельки»: пункт /wallet ниже — это
@@ -77,8 +71,15 @@ export function MainNav() {
     };
   }, [open]);
 
+  /**
+   * Совпадение маршрута по границе сегмента, а не по началу строки.
+   *
+   * Обычный startsWith подсвечивал два пункта разом: «/wallets»
+   * начинается с «/wallet», и на странице смарт-денег загорались
+   * и «Смарт-деньги», и «Кошельки».
+   */
   const isActive = (href: string) =>
-    href === '/' ? pathname === '/' : pathname.startsWith(href);
+    pathname === href || pathname.startsWith(`${href}/`);
 
   const linkCls = (href: string) =>
     `whitespace-nowrap rounded-md px-2 py-1.5 text-sm transition-colors sm:px-3 ${
@@ -91,13 +92,9 @@ export function MainNav() {
 
   return (
     <div ref={boxRef} className="relative flex min-w-0 items-center gap-1">
-      <Link href={PRIMARY.href} className={linkCls(PRIMARY.href)}>
-        {PRIMARY.label}
-      </Link>
-
       {/* Широкий экран: разделы целиком. */}
       <nav className="hidden gap-1 md:flex">
-        {SECONDARY.map((n) => (
+        {SECTIONS.map((n) => (
           <Link key={n.href} href={n.href} className={linkCls(n.href)}>
             {n.label}
           </Link>
@@ -112,7 +109,7 @@ export function MainNav() {
         aria-haspopup="menu"
         aria-label="Разделы"
         className={`tap flex items-center justify-center rounded-md px-2 py-1.5 transition-colors md:hidden ${
-          open || SECONDARY.some((m) => isActive(m.href))
+          open || SECTIONS.some((m) => isActive(m.href))
             ? 'bg-accent/15 text-accent'
             : 'text-muted hover:bg-raised hover:text-white'
         }`}
@@ -129,7 +126,7 @@ export function MainNav() {
           role="menu"
           className="border-border bg-panel absolute left-0 top-full z-50 mt-2 min-w-[190px] rounded-lg border py-1 shadow-xl md:hidden"
         >
-          {SECONDARY.map((n) => (
+          {SECTIONS.map((n) => (
             <Link
               key={n.href}
               href={n.href}

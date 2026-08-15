@@ -11,3 +11,5 @@ export * from './copy-pending.js';
 export * from './auto-exit.js';
 export * from './withdrawal.js';
 export * from './scam-gate.js';
+export * from './api-scopes.js';
+export * from './exit-presets.js';

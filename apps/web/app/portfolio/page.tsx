@@ -1,10 +1,15 @@
 'use client';
 
 import useSWR from 'swr';
+import { useState } from 'react';
 import { fetcher, fmtUsd, fmtPrice, fmtPct } from '@/lib/api';
+import { ExitPlanManager } from '@/components/ExitPlanPicker';
+import { useRole } from '@/lib/role';
 
 export default function PortfolioPage() {
-  const { data: p } = useSWR<any>('/portfolio', fetcher, { refreshInterval: 10_000 });
+  const [planFor, setPlanFor] = useState<string | null>(null);
+  const { isLeader } = useRole();
+  const { data: p, mutate } = useSWR<any>('/portfolio', fetcher, { refreshInterval: 10_000 });
   const { data: history } = useSWR<any[]>('/portfolio/history', fetcher);
 
   return (
@@ -37,6 +42,7 @@ export default function PortfolioPage() {
                 <th className="text-right p-3 font-normal" title="Доля позиции, с которой при продаже будет удержана комиссия">
                   Копитрейд
                 </th>
+                {isLeader && <th className="text-right p-3 font-normal">Выход</th>}
               </tr>
             </thead>
             <tbody>
@@ -55,10 +61,33 @@ export default function PortfolioPage() {
                     <div className="text-xs opacity-70">{fmtPct(h.unrealizedPnlPct)}</div>
                   </td>
                   <td className="p-3 text-right num text-xs text-muted">{h.copiedSharePct}%</td>
+                  {isLeader && (
+                    <td className="p-3 text-right">
+                      {/* Смена плана прямо в строке: возвращаться на страницу
+                          токена ради этого значило бы терять из виду остальные
+                          позиции — а решение о выходе принимается, глядя
+                          на портфель целиком. */}
+                      <button
+                        onClick={() => setPlanFor(planFor === h.tokenId ? null : h.tokenId)}
+                        className="text-xs text-accent hover:underline"
+                      >
+                        {planFor === h.tokenId ? 'скрыть' : 'план'}
+                      </button>
+                    </td>
+                  )}
                 </tr>
               ))}
+              {isLeader && p?.holdings?.map((h: any) =>
+                planFor === h.tokenId ? (
+                  <tr key={`${h.tokenId}-plan`} className="border-b border-border/50 bg-bg">
+                    <td colSpan={8} className="p-3">
+                      <ExitPlanManager tokenId={h.tokenId} onChanged={() => mutate()} />
+                    </td>
+                  </tr>
+                ) : null,
+              )}
               {!p?.holdings?.length && (
-                <tr><td colSpan={7} className="text-center text-muted py-8 text-sm">Нет открытых позиций</td></tr>
+                <tr><td colSpan={isLeader ? 8 : 7} className="text-center text-muted py-8 text-sm">Нет открытых позиций</td></tr>
               )}
             </tbody>
           </table>

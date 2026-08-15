@@ -1,5 +1,6 @@
 import { Prisma as P, type Chain, type OrderSource } from '@prisma/client';
 import { requiredLock } from '@memex/core';
+import { reservesFunds } from './order-locking.js';
 import { prisma, serializable } from '../lib/prisma.js';
 import { executeOrder } from './execution.js';
 import { fanoutLeaderTrade, mirrorLeaderPendingOrder, cancelMirroredOrders } from './copytrade.js';
@@ -93,7 +94,8 @@ export async function placeOrderForUser(
 
     // Отложенный ордер резервирует средства сразу — иначе к моменту
     // срабатывания пользователь потратит их на другую сделку.
-    if (input.type !== 'MARKET') {
+    // Исключение — стоп-лосс: см. order-locking.ts.
+    if (reservesFunds(input.type)) {
       await balances.lock(tx, {
         userId,
         tokenId: input.tokenInId,
@@ -162,7 +164,7 @@ export async function cancelOrderForUser(
     }
 
     const unlockAmount = order.amountIn.minus(order.filledIn);
-    if (order.type !== 'MARKET' && unlockAmount.gt(0)) {
+    if (reservesFunds(order.type) && unlockAmount.gt(0)) {
       await balances.unlock(tx, {
         userId: order.userId,
         tokenId: order.tokenInId,

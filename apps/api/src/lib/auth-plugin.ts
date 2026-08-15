@@ -31,6 +31,15 @@ declare module 'fastify' {
   interface FastifyInstance {
     authenticate: (req: FastifyRequest, reply: FastifyReply) => Promise<void>;
     requireAdmin: (req: FastifyRequest, reply: FastifyReply) => Promise<void>;
+    /**
+     * Админ или лидер копитрейдинга.
+     *
+     * Отдельно от requireAdmin, потому что смысл другой: это не «право
+     * управлять платформой», а «право вести позицию, за которой
+     * повторяют». Обычному пользователю такие возможности не нужны,
+     * а ошибка в них стоит денег подписчиков, а не только своих.
+     */
+    requireLeader: (req: FastifyRequest, reply: FastifyReply) => Promise<void>;
   }
 }
 
@@ -51,6 +60,21 @@ const plugin: FastifyPluginAsync = async (app) => {
     }
     if (req.user.role !== 'ADMIN') {
       return reply.code(403).send({ error: 'Недостаточно прав' });
+    }
+  });
+
+  app.decorate('requireLeader', async (req: FastifyRequest, reply: FastifyReply) => {
+    try {
+      await req.jwtVerify();
+    } catch {
+      return reply.code(401).send({ error: 'Требуется авторизация' });
+    }
+    if (req.user.role !== 'ADMIN' && req.user.role !== 'TRADER') {
+      // Сообщение объясняет не только отказ, но и как его снять:
+      // «недостаточно прав» без этого заставляет гадать.
+      return reply.code(403).send({
+        error: 'Планы выхода доступны администраторам и лидерам копитрейдинга',
+      });
     }
   });
 };

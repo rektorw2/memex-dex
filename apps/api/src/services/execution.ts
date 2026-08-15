@@ -9,6 +9,7 @@ import {
   D,
   type PositionState,
 } from '@memex/core';
+import { reservesFunds } from './order-locking.js';
 import { prisma, serializable } from '../lib/prisma.js';
 import { getAdapter } from '../chains/index.js';
 import { withPrivateKey, type EncryptedKey } from '../lib/crypto.js';
@@ -183,7 +184,9 @@ async function settleTrade(args: {
       tokenId: order.tokenInId,
       amount: amountInDec.plus(swapFeeIn),
       type: 'TRADE_OUT',
-      fromLocked: order.type !== 'MARKET',
+      // Стоп не резервировал — значит и списывать из заблокированного
+      // с него нечего.
+      fromLocked: reservesFunds(order.type),
       refType: 'Order',
       refId: order.id,
     });

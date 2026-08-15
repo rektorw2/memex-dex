@@ -12,6 +12,7 @@ import { supportedChains } from '../chains/index.js';
 import { fetchPoolForToken } from '../services/market-data.js';
 import { placeOrderForUser } from './order-intake.js';
 import * as balances from './balances.js';
+import { reservesFunds } from './order-locking.js';
 
 /**
  * Покупка по адресу с автоматической постановкой выхода.
@@ -291,12 +292,16 @@ async function createExitOrder(
       },
     });
 
-    await balances.lock(tx, {
-      userId,
-      tokenId: token.id,
-      amount: qty.toString(),
-      refId: order.id,
-    });
+    // Стоп не резервирует: он покрывает ту же позицию, что и цель,
+    // и бронь под оба означала бы двести процентов позиции.
+    if (reservesFunds(opts.type)) {
+      await balances.lock(tx, {
+        userId,
+        tokenId: token.id,
+        amount: qty.toString(),
+        refId: order.id,
+      });
+    }
 
     return order;
   });

@@ -1,6 +1,12 @@
 import type { FastifyRequest } from 'fastify';
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { checkScope, ALL_SCOPES, SCOPE_LABELS, type ApiScope } from '@memex/core';
 import { prisma } from './prisma.js';
+
+// Список областей и проверка прав живут в ядре: это правило предметной
+// области, а не деталь транспорта, и там оно закрыто тестами — включая
+// тот, который ломается при попытке добавить область с правом вывода.
+export { ALL_SCOPES, SCOPE_LABELS, type ApiScope };
 
 /**
  * Проверка ключа программного доступа.
@@ -9,24 +15,6 @@ import { prisma } from './prisma.js';
  * выводить средства, должно существовать в одном месте, а не повторяться
  * в каждом обработчике. Повторённое правило рано или поздно разойдётся.
  */
-
-/**
- * Полный список областей.
- *
- * Здесь нет и не может быть области для вывода средств. Ключ лежит в файле
- * на машине, которую мы не контролируем, его нельзя закрыть вторым
- * фактором и нельзя спросить у владельца подтверждение. Единственная
- * надёжная защита денег — отсутствие самой возможности их отправить,
- * поэтому вывод остаётся только за живой сессией с 2FA.
- */
-export const ALL_SCOPES = ['radar:ingest', 'trade:read', 'trade:write'] as const;
-export type ApiScope = (typeof ALL_SCOPES)[number];
-
-export const SCOPE_LABELS: Record<ApiScope, string> = {
-  'radar:ingest': 'Добавлять токены в радар',
-  'trade:read': 'Читать позиции, ордера и баланс',
-  'trade:write': 'Ставить и отменять ордера',
-};
 
 export function hashToken(raw: string): string {
   return createHash('sha256').update(raw).digest('hex');
@@ -78,14 +66,8 @@ export async function requireApiKey(
   if (!matches || !key.isActive) fail('Ключ недействителен', 401);
   if (key.user.isFrozen) fail('Аккаунт заморожен', 403);
 
-  if (!key.scopes.includes(requiredScope)) {
-    // Сообщаем, какой области не хватает: без этого владелец ключа
-    // перебирает настройки вслепую.
-    fail(
-      `Ключу не хватает области доступа «${SCOPE_LABELS[requiredScope]}» (${requiredScope})`,
-      403,
-    );
-  }
+  const scope = checkScope(key.scopes, requiredScope);
+  if (!scope.allowed) fail(scope.reason, 403);
 
   // Окно частоты. Скользящее не нужно: задача — не пустить скрипт
   // в разнос, а не считать точно.

@@ -4,6 +4,7 @@ import { useState } from 'react';
 import useSWR from 'swr';
 import Link from 'next/link';
 import { fetcher, api, errorMessage, fmtPrice } from '@/lib/api';
+import { ExitPlanChoice } from '@/components/ExitPlanPicker';
 
 /**
  * Покупка по адресу с автоматическим выходом.
@@ -32,41 +33,26 @@ type Result = {
   warnings: string[];
 };
 
-/** Готовые наборы целей. Первый — то, что просили: всё на 3×. */
-const PRESETS: Array<{ key: string; label: string; hint: string; steps: Array<{ multiple: number; fraction: number }> }> = [
-  {
-    key: 'x3',
-    label: 'Всё на 3×',
-    hint: 'Одна цель. Рост меньше трёхкратного не фиксируется вообще',
-    steps: [{ multiple: 3, fraction: 1 }],
-  },
-  {
-    key: 'ladder',
-    label: 'Лестница 2× / 3× / 5×',
-    hint: 'Половина на 2×, треть на 3×, остаток на 5×. Забирает и умеренный рост',
-    steps: [
-      { multiple: 2, fraction: 0.5 },
-      { multiple: 3, fraction: 0.3 },
-      { multiple: 5, fraction: 0.2 },
-    ],
-  },
-];
-
 export function QuickBuy() {
   const { data: tokens } = useSWR<Token[]>('/tokens', fetcher);
+  // Список планов берётся с сервера, а не дублируется здесь: иначе
+  // интерфейс однажды покажет один набор, а бэкенд применит другой.
+  const { data: planMeta } = useSWR<{ presets: Array<{ key: string; label: string; description: string }> }>(
+    '/exit-presets',
+    fetcher,
+  );
+  const presets = planMeta?.presets ?? [];
 
   const [address, setAddress] = useState('');
   const [amount, setAmount] = useState('');
   const [quoteId, setQuoteId] = useState('');
   const [preset, setPreset] = useState('x3');
-  const [stopLoss, setStopLoss] = useState<string>('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<Result | null>(null);
 
   const quotes = (tokens ?? []).filter((t) => t.isQuote);
   const activeQuote = quoteId || quotes[0]?.id || '';
-  const steps = PRESETS.find((p) => p.key === preset)!.steps;
 
   const canSubmit = address.trim().length >= 10 && Number(amount) > 0 && activeQuote && !busy;
 
@@ -81,8 +67,7 @@ export function QuickBuy() {
           addressOrLink: address.trim(),
           amountIn: amount,
           quoteTokenId: activeQuote,
-          steps,
-          stopLossPct: stopLoss ? Number(stopLoss) : null,
+          exitPreset: preset,
         }),
       });
       setResult(r);
@@ -148,40 +133,9 @@ export function QuickBuy() {
         </div>
       </div>
 
-      <div>
-        <label className="label">Автопродажа</label>
-        <div className="flex flex-wrap gap-2">
-          {PRESETS.map((p) => (
-            <button
-              key={p.key}
-              type="button"
-              title={p.hint}
-              onClick={() => setPreset(p.key)}
-              className={`rounded-md border px-3 py-1.5 text-xs transition ${
-                preset === p.key
-                  ? 'border-accent bg-accent/15 text-white'
-                  : 'border-border text-muted hover:text-white'
-              }`}
-            >
-              {p.label}
-            </button>
-          ))}
-        </div>
-        <p className="text-muted mt-1.5 text-[11px] leading-relaxed">
-          {PRESETS.find((p) => p.key === preset)!.hint}
-        </p>
-      </div>
-
-      <div>
-        <label className="label">Стоп-лосс, % ниже входа (необязательно)</label>
-        <input
-          className="input num max-w-[160px] text-sm"
-          inputMode="numeric"
-          placeholder="без стопа"
-          value={stopLoss}
-          onChange={(e) => setStopLoss(e.target.value.replace(/\D/g, ''))}
-        />
-      </div>
+      {/* План выхода — один активный. Перекрывающиеся цели и стоп
+          потребовали бы заморозить одни и те же токены дважды. */}
+      <ExitPlanChoice presets={presets} value={preset} onChange={setPreset} />
 
       <button onClick={submit} disabled={!canSubmit} className="btn-ghost text-sm">
         {busy ? 'Покупаем…' : 'Купить и поставить выход'}

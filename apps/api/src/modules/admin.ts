@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { Prisma as P } from '@prisma/client';
 import { assessToken } from '@memex/core';
+import { findExitPreset, DEFAULT_EXIT_PRESET } from '@memex/core';
 import { prisma } from '../lib/prisma.js';
 import { reconcileUser } from '../services/balances.js';
 import { getAdapter, supportedChains } from '../chains/index.js';
@@ -26,30 +27,27 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         amountIn: z.string().refine((v) => Number(v) > 0, 'Сумма должна быть больше нуля'),
         quoteTokenId: z.string(),
         chain: z.enum(['SOLANA', 'BNB', 'ROBINHOOD', 'ETHEREUM', 'BASE']).optional(),
-        /** Цели выхода. По умолчанию — одна на 3× со всей позицией. */
-        steps: z
-          .array(
-            z.object({
-              multiple: z.number().gt(1).max(1000),
-              fraction: z.number().gt(0).max(1),
-            }),
-          )
-          .max(5)
-          .optional(),
-        stopLossPct: z.number().int().min(1).max(99).nullable().optional(),
+        /**
+         * План выхода. Один активный на позицию — перекрывающиеся цели
+         * и стоп потребовали бы заморозить одни и те же токены дважды.
+         */
+        exitPreset: z.string().max(20).default(DEFAULT_EXIT_PRESET),
         slippageBps: z.number().int().min(10).max(5000).default(300),
       })
       .parse(req.body);
 
     const { quickBuy } = await import('../services/quick-buy.js');
 
+    const preset = findExitPreset(body.exitPreset);
+    if (!preset) return reply.code(400).send({ error: 'Неизвестный план выхода' });
+
     const result = await quickBuy(req.user.sub, {
       addressOrLink: body.addressOrLink,
       amountIn: body.amountIn,
       quoteTokenId: body.quoteTokenId,
       chain: body.chain ?? null,
-      steps: body.steps,
-      stopLossPct: body.stopLossPct ?? null,
+      steps: preset.steps,
+      stopLossPct: preset.stopLossPct,
       slippageBps: body.slippageBps,
     });
 

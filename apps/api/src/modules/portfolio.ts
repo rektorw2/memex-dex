@@ -1,5 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
+import { z } from 'zod';
 import { Prisma as P } from '@prisma/client';
+import { EXIT_PRESETS } from '@memex/core';
 import { prisma } from '../lib/prisma.js';
 
 export const portfolioRoutes: FastifyPluginAsync = async (app) => {
@@ -87,5 +89,68 @@ export const portfolioRoutes: FastifyPluginAsync = async (app) => {
       performanceFeeUsd: t.performanceFeeUsd.toFixed(2),
       txSignature: t.txSignature,
     }));
+  });
+
+  // ─────────────────────── План выхода из позиции ──────────────────────
+
+  /**
+   * Список планов.
+   *
+   * Под теми же правами, что и применение: показывать выбор тому,
+   * кто не может им воспользоваться, значит обещать возможность,
+   * которой нет.
+   */
+  app.get('/exit-presets', { preHandler: [app.requireLeader] }, async () => ({
+    presets: EXIT_PRESETS.map((p) => ({
+      key: p.key,
+      label: p.label,
+      description: p.description,
+    })),
+  }));
+
+  /** Доступные планы и текущий по конкретной позиции. */
+  app.get('/positions/:tokenId/exit-plan', { preHandler: [app.requireLeader] }, async (req) => {
+    const { tokenId } = z.object({ tokenId: z.string() }).parse(req.params);
+    const { getExitPlan } = await import('../services/exit-plan.js');
+
+    return {
+      presets: EXIT_PRESETS.map((p) => ({
+        key: p.key,
+        label: p.label,
+        description: p.description,
+      })),
+      plan: await getExitPlan(req.user.sub, tokenId),
+    };
+  });
+
+  /**
+   * Смена плана выхода.
+   *
+   * Одна операция, а не «отменить, потом поставить»: между двумя
+   * запросами позиция осталась бы без плана вовсе, и цена не спрашивает,
+   * успел ли человек нажать вторую кнопку.
+   */
+  app.put('/positions/:tokenId/exit-plan', { preHandler: [app.requireLeader] }, async (req) => {
+    const { tokenId } = z.object({ tokenId: z.string() }).parse(req.params);
+    const body = z.object({ preset: z.string().min(1).max(20) }).parse(req.body);
+
+    const { setExitPlan } = await import('../services/exit-plan.js');
+    const result = await setExitPlan(req.user.sub, tokenId, body.preset);
+
+    await prisma.auditLog.create({
+      data: {
+        actorId: req.user.sub,
+        action: 'position.exit_plan',
+        entity: 'Position',
+        entityId: tokenId,
+        after: {
+          preset: result.preset,
+          cancelled: result.cancelled,
+          created: result.created,
+        } as never,
+      },
+    });
+
+    return result;
   });
 };

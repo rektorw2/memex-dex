@@ -55,7 +55,14 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="font-sans">
         <header className="sticky top-0 z-50 border-b border-border bg-bg">
           <div className="mx-auto flex h-header min-w-0 max-w-[1800px] items-center gap-2 px-4 sm:gap-4 sm:px-5">
-            <Link href="/" className="font-bold text-lg tracking-tight shrink-0">
+            {/* Логотип — единственный путь на терминал. Отдельного
+                пункта в навигации нет: он вёл бы в тот же адрес,
+                что и логотип рядом с ним. */}
+            <Link
+              href="/"
+              aria-label="Терминал"
+              className="shrink-0 rounded-md text-lg font-bold tracking-tight transition-opacity hover:opacity-80"
+            >
               me<span className="text-accent">mex</span>
             </Link>
 
