@@ -95,6 +95,7 @@ async function get<T>(path: string): Promise<T | null> {
 
 export interface PoolToken {
   chain: Chain;
+  logoUrl?: string | null;
   /** Адрес самого токена (mint для Solana, contract для EVM). */
   address: string;
   symbol: string;
@@ -130,7 +131,8 @@ interface GeckoPool {
 interface GeckoIncluded {
   id: string;
   type: string;
-  attributes: { address: string; name: string; symbol: string; decimals?: number };
+  attributes: {
+    image_url?: string | null; address: string; name: string; symbol: string; decimals?: number };
 }
 
 const num = (v: string | null | undefined): number | null => {
@@ -204,6 +206,9 @@ export async function fetchPools(
         // GeckoTerminal не всегда отдаёт decimals; для Solana обычно 6 или 9,
         // для EVM — 18. Уточняется при первой сделке через адаптер сети.
         decimals: base.attributes.decimals ?? (chain === 'SOLANA' ? 9 : 18),
+        // Логотип есть не у всех токенов, и у свежих мем-коинов его нет
+        // почти никогда. Отсутствие — норма, интерфейс рисует буквы тикера.
+        logoUrl: base.attributes.image_url ?? null,
         poolAddress: pool.attributes.address,
         priceUsd: num(pool.attributes.base_token_price_usd),
         liquidityUsd: num(pool.attributes.reserve_in_usd),

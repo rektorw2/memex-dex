@@ -71,6 +71,7 @@ export async function importTokens(): Promise<ImportStats[]> {
         symbol: pool.symbol,
         name: pool.name,
         poolAddress: pool.poolAddress,
+        logoUrl: pool.logoUrl ?? null,
         priceUsd: pool.priceUsd != null ? new P.Decimal(pool.priceUsd) : null,
         liquidityUsd: pool.liquidityUsd != null ? new P.Decimal(pool.liquidityUsd) : null,
         volume24hUsd: pool.volume24hUsd != null ? new P.Decimal(pool.volume24hUsd) : null,
@@ -88,9 +89,16 @@ export async function importTokens(): Promise<ImportStats[]> {
         if (existing) {
           await prisma.token.update({
             where: { id: existing.id },
-            // symbol/name у существующего токена не перезаписываем: админ
-            // мог поправить их вручную, и автоимпорт не должен это откатывать.
-            data: { ...data, symbol: existing.symbol, name: existing.name },
+            // symbol/name/logoUrl у существующего токена не перезаписываем:
+            // админ мог поправить их вручную, и автоимпорт не должен это
+            // откатывать. Пустой логотип при этом заполняем — потерять
+            // тут нечего.
+            data: {
+              ...data,
+              symbol: existing.symbol,
+              name: existing.name,
+              logoUrl: existing.logoUrl ?? data.logoUrl,
+            },
           });
           s.updated++;
         } else {

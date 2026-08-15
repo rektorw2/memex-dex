@@ -4,6 +4,7 @@ import useSWR from 'swr';
 import { useState } from 'react';
 import Link from 'next/link';
 import { fetcher, fmtPrice, fmtUsd, fmtPct } from '@/lib/api';
+import { TokenLogo } from '@/components/TokenLogo';
 import { PriceChart } from '@/components/PriceChart';
 import { TradePanel } from '@/components/TradePanel';
 
@@ -116,6 +117,12 @@ export default function TerminalPage() {
                     >
                       <td className="py-1.5">
                         <div className="flex items-center gap-1.5">
+                          <TokenLogo
+                            symbol={t.symbol}
+                            address={t.address}
+                            logoUrl={t.logoUrl}
+                            size={20}
+                          />
                           <span className="font-medium">{t.symbol}</span>
                           {t.isVerified && (
                             <span className="text-accent text-[10px]" title="Проверен админом">✓</span>
