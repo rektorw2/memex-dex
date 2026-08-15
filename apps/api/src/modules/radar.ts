@@ -207,6 +207,26 @@ export const radarRoutes: FastifyPluginAsync = async (app) => {
     return { linked, enabled: true, processed: updates.length };
   });
 
+  /**
+   * Ручное добавление находок.
+   *
+   * Существует потому, что автоматический разбор чужих закрытых лент —
+   * плохая идея сразу по двум причинам: он нарушает условия площадок и
+   * ломается молча, без ошибки в логах. Здесь вместо этого человек
+   * смотрит своими глазами и вставляет то, что счёл нужным, а дальше
+   * находка идёт по обычному пути: наблюдение, разметка кошельков,
+   * проверка автоправилом.
+   *
+   * Принимается любой текст: адрес, ссылка или целый абзац с несколькими
+   * токенами. Требовать чистый адрес значит гарантированно получать
+   * вставленное не туда.
+   */
+  app.post('/radar/watch', { preHandler: [app.requireAdmin] }, async (req) => {
+    const body = z.object({ text: z.string().min(1).max(20_000) }).parse(req.body);
+    const { addWatched } = await import('../workers/radar-scanner.js');
+    return addWatched(body.text);
+  });
+
   /** Немедленный запуск сканирования — для админа. */
   app.post('/radar/scan', { preHandler: [app.requireAdmin] }, async () => {
     const { scanRadar } = await import('../workers/radar-scanner.js');

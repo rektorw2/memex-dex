@@ -62,6 +62,7 @@ function FreshFinds({ chain, isAdmin }: { chain: string; isAdmin: boolean }) {
   const [maxRisk, setMaxRisk] = useState<number | ''>('');
   const [maxAge, setMaxAge] = useState<number | ''>('');
   const [smartOnly, setSmartOnly] = useState(false);
+  const [showWatch, setShowWatch] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const params = new URLSearchParams({
@@ -110,13 +111,21 @@ function FreshFinds({ chain, isAdmin }: { chain: string; isAdmin: boolean }) {
         </button>
 
         {isAdmin && (
-          <button
-            onClick={async () => { setBusy(true); try { await api('/radar/scan', { method: 'POST' }); mutate(); } finally { setBusy(false); } }}
-            disabled={busy}
-            className="btn-ghost text-xs"
-          >
-            {busy ? 'Сканируем…' : 'Сканировать сейчас'}
-          </button>
+          <>
+            <button
+              onClick={() => setShowWatch((v) => !v)}
+              className="btn-ghost text-xs"
+            >
+              Добавить вручную
+            </button>
+            <button
+              onClick={async () => { setBusy(true); try { await api('/radar/scan', { method: 'POST' }); mutate(); } finally { setBusy(false); } }}
+              disabled={busy}
+              className="btn-ghost text-xs"
+            >
+              {busy ? 'Сканируем…' : 'Сканировать сейчас'}
+            </button>
+          </>
         )}
 
         {data?.sources && (
@@ -126,6 +135,8 @@ function FreshFinds({ chain, isAdmin }: { chain: string; isAdmin: boolean }) {
           </span>
         )}
       </div>
+
+      {isAdmin && showWatch && <WatchBox onDone={() => mutate()} />}
 
       {error && (
         <div className="panel p-4 border-down/40">
@@ -143,6 +154,98 @@ function FreshFinds({ chain, isAdmin }: { chain: string; isAdmin: boolean }) {
           </p>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Ручное добавление находок.
+ *
+ * Нужно потому, что автоматически читать чужие закрытые ленты нельзя:
+ * это нарушает условия площадок и ломается молча — лента просто
+ * перестаёт обновляться, без ошибки в логах. Здесь человек смотрит
+ * своими глазами и вставляет то, что счёл нужным, а дальше находка
+ * идёт обычным путём: наблюдение за ценой, разметка кошельков,
+ * проверка автоправилом.
+ */
+function WatchBox({ onDone }: { onDone: () => void }) {
+  const [text, setText] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<any>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit() {
+    setBusy(true);
+    setError(null);
+    setResult(null);
+    try {
+      const r = await api('/radar/watch', {
+        method: 'POST',
+        body: JSON.stringify({ text }),
+      });
+      setResult(r);
+      setText('');
+      onDone();
+    } catch (e) {
+      setError(errorMessage(e, 'Не удалось добавить'));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="panel space-y-3 p-4">
+      <div>
+        <h3 className="text-sm font-medium">Добавить токены под наблюдение</h3>
+        <p className="text-muted mt-1 text-xs leading-relaxed">
+          Вставьте адреса или ссылки — можно вперемешку и списком. Сеть
+          определяется сама: для Solana по виду адреса, для EVM перебором,
+          поскольку один адрес существует сразу в нескольких сетях.
+        </p>
+      </div>
+
+      <textarea
+        className="input h-24 font-mono text-xs"
+        placeholder={'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v\nhttps://dexscreener.com/base/0x…'}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+      />
+
+      <div className="flex flex-wrap items-center gap-3">
+        <button onClick={submit} disabled={busy || !text.trim()} className="btn-ghost text-xs">
+          {busy ? 'Проверяем…' : 'Добавить'}
+        </button>
+        <span className="text-muted text-xs">
+          Ручная находка проходит те же проверки, что автоматическая
+        </span>
+      </div>
+
+      {error && <p className="text-down text-xs">{error}</p>}
+
+      {result && (
+        <div className="bg-bg space-y-1 rounded p-2.5 text-xs">
+          <p>
+            Добавлено: <span className="num text-up">{result.added}</span>
+            {result.existed > 0 && (
+              <> · уже под наблюдением: <span className="num">{result.existed}</span></>
+            )}
+          </p>
+          {result.notFound?.length > 0 && (
+            <div className="text-muted">
+              {/* Причину показываем по каждому адресу: «не найдено» без
+                  объяснения заставляет гадать, в адресе дело или в сети. */}
+              {result.notFound.map((n: any) => (
+                <p key={n.address} className="truncate">
+                  <span className="num">{n.address.slice(0, 10)}…</span> — {n.reason}
+                </p>
+              ))}
+            </div>
+          )}
+          {result.added === 0 && result.existed === 0 && !result.notFound?.length && (
+            <p className="text-muted">Адресов в тексте не найдено</p>
+          )}
+        </div>
+      )}
     </div>
   );
 }

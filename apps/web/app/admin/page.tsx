@@ -2,6 +2,7 @@
 
 import useSWR from 'swr';
 import { useState } from 'react';
+import Link from 'next/link';
 import { fetcher, api, fmtUsd, errorMessage } from '@/lib/api';
 import { CallManager } from '@/components/CallManager';
 
@@ -12,7 +13,15 @@ export default function AdminPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-xl sm:text-2xl font-bold">Админ-панель</h1>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-xl sm:text-2xl font-bold">Админ-панель</h1>
+        {/* Автопубликация вынесена отдельной страницей, а не вкладкой:
+            это единственный раздел, где настройка начинает действовать
+            без дальнейшего участия человека. */}
+        <Link href="/admin/auto" className="btn-ghost text-xs">
+          Автопубликация коллов
+        </Link>
+      </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
         <Metric label="Пользователей" value={overview?.users ?? '—'} />

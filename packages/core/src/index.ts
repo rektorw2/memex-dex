@@ -5,3 +5,6 @@ export * from './orders.js';
 export * from './copy.js';
 export * from './risk.js';
 export * from './wallet-score.js';
+export * from './auto-rule.js';
+export * from './token-ref.js';
+export * from './copy-pending.js';

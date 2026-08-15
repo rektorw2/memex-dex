@@ -146,15 +146,42 @@ const num = (v: string | null | undefined): number | null => {
  * ликвидного рынка, и торговать им нельзя. Пул с объёмом — гарантия,
  * что сделка вообще исполнится.
  */
-export async function fetchTopPools(chain: Chain, pages = 2): Promise<PoolToken[]> {
+/**
+ * Источники списков пулов.
+ *
+ * Разделение существенное, и раньше его не было — сканер брал только
+ * `top`, то есть пулы, отсортированные по суточному объёму. Это список
+ * уже состоявшихся токенов: свежий пул с небольшой ликвидностью в него
+ * физически не попадает, сколько страниц ни листай. Радар из-за этого
+ * находил вчерашние новости.
+ *
+ *  new      — недавно созданные пулы. Основной источник для радара.
+ *  trending — пулы с растущей активностью прямо сейчас.
+ *  top      — крупнейшие по обороту. Нужен витрине, но не поиску нового.
+ */
+export type PoolFeed = 'new' | 'trending' | 'top';
+
+const FEED_PATH: Record<PoolFeed, (net: string) => string> = {
+  new: (net) => `/networks/${net}/new_pools`,
+  trending: (net) => `/networks/${net}/trending_pools`,
+  top: (net) => `/networks/${net}/pools?sort=h24_volume_usd_desc`,
+};
+
+export async function fetchPools(
+  chain: Chain,
+  feed: PoolFeed = 'top',
+  pages = 1,
+): Promise<PoolToken[]> {
   const network = NETWORK[chain];
   if (!network) return [];
 
   const result: PoolToken[] = [];
+  const base = FEED_PATH[feed](network);
+  const sep = base.includes('?') ? '&' : '?';
 
   for (let page = 1; page <= pages; page++) {
     const data = await get<{ data: GeckoPool[]; included: GeckoIncluded[] }>(
-      `/networks/${network}/pools?page=${page}&include=base_token,quote_token&sort=h24_volume_usd_desc`,
+      `${base}${sep}page=${page}&include=base_token,quote_token`,
     );
     if (!data?.data?.length) break;
 
@@ -191,6 +218,15 @@ export async function fetchTopPools(chain: Chain, pages = 2): Promise<PoolToken[
   }
 
   return result;
+}
+
+/**
+ * Совместимость с прежним вызовом. Оставлено намеренно: витрине и
+ * импортёру нужен именно список по обороту, а радару — новые пулы,
+ * и путать эти два запроса не следует.
+ */
+export async function fetchTopPools(chain: Chain, pages = 2): Promise<PoolToken[]> {
+  return fetchPools(chain, 'top', pages);
 }
 
 /** Данные одного пула — для точечного добавления токена админом. */

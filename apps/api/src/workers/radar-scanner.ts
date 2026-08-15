@@ -1,10 +1,15 @@
 import { Prisma as P, type Chain } from '@prisma/client';
-import { assessToken } from '@memex/core';
+import { assessToken, parseTokenRefs, candidateChains } from '@memex/core';
 import { prisma } from '../lib/prisma.js';
 import { logger } from '../lib/logger.js';
 import { env } from '../lib/env.js';
 import { supportedChains } from '../chains/index.js';
-import { fetchTopPools, isMarketDataSupported } from '../services/market-data.js';
+import {
+  fetchPools,
+  fetchPoolForToken,
+  isMarketDataSupported,
+  type PoolFeed,
+} from '../services/market-data.js';
 import { fetchOkxTokens, isOkxConfigured, isOkxSupported } from '../services/okx.js';
 import { sendTelegram, escapeHtml, isTelegramConfigured } from '../services/telegram.js';
 
@@ -21,6 +26,24 @@ import { sendTelegram, escapeHtml, isTelegramConfigured } from '../services/tele
  */
 
 const SCAN_INTERVAL_MS = 3 * 60 * 1000;
+
+/**
+ * Ленты пулов и глубина по каждой.
+ *
+ * Порядок задаёт приоритет при слиянии дубликатов: одна и та же пара
+ * приходит из нескольких лент, и в записи остаётся источник, где она
+ * встретилась первой. Новые пулы идут первыми — для радара именно
+ * новизна и есть смысл находки.
+ *
+ * Глубина ограничена суммарным лимитом GeckoTerminal в 25 запросов
+ * в минуту на всё приложение: здесь их 4 на сеть, при четырёх сетях
+ * это 16 за проход раз в три минуты.
+ */
+const FEEDS: Array<{ name: PoolFeed; pages: number }> = [
+  { name: 'new', pages: 2 },
+  { name: 'trending', pages: 1 },
+  { name: 'top', pages: 1 },
+];
 /** Пулы старше этого возраста радар не считает находкой. */
 const MAX_AGE_HOURS = 72;
 
@@ -67,24 +90,32 @@ async function collectCandidates(): Promise<Candidate[]> {
 
     // GeckoTerminal даёт возраст пула и ликвидность — без них отсеять
     // мусор невозможно, поэтому источник используется всегда.
+    //
+    // Читаются три разные ленты, и это принципиально. Раньше бралась
+    // только сортировка по суточному обороту — то есть список уже
+    // состоявшихся токенов. Свежий пул с небольшой ликвидностью в него
+    // не попадает никогда, сколько страниц ни листай, и радар из-за
+    // этого находил вчерашние новости.
     if (isMarketDataSupported(chain)) {
-      const pools = await fetchTopPools(chain, 2);
-      for (const p of pools) {
-        out.push({
-          chain,
-          address: p.address,
-          symbol: p.symbol,
-          name: p.name,
-          poolAddress: p.poolAddress,
-          priceUsd: p.priceUsd,
-          liquidityUsd: p.liquidityUsd,
-          volume24hUsd: p.volume24hUsd,
-          fdvUsd: p.fdvUsd,
-          poolAgeHours: p.poolCreatedAt
-            ? (Date.now() - p.poolCreatedAt.getTime()) / 3_600_000
-            : null,
-          source: 'geckoterminal',
-        });
+      for (const feed of FEEDS) {
+        const pools = await fetchPools(chain, feed.name, feed.pages);
+        for (const p of pools) {
+          out.push({
+            chain,
+            address: p.address,
+            symbol: p.symbol,
+            name: p.name,
+            poolAddress: p.poolAddress,
+            priceUsd: p.priceUsd,
+            liquidityUsd: p.liquidityUsd,
+            volume24hUsd: p.volume24hUsd,
+            fdvUsd: p.fdvUsd,
+            poolAgeHours: p.poolCreatedAt
+              ? (Date.now() - p.poolCreatedAt.getTime()) / 3_600_000
+              : null,
+            source: `gecko:${feed.name}`,
+          });
+        }
       }
     }
   }
@@ -290,4 +321,129 @@ export function startRadarScanner() {
 
 export function stopRadarScanner() {
   running = false;
+}
+
+// ──────────────────────── Ручное добавление находок ─────────────────────────
+
+export interface WatchResult {
+  added: number;
+  existed: number;
+  notFound: Array<{ address: string; reason: string }>;
+}
+
+/**
+ * Приём вставленного текста: адреса, ссылки, целый абзац.
+ *
+ * Сеть для адреса EVM определяется перебором: один и тот же адрес живёт
+ * в нескольких сетях, и единственный надёжный способ выбрать нужную —
+ * посмотреть, где вообще есть пул.
+ *
+ * Токен, добавленный вручную, проходит те же проверки, что найденный
+ * автоматически, кроме порога ликвидности и возраста: их человек уже
+ * оценил, раз счёл нужным добавить. Риск при этом считается как обычно —
+ * ручное добавление не означает одобрения.
+ */
+export async function addWatched(text: string): Promise<WatchResult> {
+  const refs = parseTokenRefs(text, 25);
+  const supported = supportedChains() as unknown as string[];
+
+  const result: WatchResult = { added: 0, existed: 0, notFound: [] };
+
+  if (refs.length === 0) {
+    return result;
+  }
+
+  for (const ref of refs) {
+    const chains = candidateChains(ref, supported);
+    if (chains.length === 0) {
+      result.notFound.push({ address: ref.address, reason: 'сеть не поддерживается' });
+      continue;
+    }
+
+    // Проверка на существование — одним запросом по всем сетям-кандидатам,
+    // до обращения к внешнему источнику: незачем тратить лимит запросов
+    // на токен, который уже под наблюдением.
+    const existing = await prisma.radarEvent.findFirst({
+      where: { address: ref.address, chain: { in: chains as Chain[] } },
+      select: { id: true },
+    });
+    if (existing) {
+      result.existed++;
+      continue;
+    }
+
+    let found: { chain: Chain; pool: NonNullable<Awaited<ReturnType<typeof fetchPoolForToken>>> } | null =
+      null;
+
+    for (const chain of chains) {
+      const pool = await fetchPoolForToken(chain as Chain, ref.address);
+      if (pool) {
+        found = { chain: chain as Chain, pool };
+        break;
+      }
+    }
+
+    if (!found) {
+      // «Не нашли» и «уже есть» — разные исходы: в первом случае человеку
+      // надо проверить адрес, во втором делать ничего не нужно.
+      result.notFound.push({
+        address: ref.address,
+        reason:
+          chains.length > 1
+            ? `пул не найден ни в одной из сетей: ${chains.join(', ')}`
+            : `пул не найден в сети ${chains[0]}`,
+      });
+      continue;
+    }
+
+    const p = found.pool;
+    const ageHours = p.poolCreatedAt
+      ? (Date.now() - p.poolCreatedAt.getTime()) / 3_600_000
+      : null;
+
+    const risk = assessToken({
+      liquidityUsd: p.liquidityUsd,
+      volume24hUsd: p.volume24hUsd,
+      ageHours,
+    });
+
+    try {
+      await prisma.radarEvent.create({
+        data: {
+          chain: found.chain,
+          address: ref.address,
+          symbol: p.symbol,
+          name: p.name,
+          poolAddress: p.poolAddress,
+          priceUsd: p.priceUsd != null ? new P.Decimal(p.priceUsd) : null,
+          liquidityUsd: p.liquidityUsd != null ? new P.Decimal(p.liquidityUsd) : null,
+          volume24hUsd: p.volume24hUsd != null ? new P.Decimal(p.volume24hUsd) : null,
+          fdvUsd: p.fdvUsd != null ? new P.Decimal(p.fdvUsd) : null,
+          poolAgeHours: ageHours != null ? new P.Decimal(ageHours) : null,
+          source: 'manual',
+          riskScore: risk.score,
+          riskFlags: risk.flags as unknown as P.InputJsonValue,
+          // Уведомления по ручным находкам не рассылаются: человек,
+          // который её добавил, уже про неё знает, а остальным
+          // рассылка пойдёт при первом же изменении.
+          notified: true,
+
+          mcapAtSignalUsd: p.fdvUsd != null ? new P.Decimal(p.fdvUsd) : null,
+          currentMcapUsd: p.fdvUsd != null ? new P.Decimal(p.fdvUsd) : null,
+          peakMcapUsd: p.fdvUsd != null ? new P.Decimal(p.fdvUsd) : null,
+          currentPriceUsd: p.priceUsd != null ? new P.Decimal(p.priceUsd) : null,
+          currentMultiple: p.fdvUsd != null ? new P.Decimal(1) : null,
+          peakMultiple: p.fdvUsd != null ? new P.Decimal(1) : null,
+          pricePoints: [{ t: Date.now(), p: p.priceUsd, m: p.fdvUsd }] as unknown as P.InputJsonValue,
+          lastCheckedAt: new Date(),
+        },
+      });
+      result.added++;
+    } catch {
+      result.existed++;
+    }
+  }
+
+  logger.info(result, 'радар: ручное добавление');
+  return result;
 }

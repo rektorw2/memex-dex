@@ -4,7 +4,7 @@ import { Prisma as P } from '@prisma/client';
 import { requiredLock } from '@memex/core';
 import { prisma, serializable } from '../lib/prisma.js';
 import { executeOrder } from '../services/execution.js';
-import { fanoutLeaderTrade } from '../services/copytrade.js';
+import { placeOrderForUser, cancelOrderForUser } from '../services/order-intake.js';
 import * as balances from '../services/balances.js';
 import { env } from '../lib/env.js';
 import { logger } from '../lib/logger.js';
@@ -38,70 +38,28 @@ export const orderRoutes: FastifyPluginAsync = async (app) => {
       if (existing) return existing.response;
     }
 
-    if (body.type === 'LIMIT' && !body.limitPrice) {
-      return reply.code(400).send({ error: 'Для лимитного ордера нужна цена' });
-    }
-    if (['STOP_LOSS', 'TAKE_PROFIT'].includes(body.type) && !body.triggerPrice) {
-      return reply.code(400).send({ error: 'Для стоп/тейк ордера нужна цена срабатывания' });
-    }
-    if (body.slippageBps > env.MAX_SLIPPAGE_BPS) {
-      return reply.code(400).send({
-        error: `Проскальзывание выше лимита платформы (${env.MAX_SLIPPAGE_BPS} bps)`,
-      });
-    }
-
-    const order = await serializable(async (tx) => {
-      const created = await tx.order.create({
-        data: {
-          userId,
-          chain: body.chain,
-          tokenInId: body.tokenInId,
-          tokenOutId: body.tokenOutId,
-          side: body.side,
-          type: body.type,
-          source: body.callId ? 'CALL' : 'MANUAL',
-          status: body.type === 'MARKET' ? 'PENDING' : 'OPEN',
-          amountIn: new P.Decimal(body.amountIn),
-          limitPrice: body.limitPrice ? new P.Decimal(body.limitPrice) : null,
-          triggerPrice: body.triggerPrice ? new P.Decimal(body.triggerPrice) : null,
-          trailingBps: body.trailingBps ?? null,
-          slippageBps: body.slippageBps,
-          expiresAt: body.expiresAt ?? null,
-          callId: body.callId ?? null,
-        },
-      });
-
-      // Отложенный ордер резервирует средства сразу — иначе к моменту
-      // срабатывания пользователь потратит их на другую сделку.
-      if (body.type !== 'MARKET') {
-        await balances.lock(tx, {
-          userId,
-          tokenId: body.tokenInId,
-          amount: requiredLock({ amountIn: body.amountIn }).toString(),
-          refId: created.id,
-        });
-      }
-      return created;
+    // Вся логика — в общем сервисе. Здесь только разбор запроса и ответ:
+    // второй способ торговать (по ключу из скрипта) обязан идти тем же
+    // путём, иначе проверки со временем разойдутся.
+    const response = await placeOrderForUser(userId, {
+      chain: body.chain,
+      tokenInId: body.tokenInId,
+      tokenOutId: body.tokenOutId,
+      side: body.side,
+      type: body.type,
+      amountIn: body.amountIn,
+      limitPrice: body.limitPrice ?? null,
+      triggerPrice: body.triggerPrice ?? null,
+      trailingBps: body.trailingBps ?? null,
+      slippageBps: body.slippageBps,
+      expiresAt: body.expiresAt ?? null,
+      callId: body.callId ?? null,
     });
 
-    let executed = null;
-    if (body.type === 'MARKET') {
-      executed = await executeOrder(order.id);
-
-      // Если ордер поставил лидер копитрейдинга — раздаём подписчикам.
-      const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
-      if (user.role === 'TRADER') {
-        fanoutLeaderTrade(order.id).catch((e) =>
-          logger.error({ err: e?.message, orderId: order.id }, 'fan-out упал'),
-        );
-      }
-    }
-
-    const response = { order: { ...order, amountIn: order.amountIn.toString() }, executed };
     if (idemKey) {
-      await prisma.idempotencyKey.create({
-        data: { key: idemKey, userId, response: response as never },
-      }).catch(() => {});
+      await prisma.idempotencyKey
+        .create({ data: { key: idemKey, userId, response: response as never } })
+        .catch(() => {});
     }
     return reply.code(201).send(response);
   });
@@ -130,27 +88,9 @@ export const orderRoutes: FastifyPluginAsync = async (app) => {
   app.delete('/orders/:id', { preHandler: [app.authenticate] }, async (req, reply) => {
     const { id } = z.object({ id: z.string() }).parse(req.params);
 
-    return serializable(async (tx) => {
-      const order = await tx.order.findUnique({ where: { id } });
-      if (!order || order.userId !== req.user.sub) {
-        return reply.code(404).send({ error: 'Ордер не найден' });
-      }
-      if (!['OPEN', 'PARTIALLY_FILLED', 'PENDING'].includes(order.status)) {
-        return reply.code(400).send({ error: `Нельзя отменить ордер в статусе ${order.status}` });
-      }
-
-      const unlockAmount = order.amountIn.minus(order.filledIn);
-      if (order.type !== 'MARKET' && unlockAmount.gt(0)) {
-        await balances.unlock(tx, {
-          userId: order.userId,
-          tokenId: order.tokenInId,
-          amount: unlockAmount,
-          refId: order.id,
-        });
-      }
-
-      return tx.order.update({ where: { id }, data: { status: 'CANCELLED' } });
-    });
+    const r = await cancelOrderForUser(req.user.sub, id);
+    if (!r.ok) return reply.code(r.status).send({ error: r.error });
+    return reply.send(r.order);
   });
 
   /** Предпросмотр: сколько получит пользователь, без создания ордера. */

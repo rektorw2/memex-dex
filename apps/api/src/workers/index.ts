@@ -6,6 +6,7 @@ import { startCandleBuilder, stopCandleBuilder } from './candle-builder.js';
 import { startRadarScanner, stopRadarScanner } from './radar-scanner.js';
 import { startRadarTracker, stopRadarTracker } from './radar-tracker.js';
 import { startWalletTracker, stopWalletTracker } from './wallet-tracker.js';
+import { startAutoPublisher, stopAutoPublisher } from './auto-publisher.js';
 import { logger } from '../lib/logger.js';
 import { prisma } from '../lib/prisma.js';
 
@@ -17,6 +18,7 @@ startCandleBuilder();
 startRadarScanner();
 startRadarTracker();
 startWalletTracker();
+startAutoPublisher();
 
 const shutdown = async () => {
   logger.info('останавливаем воркеры');
@@ -28,6 +30,7 @@ const shutdown = async () => {
   stopRadarScanner();
   stopRadarTracker();
   stopWalletTracker();
+  stopAutoPublisher();
   await prisma.$disconnect();
   process.exit(0);
 };

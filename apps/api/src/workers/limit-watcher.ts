@@ -81,6 +81,12 @@ export async function tick() {
             }
             await tx.order.update({ where: { id: order.id }, data: { status: 'EXPIRED' } });
           });
+
+          // Истёкший ордер лидера снимает и зеркальные копии: они
+          // ставились сроком до того же момента, но подписчик мог
+          // выставить свой ордер на секунду позже, и без явного
+          // снятия копия пережила бы оригинал.
+          await cancelMirrorsFor(order.id, 'EXPIRED');
           break;
 
         case 'execute': {
@@ -92,14 +98,31 @@ export async function tick() {
           if (claimed.count === 0) break; // другой инстанс уже взял
 
           logger.info({ orderId: order.id, reason: decision.reason }, 'сработал отложенный ордер');
-          await executeOrder(order.id).catch(async (e) => {
-            logger.error({ err: e?.message, orderId: order.id }, 'исполнение отложенного ордера упало');
-            // Возвращаем в книгу — сбой сети не должен убивать ордер пользователя.
-            await prisma.order.updateMany({
-              where: { id: order.id, status: 'PENDING' },
-              data: { status: 'OPEN', rejectReason: e?.message?.slice(0, 200) },
+
+          let filled = false;
+          await executeOrder(order.id)
+            .then(() => {
+              filled = true;
+            })
+            .catch(async (e) => {
+              logger.error({ err: e?.message, orderId: order.id }, 'исполнение отложенного ордера упало');
+              // Возвращаем в книгу — сбой сети не должен убивать ордер пользователя.
+              await prisma.order.updateMany({
+                where: { id: order.id, status: 'PENDING' },
+                data: { status: 'OPEN', rejectReason: e?.message?.slice(0, 200) },
+              });
             });
-          });
+
+          // Раздача подписчикам после срабатывания отложенного ордера.
+          //
+          // Раньше её здесь не было, и это ломало копитрейдинг целиком для
+          // лидеров, торгующих лимитками: fan-out вызывался только из
+          // обработчика рыночных ордеров, а сработавшую лимитку никто
+          // не раздавал. Сбой был молчаливым — ни ошибки, ни записи в лог,
+          // просто у подписчиков не появлялось сделок.
+          if (filled) {
+            await maybeFanout(order.id);
+          }
           break;
         }
 
@@ -129,4 +152,47 @@ export function startLimitWatcher() {
 
 export function stopLimitWatcher() {
   running = false;
+}
+
+/**
+ * Раздача исполненного ордера подписчикам, если его поставил лидер.
+ *
+ * Проверка роли живёт здесь, а не в fanoutLeaderTrade: там она означала бы
+ * бросок исключения на каждом ордере обычного пользователя, то есть шум
+ * в логах вместо полезной информации.
+ */
+async function maybeFanout(orderId: string): Promise<void> {
+  try {
+    const order = await prisma.order.findUnique({
+      where: { id: orderId },
+      select: { status: true, source: true, user: { select: { role: true } } },
+    });
+
+    if (!order) return;
+    if (order.user.role !== 'TRADER') return;
+    // Копия не может быть источником копирования — иначе получится каскад.
+    if (order.source === 'COPY_TRADE') return;
+    if (order.status !== 'FILLED' && order.status !== 'PARTIALLY_FILLED') return;
+
+    const { fanoutLeaderTrade } = await import('../services/copytrade.js');
+    const r = await fanoutLeaderTrade(orderId);
+    logger.info({ orderId, created: r.created, skipped: r.skipped.length }, 'раздача сработавшей лимитки');
+  } catch (e: any) {
+    // Сбой раздачи не должен откатывать уже исполненную сделку лидера:
+    // его ордер состоялся, деньги списаны, отменить это нельзя.
+    logger.error({ err: e?.message, orderId }, 'раздача сработавшей лимитки не удалась');
+  }
+}
+
+/** Снятие зеркальных копий, если истёкший ордер поставил лидер. */
+async function cancelMirrorsFor(
+  orderId: string,
+  status: 'EXPIRED' | 'CANCELLED' | 'REJECTED',
+): Promise<void> {
+  try {
+    const { cancelMirroredOrders } = await import('../services/copytrade.js');
+    await cancelMirroredOrders(orderId, status);
+  } catch (e: any) {
+    logger.error({ err: e?.message, orderId }, 'снятие зеркальных копий не удалось');
+  }
 }

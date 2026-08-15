@@ -74,6 +74,7 @@ model User {
   sessions      Session[]
   auditLogs     AuditLog[]
   radarSubs     RadarSubscription[]
+  apiKeys       ApiKey[]
 
   @@index([role])
 }
@@ -516,6 +517,9 @@ model RadarEvent {
   /** Токен заведён в витрину по этому событию. */
   listedTokenId String?
 
+  /** Решения автоправила по этой находке. */
+  fires AutoRuleFire[]
+
   firstSeenAt DateTime @default(now())
 
   @@unique([chain, address])
@@ -622,6 +626,168 @@ model WalletTrade {
   @@index([outcomeMultiple])
 }
 
+/**
+ * Ключ для программного доступа.
+ *
+ * Нужен, чтобы скрипт мог работать от имени аккаунта: наполнять радар
+ * находками, читать позиции, ставить ордера. Отдельная сущность,
+ * а не пользовательский JWT, по двум причинам.
+ *
+ * Первая: JWT живёт минуты и обновляется через refresh-сессию, привязанную
+ * к браузеру. Скрипт на сервере так не умеет.
+ *
+ * Вторая, важнее: у ключа своя область прав. Скрипту, который торгует,
+ * незачем уметь менять пароль или выводить средства. Область задаётся
+ * при создании и потом не расширяется.
+ *
+ * Вывод средств не входит ни в одну область и не может быть выдан ключу
+ * в принципе. Это не настройка, а свойство системы: ключ хранится в файле
+ * на чужой машине, его нельзя защитить вторым фактором, и единственная
+ * надёжная гарантия — отсутствие самой возможности.
+ *
+ * Хранится SHA-256 от ключа. Утечка базы не даёт доступа.
+ */
+model ApiKey {
+  id     String @id @default(cuid())
+  name   String
+  /** Владелец. Действия ключа выполняются от его имени. */
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  tokenHash String @unique
+  /** Первые символы — чтобы отличать ключи в списке. Не секрет. */
+  prefix    String
+
+  /**
+   * Области доступа: radar:ingest | trade:read | trade:write.
+   * Пустой список означает ключ без прав — такой отвергается.
+   */
+  scopes String[]
+
+  isActive   Boolean @default(true)
+  maxPerHour Int     @default(60)
+
+  /**
+   * Предел суммы одной сделки для этого ключа, USD.
+   * Ошибка в скрипте с лишним нулём иначе стоит всего депозита.
+   */
+  maxOrderUsd Decimal? @db.Decimal(24, 8)
+
+  lastUsedAt DateTime?
+  usedCount  Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  @@index([isActive])
+  @@index([userId])
+}
+
+// ─────────────────────── Автопубликация коллов ──────────────────────────────
+
+/**
+ * Правило автоматической публикации.
+ *
+ * В системе существует ровно одна активная запись: правил несколько
+ * означало бы, что на одну находку могут сработать два — и надо решать,
+ * какое из них главнее. Пока такой потребности нет, единственное правило
+ * убирает целый класс вопросов.
+ *
+ * Выключено по умолчанию и стартует в режиме наблюдения. Автоматика,
+ * включённая сразу в боевом режиме, на первом же часу публикует всё,
+ * что прошло недонастроенный фильтр, — и это видят пользователи.
+ */
+model AutoRule {
+  id   String @id @default(cuid())
+  name String @default("Основное правило")
+
+  /** Главный выключатель. */
+  isEnabled Boolean @default(false)
+  /**
+   * Режим наблюдения: правило считается и пишет в журнал, но ничего
+   * не публикует. Позволяет неделю смотреть, что бы оно наделало,
+   * не рискуя витриной.
+   */
+  isDryRun  Boolean @default(true)
+
+  /** Сети, на которых правило работает. Пусто — все поддерживаемые. */
+  chains Chain[]
+
+  // ─── Условие по кошелькам: основной триггер ─────────────────────────
+  /** Минимум размеченных кошельков с историей среди покупателей. */
+  minSmartBuyers      Int     @default(2)
+  /** Минимальная сила сигнала 0-100 с учётом давности покупок. */
+  minSignalStrength   Int     @default(40)
+  /** Минимальная суммарная покупка размеченных кошельков, USD. */
+  minSmartVolumeUsd   Decimal @default(3000) @db.Decimal(24, 8)
+
+  // ─── Страховочные условия ───────────────────────────────────────────
+  // Сигнал по кошелькам не отменяет базовой проверки токена: смарт-деньги
+  // тоже заходят в honeypot, разница лишь в том, что у них хватает денег
+  // на потерю.
+  minLiquidityUsd Decimal @default(30000) @db.Decimal(24, 8)
+  minVolume24hUsd Decimal @default(20000) @db.Decimal(24, 8)
+  maxRiskScore    Int     @default(60)
+  maxPoolAgeHours Int     @default(72)
+
+  // ─── Ограничители ───────────────────────────────────────────────────
+  /** Не более скольких коллов в сутки. Защита от лавины в активный час. */
+  maxCallsPerDay  Int @default(5)
+  /** Пауза между публикациями, минуты. */
+  cooldownMinutes Int @default(60)
+
+  // ─── Параметры создаваемого колла ───────────────────────────────────
+  /** Цели в процентах от цены входа, например [50, 100, 200]. */
+  targetPcts     Json    @default("[50, 100, 200]")
+  /** Стоп-лосс в процентах ниже входа. */
+  stopLossPct    Int     @default(35)
+  suggestedPct   Decimal @default(2) @db.Decimal(8, 4)
+  timeHorizon    String  @default("1-3 дня")
+  /** Включать ли копитрейдинг у создаваемых коллов. */
+  isCopyEnabled  Boolean @default(false)
+  /** От чьего имени публикуются коллы. */
+  authorId       String?
+
+  lastFiredAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  fires AutoRuleFire[]
+}
+
+/**
+ * Журнал решений правила.
+ *
+ * Записываются и срабатывания, и отказы с причиной. Журнал только
+ * успешных срабатываний не позволяет понять, почему правило молчит —
+ * а это самый частый вопрос к любой автоматике.
+ */
+model AutoRuleFire {
+  id     String   @id @default(cuid())
+  ruleId String
+  rule   AutoRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+
+  radarEventId String
+  radarEvent   RadarEvent @relation(fields: [radarEventId], references: [id], onDelete: Cascade)
+  chain        Chain
+  address      String
+  symbol       String
+
+  /** FIRED | DRY_RUN | SKIPPED */
+  outcome String
+  /** Человеческое объяснение решения. */
+  reason  String   @db.Text
+  /** Снимок значений, на которых принято решение. */
+  snapshot Json?
+
+  /** Созданный колл, если он был создан. */
+  callId String?
+
+  createdAt DateTime @default(now())
+
+  @@unique([ruleId, radarEventId])
+  @@index([ruleId, createdAt])
+  @@index([outcome, createdAt])
+}
+
 enum RadarChannel {
   IN_APP
   TELEGRAM
@@ -720,6 +886,11 @@ enum CopyStatus {
   CANCELLED
 }
 
+enum CopyPendingMode {
+  ON_FILL
+  MIRROR
+}
+
 enum CopySizing {
   FIXED_USD // фиксированная сумма на сделку
   PCT_EQUITY // % от капитала подписчика
@@ -735,6 +906,26 @@ model CopySubscription {
 
   status CopyStatus @default(ACTIVE)
   sizing CopySizing @default(PCT_EQUITY)
+
+  /**
+   * Когда копировать отложенные ордера лидера.
+   *
+   * ON_FILL — рыночная копия в момент срабатывания лимитки лидера.
+   *   Вход гарантирован, но по цене на секунды позже и хуже.
+   * MIRROR — такая же лимитка ставится сразу.
+   *   Цена входа та же, что у лидера, но исполнение не гарантировано,
+   *   и средства заморожены всё время жизни ордера.
+   *
+   * По умолчанию ON_FILL: заморозка средств — не то, что человек ожидает
+   * получить, не выбрав этого явно.
+   */
+  pendingMode CopyPendingMode @default(ON_FILL)
+  /**
+   * Предел доли капитала под заморозкой в зеркалируемых ордерах.
+   * Без него десяток лимиток лидера связывает все средства подписчика,
+   * и на выход из открытых позиций денег не остаётся.
+   */
+  maxLockedShare Decimal? @default(0.5) @db.Decimal(5, 4)
 
   fixedUsd      Decimal? @db.Decimal(24, 8)
   pctEquity     Decimal? @db.Decimal(8, 4) // например 5.0 = 5% капитала на сделку
