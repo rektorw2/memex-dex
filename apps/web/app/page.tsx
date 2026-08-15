@@ -119,7 +119,7 @@ export default function TerminalPage() {
       </div>
 
       {/* ══════════════════ Телефон: три экрана ══════════════════ */}
-      <div className="flex flex-col gap-3 pb-16 lg:hidden">
+      <div className="pb-nav flex flex-col gap-3 lg:hidden">
         {tab === 'market' && (
           <>
             <MarketStats summary={summary} compact />
@@ -173,7 +173,10 @@ export default function TerminalPage() {
 
         {/* Переключатель экранов прижат к низу: до него дотягивается
             большой палец, а верх экрана на телефоне в 6 дюймов — нет. */}
-        <nav className="fixed inset-x-0 bottom-0 z-40 grid grid-cols-3 border-t border-border bg-panel/95 backdrop-blur">
+        {/* Панель непрозрачная и того же цвета, что фон: полупрозрачность
+            поверх прокручивающегося содержимого давала оттенок, отличный
+            и от страницы, и от полосы браузера под ней. */}
+        <nav className="safe-bottom fixed inset-x-0 bottom-0 z-40 grid grid-cols-3 border-t border-border bg-bg">
           {(
             [
               ['market', 'Рынок'],

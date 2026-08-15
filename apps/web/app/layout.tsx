@@ -1,5 +1,5 @@
 import './globals.css';
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import Link from 'next/link';
 import { AuthNav } from '@/components/AuthNav';
 import { MainNav } from '@/components/MainNav';
@@ -7,6 +7,25 @@ import { MainNav } from '@/components/MainNav';
 export const metadata: Metadata = {
   title: 'Memex — торговля мем-коинами и копитрейдинг',
   description: 'Solana, BNB Chain, Robinhood Chain. Лимитные ордера, коллы, копитрейдинг.',
+};
+
+/**
+ * Цвет полос браузера.
+ *
+ * Без themeColor мобильный браузер красит область статус-бара и нижнюю
+ * панель своим цветом по умолчанию — на тёмной странице получается
+ * заметный стык двух разных чёрных. Значение совпадает с фоном страницы,
+ * поэтому граница исчезает совсем.
+ *
+ * viewportFit: 'cover' пускает страницу под вырез и под нижнюю
+ * перекладину. Без него система оставляет там свои поля, и они
+ * не окрашиваются вовсе.
+ */
+export const viewport: Viewport = {
+  themeColor: '#080B0F',
+  viewportFit: 'cover',
+  width: 'device-width',
+  initialScale: 1,
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -34,7 +53,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         />
       </head>
       <body className="font-sans">
-        <header className="border-b border-border bg-panel/80 backdrop-blur sticky top-0 z-50">
+        <header className="sticky top-0 z-50 border-b border-border bg-bg">
           <div className="mx-auto flex h-header min-w-0 max-w-[1800px] items-center gap-2 px-4 sm:gap-4 sm:px-5">
             <Link href="/" className="font-bold text-lg tracking-tight shrink-0">
               me<span className="text-accent">mex</span>
