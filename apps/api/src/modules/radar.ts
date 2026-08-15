@@ -6,6 +6,7 @@ import { prisma } from '../lib/prisma.js';
 import { env } from '../lib/env.js';
 import { isOkxConfigured } from '../services/okx.js';
 import { isTelegramConfigured, pollTelegramUpdates } from '../services/telegram.js';
+import { radarPerformance } from '../workers/radar-tracker.js';
 
 export const radarRoutes: FastifyPluginAsync = async (app) => {
   /** Лента находок. Открыта всем: это витрина, а не персональные данные. */
@@ -16,6 +17,9 @@ export const radarRoutes: FastifyPluginAsync = async (app) => {
         minLiquidity: z.coerce.number().optional(),
         maxRiskScore: z.coerce.number().optional(),
         maxAgeHours: z.coerce.number().optional(),
+        /** Показать только находки, где есть покупки размеченных кошельков. */
+        smartOnly: z.coerce.boolean().optional(),
+        sort: z.enum(['recent', 'wallets']).default('recent'),
         limit: z.coerce.number().max(100).default(50),
       })
       .parse(req.query);
@@ -26,32 +30,67 @@ export const radarRoutes: FastifyPluginAsync = async (app) => {
         ...(q.minLiquidity ? { liquidityUsd: { gte: q.minLiquidity } } : {}),
         ...(q.maxRiskScore != null ? { riskScore: { lte: q.maxRiskScore } } : {}),
         ...(q.maxAgeHours != null ? { poolAgeHours: { lte: q.maxAgeHours } } : {}),
+        ...(q.smartOnly ? { smartBuyers: { gt: 0 } } : {}),
       },
-      orderBy: { firstSeenAt: 'desc' },
+      orderBy:
+        q.sort === 'wallets'
+          ? [{ walletSignalScore: 'desc' as const }, { firstSeenAt: 'desc' as const }]
+          : { firstSeenAt: 'desc' as const },
       take: q.limit,
     });
 
     return {
       sources: { okx: isOkxConfigured(), geckoterminal: true },
       minLiquidityUsd: env.RADAR_MIN_LIQUIDITY_USD,
-      events: events.map((e: (typeof events)[number]) => ({
-        id: e.id,
-        chain: e.chain,
-        address: e.address,
-        symbol: e.symbol,
-        name: e.name,
-        priceUsd: e.priceUsd?.toString() ?? null,
-        liquidityUsd: e.liquidityUsd?.toString() ?? null,
-        volume24hUsd: e.volume24hUsd?.toString() ?? null,
-        fdvUsd: e.fdvUsd?.toString() ?? null,
-        poolAgeHours: e.poolAgeHours ? Number(e.poolAgeHours) : null,
-        riskScore: e.riskScore,
-        riskFlags: e.riskFlags,
-        source: e.source,
-        firstSeenAt: e.firstSeenAt,
-      })),
+      events: events.map(serializeEvent),
     };
   });
+
+  /**
+   * Результаты находок — то, ради чего радар вообще существует.
+   *
+   * Сортировка по пиковой кратности по умолчанию, но текущее значение
+   * отдаётся всегда: список, где висит только «111x», обманчив — к моменту
+   * просмотра токен может стоить дешевле точки входа.
+   */
+  app.get('/radar/gems', async (req) => {
+    const q = z
+      .object({
+        chain: z.string().optional(),
+        sort: z.enum(['peak', 'current', 'recent']).default('peak'),
+        minMultiple: z.coerce.number().default(1.5),
+        periodDays: z.coerce.number().max(30).default(7),
+        limit: z.coerce.number().max(100).default(50),
+      })
+      .parse(req.query);
+
+    const since = new Date(Date.now() - q.periodDays * 864e5);
+
+    const order =
+      q.sort === 'peak'
+        ? { peakMultiple: 'desc' as const }
+        : q.sort === 'current'
+          ? { currentMultiple: 'desc' as const }
+          : { firstSeenAt: 'desc' as const };
+
+    const events = await prisma.radarEvent.findMany({
+      where: {
+        firstSeenAt: { gte: since },
+        peakMultiple: { gte: q.minMultiple },
+        ...(q.chain ? { chain: q.chain as never } : {}),
+      },
+      orderBy: [order, { firstSeenAt: 'desc' }],
+      take: q.limit,
+    });
+
+    return {
+      performance: await radarPerformance(),
+      events: events.map(serializeEvent),
+    };
+  });
+
+  /** Качество работы радара за неделю, включая долю провалов. */
+  app.get('/radar/performance', async () => radarPerformance());
 
   /** Настройки уведомлений пользователя. */
   app.get('/radar/subscription', { preHandler: [app.authenticate] }, async (req) => {
@@ -174,3 +213,56 @@ export const radarRoutes: FastifyPluginAsync = async (app) => {
     return scanRadar();
   });
 };
+
+/**
+ * Единый вид события радара для интерфейса.
+ *
+ * Показываются обе кратности сразу. Пиковая отвечает на вопрос «был ли
+ * шанс», текущая — «что осталось сейчас». По отдельности каждая вводит
+ * в заблуждение.
+ */
+function serializeEvent(e: {
+  id: string; chain: string; address: string; symbol: string; name: string;
+  priceUsd: P.Decimal | null; currentPriceUsd: P.Decimal | null;
+  liquidityUsd: P.Decimal | null; volume24hUsd: P.Decimal | null;
+  fdvUsd: P.Decimal | null; mcapAtSignalUsd: P.Decimal | null;
+  currentMcapUsd: P.Decimal | null; peakMcapUsd: P.Decimal | null;
+  currentMultiple: P.Decimal | null; peakMultiple: P.Decimal | null;
+  peakAt: Date | null; poolAgeHours: P.Decimal | null;
+  riskScore: number | null; riskFlags: unknown; source: string;
+  pricePoints: unknown; firstSeenAt: Date; lastCheckedAt: Date | null;
+  isTracking: boolean; smartBuyers: number; smartBuyVolumeUsd: P.Decimal;
+  whaleBuyers: number; walletSignalScore: number;
+}) {
+  return {
+    id: e.id,
+    chain: e.chain,
+    address: e.address,
+    symbol: e.symbol,
+    name: e.name,
+    priceUsd: (e.currentPriceUsd ?? e.priceUsd)?.toString() ?? null,
+    liquidityUsd: e.liquidityUsd?.toString() ?? null,
+    volume24hUsd: e.volume24hUsd?.toString() ?? null,
+    mcapAtSignalUsd: e.mcapAtSignalUsd?.toString() ?? null,
+    currentMcapUsd: e.currentMcapUsd?.toString() ?? null,
+    peakMcapUsd: e.peakMcapUsd?.toString() ?? null,
+    currentMultiple: e.currentMultiple ? Number(e.currentMultiple) : null,
+    peakMultiple: e.peakMultiple ? Number(e.peakMultiple) : null,
+    peakAt: e.peakAt,
+    poolAgeHours: e.poolAgeHours ? Number(e.poolAgeHours) : null,
+    riskScore: e.riskScore,
+    riskFlags: e.riskFlags,
+    source: e.source,
+    points: Array.isArray(e.pricePoints) ? e.pricePoints : [],
+    firstSeenAt: e.firstSeenAt,
+    lastCheckedAt: e.lastCheckedAt,
+    isTracking: e.isTracking,
+    // Свод по кошелькам посчитан заранее воркером, здесь только читается.
+    wallets: {
+      smart: e.smartBuyers,
+      whale: e.whaleBuyers,
+      smartVolumeUsd: e.smartBuyVolumeUsd.toString(),
+      strength: e.walletSignalScore,
+    },
+  };
+}

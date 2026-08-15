@@ -19,6 +19,7 @@ import { adminRoutes } from './modules/admin.js';
 import { tokenRoutes } from './modules/tokens.js';
 import { walletRoutes } from './modules/wallets.js';
 import { radarRoutes } from './modules/radar.js';
+import { walletIntelRoutes } from './modules/wallets-intel.js';
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -136,6 +137,7 @@ export async function buildServer() {
   await app.register(portfolioRoutes, { prefix: '/api/v1' });
   await app.register(walletRoutes, { prefix: '/api/v1' });
   await app.register(radarRoutes, { prefix: '/api/v1' });
+  await app.register(walletIntelRoutes, { prefix: '/api/v1' });
   await app.register(adminRoutes, { prefix: '/api/v1' });
 
   return app;
@@ -150,13 +152,15 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // динамический: при выключенном флаге модули даже не загружаются.
   let stopWorkers: (() => void) | null = null;
   if (env.RUN_WORKERS_IN_API) {
-    const [limit, price, copy, importer, candles, radar] = await Promise.all([
+    const [limit, price, copy, importer, candles, radar, tracker, wallets] = await Promise.all([
       import('./workers/limit-watcher.js'),
       import('./workers/price-updater.js'),
       import('./workers/copy-executor.js'),
       import('./workers/token-importer.js'),
       import('./workers/candle-builder.js'),
       import('./workers/radar-scanner.js'),
+      import('./workers/radar-tracker.js'),
+      import('./workers/wallet-tracker.js'),
     ]);
 
     price.startPriceUpdater();
@@ -165,6 +169,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     importer.startTokenImporter();
     candles.startCandleBuilder();
     radar.startRadarScanner();
+    tracker.startRadarTracker();
+    wallets.startWalletTracker();
 
     stopWorkers = () => {
       price.stopPriceUpdater();
@@ -173,6 +179,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       importer.stopTokenImporter();
       candles.stopCandleBuilder();
       radar.stopRadarScanner();
+      tracker.stopRadarTracker();
+      wallets.stopWalletTracker();
     };
 
     app.log.warn(

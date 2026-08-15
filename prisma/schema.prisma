@@ -468,6 +468,49 @@ model RadarEvent {
   riskScore  Int?
   riskFlags  Json?
 
+  // ─── Отслеживание результата ────────────────────────────────────────
+  // Ценность радара определяется не тем, сколько токенов он нашёл,
+  // а тем, что с ними стало после. Поэтому фиксируем состояние в момент
+  // обнаружения и следим за ним дальше.
+
+  /** Капитализация в момент обнаружения — база для расчёта кратности. */
+  mcapAtSignalUsd Decimal? @db.Decimal(24, 8)
+  currentMcapUsd  Decimal? @db.Decimal(24, 8)
+  /** Максимум капитализации за всё время наблюдения. */
+  peakMcapUsd     Decimal? @db.Decimal(24, 8)
+
+  currentPriceUsd Decimal? @db.Decimal(38, 18)
+  /** Во сколько раз выросла капитализация к текущему моменту. */
+  currentMultiple Decimal? @db.Decimal(12, 4)
+  /** Максимальная достигнутая кратность. Именно её показывают как результат. */
+  peakMultiple    Decimal? @db.Decimal(12, 4)
+  /** Когда был достигнут пик — показывает, успел ли бы человек выйти. */
+  peakAt          DateTime?
+
+  currentHolders  Int?
+  holdersAtSignal Int?
+  currentTop10Pct Decimal? @db.Decimal(8, 4)
+
+  /** Точки для мини-графика: [{t, p, m}] — время, цена, капитализация. */
+  pricePoints   Json?
+  lastCheckedAt DateTime?
+  /** Когда последний раз забирали сделки пула для разметки кошельков. */
+  walletsCheckedAt DateTime?
+  /**
+   * Свод по кошелькам, посчитанный воркером и сохранённый здесь.
+   *
+   * Денормализация сознательная: лента радара показывает до полусотни
+   * карточек, и считать сигнал запросом на каждую означало бы полсотни
+   * агрегаций на открытие страницы.
+   */
+  smartBuyers       Int     @default(0)
+  smartBuyVolumeUsd Decimal @default(0) @db.Decimal(24, 8)
+  whaleBuyers       Int     @default(0)
+  /** Сила сигнала 0-100 с учётом давности покупок. */
+  walletSignalScore Int     @default(0)
+  /** Наблюдение прекращено: пул умер либо прошло слишком много времени. */
+  isTracking    Boolean @default(true)
+
   /** Уведомления по событию уже разосланы. */
   notified   Boolean  @default(false)
   /** Токен заведён в витрину по этому событию. */
@@ -478,6 +521,105 @@ model RadarEvent {
   @@unique([chain, address])
   @@index([firstSeenAt])
   @@index([notified, riskScore])
+  @@index([isTracking, lastCheckedAt])
+  @@index([isTracking, walletsCheckedAt])
+  @@index([peakMultiple])
+}
+
+// ───────────────────── Кошельки: смарт-мани и киты ──────────────────────────
+
+/**
+ * Кошелёк, замеченный в сделках по отслеживаемым токенам.
+ *
+ * Метка «смарт» здесь не покупается у поставщика и не берётся из чужого
+ * списка — она вычисляется из наших же наблюдений: кошелёк покупал токены,
+ * которые потом выросли. Это единственный способ, который можно проверить
+ * и объяснить, а не принять на веру.
+ *
+ * Ключевое ограничение: метка не выдаётся, пока сделок мало. На выборке
+ * из трёх покупок «100% попаданий» — это шум, а не навык.
+ */
+model TraderWallet {
+  id      String @id @default(cuid())
+  chain   Chain
+  address String
+
+  /** Человеческая метка, если известна: биржа, маркетмейкер, известный фонд. */
+  knownAs String?
+
+  // ─── Накопленная статистика ─────────────────────────────────────────
+  /** Сколько разных токенов покупал среди отслеживаемых. */
+  tokensBought Int @default(0)
+  /** Покупки, после которых токен вырастал минимум вдвое. */
+  wins2x       Int @default(0)
+  wins5x       Int @default(0)
+  /** Покупки, после которых токен терял более 80%. */
+  rugs         Int @default(0)
+  /** Совокупный объём покупок в долларах. */
+  volumeUsd    Decimal @default(0) @db.Decimal(24, 8)
+  /** Средняя пиковая кратность по его покупкам. */
+  avgPeakMultiple Decimal? @db.Decimal(12, 4)
+  /** Медианное время между запуском пула и его покупкой, часы. */
+  medianEntryHours Decimal? @db.Decimal(12, 4)
+
+  /**
+   * Итоговая оценка 0-100. Считается только при достаточной выборке,
+   * иначе остаётся null — отсутствие оценки честнее выдуманной.
+   */
+  score Int?
+  /** smart | whale | early | none */
+  label String @default("none")
+
+  firstSeenAt DateTime @default(now())
+  lastActiveAt DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  trades WalletTrade[]
+
+  @@unique([chain, address])
+  @@index([label, score])
+  @@index([lastActiveAt])
+}
+
+/**
+ * Отдельная покупка кошелька по отслеживаемому токену.
+ *
+ * Хранится вместе с капитализацией на момент сделки: без неё невозможно
+ * посчитать, во сколько раз вырос токен ПОСЛЕ входа, а именно это
+ * отличает удачную покупку от покупки на пике.
+ */
+model WalletTrade {
+  id       String       @id @default(cuid())
+  walletId String
+  wallet   TraderWallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+
+  chain         Chain
+  tokenAddress  String
+  radarEventId  String?
+
+  /** BUY | SELL */
+  side       String
+  amountUsd  Decimal  @db.Decimal(24, 8)
+  priceUsd   Decimal? @db.Decimal(38, 18)
+  /** Капитализация в момент сделки — база для оценки исхода. */
+  mcapAtTradeUsd Decimal? @db.Decimal(24, 8)
+  /** Возраст пула на момент покупки: чем раньше вход, тем ценнее сигнал. */
+  poolAgeHours Decimal? @db.Decimal(12, 4)
+
+  txHash String?
+  tradedAt DateTime
+
+  /** Исход, проставляется позже: во сколько раз вырос токен после сделки. */
+  outcomeMultiple Decimal?  @db.Decimal(12, 4)
+  outcomeAt       DateTime?
+
+  // Сторона входит в ключ: арбитражная транзакция может содержать
+  // и покупку, и продажу по одному пулу, и без неё вторая запись
+  // молча терялась бы.
+  @@unique([walletId, txHash, side])
+  @@index([chain, tokenAddress, tradedAt])
+  @@index([radarEventId])
+  @@index([outcomeMultiple])
 }
 
 enum RadarChannel {

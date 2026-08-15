@@ -293,3 +293,87 @@ export async function fetchOhlcv(
     .filter((c) => Number.isFinite(c.open) && c.open > 0)
     .reverse();
 }
+
+// ─────────────────────────────── Сделки пула ────────────────────────────────
+
+export interface PoolTrade {
+  /** Адрес кошелька, инициировавшего сделку. */
+  wallet: string;
+  side: 'BUY' | 'SELL';
+  amountUsd: number;
+  priceUsd: number | null;
+  txHash: string | null;
+  tradedAt: Date;
+}
+
+/**
+ * Последние сделки по пулу.
+ *
+ * Это единственный бесплатный источник, отдающий адрес контрагента вместе
+ * с суммой: именно из него строится всё, что мы знаем о кошельках. Глубина
+ * ограничена примерно тремя сотнями последних сделок и суммой в долларах,
+ * поэтому пул нужно опрашивать регулярно, а не разово — история задним
+ * числом недоступна.
+ *
+ * Направление определяется по стороне базового токена: покупка базового
+ * токена за котировочный — это BUY. Поле kind в ответе для части сетей
+ * отсутствует, поэтому опираемся на знак изменения объёмов, а не на него.
+ */
+export async function fetchPoolTrades(
+  chain: Chain,
+  poolAddress: string,
+  minUsd = 100,
+): Promise<PoolTrade[]> {
+  const network = NETWORK[chain];
+  if (!network) return [];
+
+  const data = await get<{
+    data: Array<{
+      attributes: {
+        block_timestamp?: string;
+        tx_hash?: string;
+        tx_from_address?: string;
+        from_token_amount?: string;
+        to_token_amount?: string;
+        price_to_in_usd?: string;
+        price_from_in_usd?: string;
+        volume_in_usd?: string;
+        kind?: string;
+      };
+    }>;
+  }>(`/networks/${network}/pools/${poolAddress}/trades?trade_volume_in_usd_greater_than=${minUsd}`);
+
+  if (!Array.isArray(data?.data)) return [];
+
+  const out: PoolTrade[] = [];
+
+  for (const row of data.data) {
+    const a = row?.attributes;
+    if (!a) continue;
+
+    const wallet = a.tx_from_address?.trim();
+    if (!wallet) continue;
+
+    const amountUsd = Number(a.volume_in_usd);
+    if (!Number.isFinite(amountUsd) || amountUsd < minUsd) continue;
+
+    const ts = a.block_timestamp ? new Date(a.block_timestamp) : null;
+    if (!ts || Number.isNaN(ts.getTime())) continue;
+
+    // kind = 'buy' | 'sell' относительно базового токена пула.
+    const side = a.kind === 'sell' ? 'SELL' : 'BUY';
+
+    const price = Number(side === 'BUY' ? a.price_to_in_usd : a.price_from_in_usd);
+
+    out.push({
+      wallet,
+      side,
+      amountUsd,
+      priceUsd: Number.isFinite(price) && price > 0 ? price : null,
+      txHash: a.tx_hash?.trim() || null,
+      tradedAt: ts,
+    });
+  }
+
+  return out;
+}

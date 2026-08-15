@@ -9,6 +9,7 @@ import { CHAINS, chainLabel, geckoTerminalPool } from '@/lib/chains';
 import { PriceChart } from '@/components/PriceChart';
 import { TradePanel } from '@/components/TradePanel';
 import { ResearchPanel } from '@/components/ResearchPanel';
+import { WalletSignal } from '@/components/WalletSignal';
 
 /**
  * Страница токена.
@@ -220,6 +221,10 @@ function TokenPage() {
               мем-коин может обесцениться до нуля при любых метриках.
             </p>
           </div>
+
+          {/* Кто покупает — грузится отдельным запросом, чтобы не
+              задерживать основные данные страницы. */}
+          <WalletSignal chain={t.chain} address={t.address} />
 
           <ResearchPanel
             tokenId={t.id}

@@ -158,6 +158,18 @@ export async function scanRadar(): Promise<{ found: number; notified: number }> 
           riskScore: risk.score,
           riskFlags: risk.flags as unknown as P.InputJsonValue,
           notified: silent,
+
+          // Точка отсчёта для кратности. Записывается один раз и больше
+          // не меняется — иначе результат находки можно было бы
+          // «улучшить» задним числом, сдвинув базу.
+          mcapAtSignalUsd: c.fdvUsd != null ? new P.Decimal(c.fdvUsd) : null,
+          currentMcapUsd: c.fdvUsd != null ? new P.Decimal(c.fdvUsd) : null,
+          peakMcapUsd: c.fdvUsd != null ? new P.Decimal(c.fdvUsd) : null,
+          currentPriceUsd: c.priceUsd != null ? new P.Decimal(c.priceUsd) : null,
+          currentMultiple: c.fdvUsd != null ? new P.Decimal(1) : null,
+          peakMultiple: c.fdvUsd != null ? new P.Decimal(1) : null,
+          pricePoints: [{ t: Date.now(), p: c.priceUsd, m: c.fdvUsd }] as unknown as P.InputJsonValue,
+          lastCheckedAt: new Date(),
         },
         select: { id: true },
       });
