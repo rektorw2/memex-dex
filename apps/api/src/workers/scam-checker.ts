@@ -512,7 +512,14 @@ export async function checkBatch(
           weight: 100,
         });
       }
-      if (liquidityUsd != null && liquidityUsd > 0 && liquidityUsd < cfg.minLiquidityUsd) {
+      // Ноль — это не «неизвестно», а «пул пуст». Прежнее условие
+      // требовало liq > 0 и потому пропускало именно тот случай,
+      // ради которого правило писалось: осушенный пул с ликвидностью
+      // в районе нуля не срабатывал вовсе, и токен оставался в ленте
+      // с оборотом в сотни тысяч при пустом пуле.
+      //
+      // Неизвестность по-прежнему отсеивается проверкой на null.
+      if (liquidityUsd != null && liquidityUsd < cfg.minLiquidityUsd) {
         reasons.push({
           code: 'LOW_LIQUIDITY',
           message: `Ликвидность $${Math.round(liquidityUsd).toLocaleString('ru-RU')} — выйти без обвала нельзя`,

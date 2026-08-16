@@ -1,4 +1,5 @@
 import { Prisma as P } from '@prisma/client';
+import { checkPoolHealth } from '@memex/core';
 import { prisma } from '../lib/prisma.js';
 import { logger } from '../lib/logger.js';
 import { fetchPoolForToken, isMarketDataSupported } from '../services/market-data.js';
@@ -108,9 +109,44 @@ export async function trackBatch(): Promise<number> {
     });
     const trimmed = points.slice(-MAX_POINTS);
 
+    // ─── Состояние пула ──────────────────────────────────────────
+    //
+    // Проверяется при каждом обновлении, а не один раз при находке.
+    // Пул осушают уже после того, как токен попал в ленту: находка
+    // проходит все проверки законно, через час из неё выводят
+    // ликвидность, а в карточке продолжают висеть суточный оборот
+    // и рост, накопленные до обвала.
+    //
+    // Внешних запросов проверка не требует — считается по числам,
+    // которые только что пришли, — поэтому её можно делать часто.
+    const health = checkPoolHealth({
+      liquidityUsd: pool.liquidityUsd,
+      liquidityAtSignalUsd: e.liquidityUsd != null ? Number(e.liquidityUsd) : null,
+      volume24hUsd: pool.volume24hUsd,
+    });
+
+    if (health.isDead) {
+      logger.info(
+        { symbol: e.symbol, chain: e.chain, code: health.code },
+        'находка убрана из ленты: пул покинут',
+      );
+    }
+
     await prisma.radarEvent.update({
       where: { id: e.id },
       data: {
+        // Мёртвый пул скрывается немедленно и не ждёт очереди
+        // проверки: между обвалом и следующим проходом проходят
+        // минуты, и всё это время токен предлагается к покупке.
+        ...(health.isDead
+          ? {
+              riskLevel: 'blocked',
+              riskScore: 100,
+              riskCodes: [health.code!],
+              riskFlags: [health.reason!] as unknown as P.InputJsonValue,
+              isTracking: false,
+            }
+          : {}),
         currentPriceUsd: pool.priceUsd != null ? new P.Decimal(pool.priceUsd) : null,
         currentMcapUsd: currentMcap,
         liquidityUsd: pool.liquidityUsd != null ? new P.Decimal(pool.liquidityUsd) : e.liquidityUsd,

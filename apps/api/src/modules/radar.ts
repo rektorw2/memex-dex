@@ -36,7 +36,14 @@ const RADAR_SORTS: Record<string, P.RadarEventOrderByWithRelationInput[]> = {
  */
 async function radarSummary(chain?: string) {
   const since = new Date(Date.now() - 24 * 3_600_000);
-  const where = { firstSeenAt: { gte: since }, ...(chain ? { chain: chain as never } : {}) };
+  const where = {
+    firstSeenAt: { gte: since },
+    // Те же условия, что и у ленты: число в шапке, не совпадающее
+    // со списком под ней, хуже отсутствия числа — оно выглядит
+    // как факт и вводит в заблуждение.
+    riskLevel: { not: 'blocked' },
+    ...(chain ? { chain: chain as never } : {}),
+  };
 
   const [total, lowRisk, highRisk, agg, latest] = await Promise.all([
     prisma.radarEvent.count({ where }),
@@ -74,6 +81,8 @@ export const radarRoutes: FastifyPluginAsync = async (app) => {
         maxAgeHours: z.coerce.number().optional(),
         /** Показать только находки, где есть покупки размеченных кошельков. */
         smartOnly: z.coerce.boolean().optional(),
+        /** Показать скрытое. Осознанное действие, по умолчанию выключено. */
+        includeBlocked: z.coerce.boolean().default(false),
         /**
          * Порядок выдачи.
          *
@@ -94,6 +103,14 @@ export const radarRoutes: FastifyPluginAsync = async (app) => {
         ...(q.maxRiskScore != null ? { riskScore: { lte: q.maxRiskScore } } : {}),
         ...(q.maxAgeHours != null ? { poolAgeHours: { lte: q.maxAgeHours } } : {}),
         ...(q.smartOnly ? { smartBuyers: { gt: 0 } } : {}),
+        // Заблокированные находки в ленту не попадают.
+        //
+        // Это не то же самое, что фильтр по уровню риска: тот выбирает
+        // из показываемого, а здесь речь о токенах, которые показывать
+        // нельзя вовсе — покинутый пул, ловушка, подделка. Радар
+        // предлагает, а не просто перечисляет, и предлагать такое
+        // означает отвечать за последствия.
+        ...(q.includeBlocked ? {} : { riskLevel: { not: 'blocked' } }),
       },
       orderBy: RADAR_SORTS[q.sort],
       take: q.limit,

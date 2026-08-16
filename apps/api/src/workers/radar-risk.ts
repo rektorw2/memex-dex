@@ -172,7 +172,14 @@ export async function assessRadarBatch(limit = BATCH): Promise<RadarRiskResult> 
       }
 
       const liq = e.liquidityUsd != null ? Number(e.liquidityUsd) : null;
-      if (liq != null && liq > 0 && liq < cfg.minLiquidityUsd) {
+      // Ноль — это не «неизвестно», а «пул пуст». Прежнее условие
+      // требовало liq > 0 и потому пропускало именно тот случай,
+      // ради которого правило писалось: осушенный пул с ликвидностью
+      // в районе нуля не срабатывал вовсе, и токен оставался в ленте
+      // с оборотом в сотни тысяч при пустом пуле.
+      //
+      // Неизвестность по-прежнему отсеивается проверкой на null.
+      if (liq != null && liq < cfg.minLiquidityUsd) {
         reasons.push({
           code: 'LOW_LIQUIDITY',
           message: `Ликвидность $${Math.round(liq).toLocaleString('ru-RU')} — выйти без обвала нельзя`,
