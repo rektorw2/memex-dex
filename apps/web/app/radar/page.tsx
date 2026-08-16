@@ -116,6 +116,10 @@ function Finds({ isAdmin }: { isAdmin: boolean }) {
     // в момент нажатия, это способ открыть не тот токен.
     refreshInterval: paused ? 0 : 30_000,
     keepPreviousData: true,
+    // Обновление во вкладке, которую не смотрят, не нужно никому,
+    // а трафик и работу базы расходует наравне с видимой.
+    revalidateOnFocus: true,
+    revalidateIfStale: false,
   });
 
   const events: RadarEvent[] = data?.events ?? [];

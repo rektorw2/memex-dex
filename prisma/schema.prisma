@@ -596,6 +596,19 @@ model RadarEvent {
   @@index([isTracking, lastCheckedAt])
   @@index([isTracking, walletsCheckedAt])
   @@index([peakMultiple])
+
+  // Индексы под сортировки ленты. Без них база при каждом обновлении
+  // читает таблицу целиком и сортирует в памяти — на тысяче находок
+  // это уже заметно, а растёт она непрерывно.
+  //
+  // Первым полем везде riskLevel: заблокированные отсекаются до
+  // сортировки, и чем раньше это происходит, тем меньше строк
+  // доходит до сортировки.
+  @@index([riskLevel, firstSeenAt])
+  @@index([riskLevel, currentMultiple])
+  @@index([riskLevel, liquidityUsd])
+  @@index([riskLevel, riskScore])
+  @@index([riskRulesVersion])
 }
 
 // ───────────────────── Кошельки: смарт-мани и киты ──────────────────────────

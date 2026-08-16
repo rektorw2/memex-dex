@@ -30,3 +30,4 @@ export * from './risk-scale.js';
 // Состояние пула. Отдельно от проверки контракта: та отвечает
 // «можно ли продать в принципе», эта — «есть ли кому продать сейчас».
 export * from './pool-health.js';
+export * from './downsample.js';

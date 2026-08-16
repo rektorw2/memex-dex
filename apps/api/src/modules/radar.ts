@@ -7,6 +7,8 @@ import { env } from '../lib/env.js';
 import { isOkxConfigured } from '../services/okx.js';
 import { isTelegramConfigured, pollTelegramUpdates } from '../services/telegram.js';
 import { radarPerformance } from '../workers/radar-tracker.js';
+import { downsample } from '@memex/core';
+import { cached } from '../lib/cache.js';
 
 /**
  * Порядки выдачи ленты.
@@ -35,6 +37,23 @@ const RADAR_SORTS: Record<string, P.RadarEventOrderByWithRelationInput[]> = {
  * и находка трёхдневной давности к текущей картине отношения не имеет.
  */
 async function radarSummary(chain?: string) {
+  // Сводка живёт в кеше пятнадцать секунд.
+  //
+  // Пять запросов к базе на каждое обращение к ленте — это пять
+  // запросов, умноженные на число открытых вкладок и делённые
+  // на интервал обновления. При этом считаются суточные счётчики:
+  // за пятнадцать секунд они не меняются настолько, чтобы это
+  // стоило пересчёта.
+  const hit = await cached(
+    `radar:summary:${chain ?? 'all'}`,
+    () => computeRadarSummary(chain),
+    { ttlMs: 15_000, staleMs: 120_000 },
+  ).catch(() => null);
+
+  return hit?.value ?? (await computeRadarSummary(chain));
+}
+
+async function computeRadarSummary(chain?: string) {
   const since = new Date(Date.now() - 24 * 3_600_000);
   const where = {
     firstSeenAt: { gte: since },
@@ -337,7 +356,7 @@ function serializeEvent(e: {
   pricePoints: unknown; firstSeenAt: Date; lastCheckedAt: Date | null;
   isTracking: boolean; smartBuyers: number; smartBuyVolumeUsd: P.Decimal;
   whaleBuyers: number; walletSignalScore: number;
-}) {
+}, pointLimit = 20) {
   return {
     id: e.id,
     chain: e.chain,
@@ -370,7 +389,18 @@ function serializeEvent(e: {
     holdersAtSignal: e.holdersAtSignal,
     top10Pct: e.currentTop10Pct != null ? Number(e.currentTop10Pct) : null,
     source: e.source,
-    points: Array.isArray(e.pricePoints) ? e.pricePoints : [],
+    // Точки прореживаются на сервере, а не в браузере.
+    //
+    // Сорок восемь точек на карточку при шестидесяти карточках —
+    // почти три тысячи объектов в ответе, и все они разбираются
+    // и держатся в памяти ради графика шириной триста пикселей,
+    // где различить можно от силы двадцать. Прореживание сохраняет
+    // крайние точки и экстремумы, поэтому пик на графике остаётся
+    // виден и не расходится с подписью «пик 1.32×».
+    points: downsample(
+      Array.isArray(e.pricePoints) ? (e.pricePoints as never[]) : [],
+      pointLimit,
+    ),
     firstSeenAt: e.firstSeenAt,
     lastCheckedAt: e.lastCheckedAt,
     isTracking: e.isTracking,
