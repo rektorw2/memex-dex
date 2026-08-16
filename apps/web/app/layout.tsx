@@ -3,6 +3,7 @@ import type { Metadata, Viewport } from 'next';
 import Link from 'next/link';
 import { AuthNav } from '@/components/AuthNav';
 import { MainNav } from '@/components/MainNav';
+import { MobileNav } from '@/components/MobileNav';
 
 export const metadata: Metadata = {
   title: 'Memex — торговля мем-коинами и копитрейдинг',
@@ -53,15 +54,33 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         />
       </head>
       <body className="font-sans">
-        <header className="sticky top-0 z-50 border-b border-border bg-bg">
-          <div className="mx-auto flex h-header min-w-0 max-w-[1800px] items-center gap-2 px-4 sm:gap-4 sm:px-5">
+        {/*
+          Шапка устроена по-разному на телефоне и на десктопе.
+
+          На телефоне это три части: кнопка меню слева, логотип
+          по центру, вход справа. Логотип центрируется по экрану,
+          а не между соседями — их ширины разные, и центрирование
+          потоком сдвигало бы логотип каждый раз, когда «Войти»
+          сменяется аватаром. Отсюда absolute и translateX(-50%):
+          это единственный способ получить настоящий центр.
+
+          На десктопе логотип остаётся слева, как было: там он
+          начинает строку навигации, и центрировать его незачем.
+        */}
+        <header
+          className="sticky top-0 z-50 border-b border-border bg-bg"
+          style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}
+        >
+          <div className="relative mx-auto flex h-header min-w-0 max-w-[1800px] items-center gap-2 px-4 sm:gap-4 sm:px-5">
+            <MobileNav />
+
             {/* Логотип — единственный путь на терминал. Отдельного
                 пункта в навигации нет: он вёл бы в тот же адрес,
                 что и логотип рядом с ним. */}
             <Link
               href="/"
               aria-label="Терминал"
-              className="shrink-0 rounded-md text-lg font-bold tracking-tight transition-opacity hover:opacity-80"
+              className="absolute left-1/2 -translate-x-1/2 rounded-md text-lg font-bold tracking-tight transition-opacity hover:opacity-80 md:static md:translate-x-0 md:shrink-0"
             >
               me<span className="text-accent">mex</span>
             </Link>
