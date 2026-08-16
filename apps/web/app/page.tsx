@@ -8,6 +8,7 @@ import { TokenList } from '@/components/terminal/TokenList';
 import { ChartPanel } from '@/components/terminal/ChartPanel';
 import { SidePanel } from '@/components/terminal/SidePanel';
 import { CHAIN_LABEL, SORT_OPTIONS, QUICK_FILTERS, type Token } from '@/components/terminal/types';
+import { DexScreenerList } from '@/components/terminal/DexScreenerList';
 
 /**
  * Терминал.
@@ -34,6 +35,15 @@ export default function TerminalPage() {
   // безопасное и сомнительное лежат вперемешку, перекладывает разбор
   // на человека — а он для того и пришёл, чтобы этого не делать.
   const [safeOnly, setSafeOnly] = useState(true);
+  /**
+   * Источник списка рынков.
+   *
+   * Своя витрина и продвигаемые токены DexScreener — разные вещи
+   * по природе, и смешивать их в одном списке нельзя: первое собрано
+   * нами, второе оплачено размещением. Вкладки делают эту разницу
+   * видимой до того, как человек начнёт читать.
+   */
+  const [source, setSource] = useState<'own' | 'dexscreener'>('own');
 
   const params = new URLSearchParams({ sort, limit: '60' });
   if (chain) params.set('chain', chain);
@@ -128,17 +138,28 @@ export default function TerminalPage() {
         <div className="grid min-h-0 flex-1 grid-cols-[340px_minmax(0,1fr)_300px] gap-4 xl:grid-cols-[380px_minmax(0,1fr)_320px]">
           {/* Список рынков */}
           <aside className="panel flex min-h-0 flex-col overflow-hidden">
-            <div className="shrink-0 space-y-3 border-b border-border p-3">
-              {filters}
-              {addressNotice}
-            </div>
+            <SourceTabs value={source} onChange={setSource} />
+
+            {source === 'own' && (
+              <div className="shrink-0 space-y-3 border-b border-border p-3">
+                {filters}
+                {addressNotice}
+              </div>
+            )}
+
             <div className="scroll-y min-h-0 flex-1">
-              <TokenList
-                tokens={tokens}
-                activeId={active?.id ?? null}
-                onSelect={(t) => setSelectedId(t.id)}
-                isLoading={isLoading}
-              />
+              {source === 'own' ? (
+                <TokenList
+                  tokens={tokens}
+                  activeId={active?.id ?? null}
+                  onSelect={(t) => setSelectedId(t.id)}
+                  isLoading={isLoading}
+                />
+              ) : (
+                <div className="p-3">
+                  <DexScreenerList chain={chain} safeOnly={safeOnly} />
+                </div>
+              )}
             </div>
           </aside>
 
@@ -171,17 +192,27 @@ export default function TerminalPage() {
           <>
             <MarketStats summary={summary} compact />
             <div className="panel overflow-hidden">
-              <div className="sticky top-header z-20 space-y-3 border-b border-border bg-panel p-3">
-                {filters}
-                {addressNotice}
-              </div>
-              <TokenList
-                tokens={tokens}
-                activeId={active?.id ?? null}
-                onSelect={selectToken}
-                isLoading={isLoading}
-                touch
-              />
+              <SourceTabs value={source} onChange={setSource} />
+
+              {source === 'own' ? (
+                <>
+                  <div className="sticky top-header z-20 space-y-3 border-b border-border bg-panel p-3">
+                    {filters}
+                    {addressNotice}
+                  </div>
+                  <TokenList
+                    tokens={tokens}
+                    activeId={active?.id ?? null}
+                    onSelect={selectToken}
+                    isLoading={isLoading}
+                    touch
+                  />
+                </>
+              ) : (
+                <div className="p-3">
+                  <DexScreenerList chain={chain} safeOnly={safeOnly} />
+                </div>
+              )}
             </div>
           </>
         )}
@@ -246,6 +277,45 @@ export default function TerminalPage() {
         </nav>
       </div>
     </>
+  );
+}
+
+/**
+ * Переключатель источника списка.
+ *
+ * Две вкладки, а не фильтр внутри одного списка. Разница в том,
+ * кто отвечает за состав: «Рынок» собран нами по объёму и проверке,
+ * «DexScreener» — оплаченное размещение. Спрятать это различие
+ * в выпадающий список значило бы приравнять одно к другому.
+ */
+function SourceTabs({
+  value,
+  onChange,
+}: {
+  value: 'own' | 'dexscreener';
+  onChange: (v: 'own' | 'dexscreener') => void;
+}) {
+  return (
+    <div className="flex shrink-0 border-b border-border">
+      {(
+        [
+          ['own', 'Рынок'],
+          ['dexscreener', 'DexScreener'],
+        ] as const
+      ).map(([v, label]) => (
+        <button
+          key={v}
+          onClick={() => onChange(v)}
+          className={`-mb-px border-b-2 px-4 py-2.5 text-xs transition-colors ${
+            value === v
+              ? 'border-accent text-accent'
+              : 'border-transparent text-muted hover:text-white'
+          }`}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
   );
 }
 

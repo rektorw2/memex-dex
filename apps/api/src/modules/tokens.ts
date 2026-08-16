@@ -135,6 +135,136 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
     };
   });
 
+  /**
+   * Продвигаемые токены DexScreener, пропущенные через нашу проверку.
+   *
+   * Список у DexScreener рекламный: «boosted» означает «за размещение
+   * заплатили», а не «стоит внимания». Брать его как готовую витрину
+   * нельзя — это ровно то, от чего мы месяц чистили терминал.
+   *
+   * Поэтому здесь он источник кандидатов. Каждый адрес сверяется
+   * с нашей базой:
+   *
+   *   знаем и проверили  — отдаём со своим уровнем риска;
+   *   знаем, не проверили — отдаём как непроверенный, честно;
+   *   не знаем вовсе      — заводим в базу и ставим в очередь.
+   *
+   * Последнее важно: без этого вкладка при первом открытии была бы
+   * почти пустой, и человек решил бы, что она сломана, хотя на самом
+   * деле проверка просто ещё не дошла.
+   */
+  app.get('/tokens/dexscreener', async (req) => {
+    const q = z
+      .object({
+        chain: z.string().optional(),
+        /** Скрывать не прошедшие проверку. По умолчанию да. */
+        safeOnly: z.coerce.boolean().default(true),
+        limit: z.coerce.number().max(60).default(40),
+      })
+      .parse(req.query);
+
+    const { fetchBoostedTokens } = await import('../services/dexscreener.js');
+    const boosted = await fetchBoostedTokens();
+
+    const filtered = q.chain ? boosted.filter((b) => b.chain === q.chain) : boosted;
+    if (filtered.length === 0) {
+      return { tokens: [], source: 'DexScreener', unchecked: 0, total: 0 };
+    }
+
+    // Сопоставление по паре сеть-адрес, а не по тикеру: тикер
+    // не уникален, и совпадение по нему свело бы подделку
+    // с настоящим токеном в одну запись.
+    const known = await prisma.token.findMany({
+      where: {
+        OR: filtered.map((b) => ({
+          chain: b.chain as never,
+          address: { equals: b.address, mode: 'insensitive' as const },
+        })),
+      },
+    });
+
+    const byKey = new Map(known.map((t) => [`${t.chain}:${t.address.toLowerCase()}`, t]));
+
+    // Незнакомые заводим в базу — очередь проверки подхватит их сама.
+    // Уровень риска им не выставляется: непроверенное непроверено.
+    const missing = filtered.filter((b) => !byKey.has(`${b.chain}:${b.address.toLowerCase()}`));
+
+    if (missing.length > 0) {
+      await prisma.token
+        .createMany({
+          data: missing.slice(0, 20).map((b) => ({
+            chain: b.chain as never,
+            address: b.address,
+            symbol: '???',
+            name: b.description?.slice(0, 60) ?? 'Неизвестный токен',
+            decimals: b.chain === 'SOLANA' ? 9 : 18,
+            logoUrl: b.iconUrl,
+            source: 'dexscreener',
+            // Скрыт из общей витрины до проверки: попасть туда
+            // он должен на общих основаниях, а не потому, что
+            // за него заплатили.
+            isHidden: true,
+          })),
+          skipDuplicates: true,
+        })
+        .catch(() => undefined);
+    }
+
+    const rows = filtered
+      .map((b) => {
+        const t = byKey.get(`${b.chain}:${b.address.toLowerCase()}`);
+        if (!t) {
+          return {
+            id: null,
+            chain: b.chain,
+            address: b.address,
+            symbol: '???',
+            name: b.description ?? null,
+            logoUrl: b.iconUrl,
+            riskLevel: null,
+            riskCodes: [] as string[],
+            riskScore: null,
+            priceUsd: null,
+            liquidityUsd: null,
+            volume24hUsd: null,
+            priceChange24h: null,
+            boostAmount: b.boostAmount,
+            isNew: true,
+          };
+        }
+
+        return {
+          id: t.id,
+          chain: t.chain,
+          address: t.address,
+          symbol: t.symbol,
+          name: t.name,
+          logoUrl: t.logoUrl,
+          riskLevel: t.riskLevel,
+          riskCodes: t.riskCodes ?? [],
+          riskScore: t.riskScore,
+          priceUsd: t.priceUsd?.toString() ?? null,
+          liquidityUsd: t.liquidityUsd?.toString() ?? null,
+          volume24hUsd: t.volume24hUsd?.toString() ?? null,
+          priceChange24h: t.priceChange24h?.toString() ?? null,
+          boostAmount: b.boostAmount,
+          isNew: false,
+        };
+      })
+      // Заблокированные не показываем никогда: за них заплатили,
+      // но продать их всё равно нельзя.
+      .filter((r) => r.riskLevel !== 'blocked')
+      .filter((r) => (q.safeOnly ? SAFE_LEVELS.includes(r.riskLevel as never) : true));
+
+    return {
+      source: 'DexScreener',
+      // Честное число: сколько в исходном списке и сколько дошло.
+      total: filtered.length,
+      unchecked: filtered.length - known.filter((t) => t.riskLevel != null).length,
+      tokens: rows.slice(0, q.limit),
+    };
+  });
+
   app.get('/tokens', async (req) => {
     const q = z
       .object({

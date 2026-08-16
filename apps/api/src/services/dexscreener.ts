@@ -1,5 +1,6 @@
 import type { Chain } from '@prisma/client';
 import { logger } from '../lib/logger.js';
+import { cached } from '../lib/cache.js';
 
 /**
  * DexScreener: счётчики сделок и социальные ссылки.
@@ -200,6 +201,101 @@ export async function fetchTokenPairs(
         out.set(key, pair);
       }
     }
+  }
+
+  return out;
+}
+
+// ────────────────────── Продвигаемые токены DexScreener ─────────────────────
+
+/**
+ * Список продвигаемых токенов.
+ *
+ * Важно понимать, что это за список, потому что название вводит
+ * в заблуждение. «Boosted» у DexScreener означает не «выбранный
+ * редакцией» и не «показавший рост», а «за размещение заплатили».
+ * Это рекламный блок с прозрачным ценником: любой может купить себе
+ * место, и мошенник покупает его в первый же день, потому что
+ * окупается быстрее всего.
+ *
+ * Поэтому список берётся как источник кандидатов, а не как готовая
+ * витрина. Что с ними делать дальше, решает наша проверка риска,
+ * и оплаченное продвижение в ней не участвует ни в плюс, ни в минус.
+ *
+ * Интерфейс обязан называть вещи своими именами: не «рекомендуемые»,
+ * а «продвигаемые».
+ */
+export interface BoostedToken {
+  chain: Chain;
+  address: string;
+  /** Сколько раз проплачено продвижение. Факт о бюджете, не о токене. */
+  boostAmount: number | null;
+  description: string | null;
+  iconUrl: string | null;
+}
+
+const BOOST_API = 'https://api.dexscreener.com/token-boosts';
+
+/** Обратное соответствие сетей: из строки DexScreener в нашу. */
+const CHAIN_BY_NETWORK: Record<string, Chain> = {
+  solana: 'SOLANA' as Chain,
+  bsc: 'BNB' as Chain,
+  base: 'BASE' as Chain,
+  ethereum: 'ETHEREUM' as Chain,
+};
+
+/**
+ * Продвигаемые сейчас токены.
+ *
+ * Лимит у этого раздела ниже, чем у остального DexScreener —
+ * порядка шестидесяти запросов в минуту, — поэтому ответ кешируется
+ * и обновляется не чаще раза в минуту. Состав такого списка меняется
+ * медленно: покупают продвижение на часы и дни, а не на секунды.
+ */
+export async function fetchBoostedTokens(): Promise<BoostedToken[]> {
+  const hit = await cached(
+    'dexscreener:boosts',
+    async () => {
+      const res = await fetch(`${BOOST_API}/top/v1`, {
+        headers: { accept: 'application/json' },
+        signal: AbortSignal.timeout(8_000),
+      });
+      if (!res.ok) {
+        logger.debug({ status: res.status }, 'DexScreener: список продвижения недоступен');
+        return [];
+      }
+      return (await res.json()) as unknown;
+    },
+    { ttlMs: 60_000, staleMs: 10 * 60_000 },
+  ).catch(() => null);
+
+  const raw = hit?.value;
+  if (!Array.isArray(raw)) return [];
+
+  const out: BoostedToken[] = [];
+  const seen = new Set<string>();
+
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const r = item as Record<string, unknown>;
+
+    const chain = typeof r.chainId === 'string' ? CHAIN_BY_NETWORK[r.chainId] : undefined;
+    const address = typeof r.tokenAddress === 'string' ? r.tokenAddress.trim() : '';
+    if (!chain || !address) continue;
+
+    // Один токен встречается в списке несколько раз: продвижение
+    // покупают порциями, и каждая покупка отдельная запись.
+    const key = `${chain}:${address.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    out.push({
+      chain,
+      address,
+      boostAmount: typeof r.totalAmount === 'number' ? r.totalAmount : null,
+      description: typeof r.description === 'string' ? r.description.slice(0, 300) : null,
+      iconUrl: typeof r.icon === 'string' ? r.icon : null,
+    });
   }
 
   return out;
