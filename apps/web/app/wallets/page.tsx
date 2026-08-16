@@ -13,6 +13,7 @@ import {
 } from '@/components/wallets/WalletViews';
 import { WalletDrawer } from '@/components/wallets/WalletDrawer';
 import { ScoreMethodology } from '@/components/wallets/ScoreMethodology';
+import { ActivityFeed } from '@/components/wallets/ActivityFeed';
 
 /**
  * Смарт-кошельки.
@@ -51,7 +52,10 @@ export default function WalletsPage() {
           </p>
         </div>
 
-        <div className="sticky top-header z-20 flex gap-1 border-b border-border bg-bg">
+        {/* Прокрутка вместо обрезания: три вкладки и ссылка
+            не помещаются в 390 пикселей, и «Как считается рейтинг?»
+            уезжала за край без всякого признака, что она там есть. */}
+        <div className="scroll-x sticky top-header z-20 flex gap-1 border-b border-border bg-bg">
           {(
             [
               ['wallets', 'Кошельки'],
@@ -62,7 +66,7 @@ export default function WalletsPage() {
             <button
               key={k}
               onClick={() => setTab(k)}
-              className={`-mb-px whitespace-nowrap border-b-2 px-4 py-2.5 text-sm transition-colors ${
+              className={`-mb-px shrink-0 whitespace-nowrap border-b-2 px-4 py-2.5 text-sm transition-colors ${
                 tab === k
                   ? 'border-accent text-accent'
                   : 'border-transparent text-muted hover:text-white'
@@ -74,7 +78,7 @@ export default function WalletsPage() {
 
           <button
             onClick={() => setMethodOpen(true)}
-            className="ml-auto self-center whitespace-nowrap px-2 text-xs text-muted transition-colors hover:text-white"
+            className="ml-auto shrink-0 self-center whitespace-nowrap px-2 text-xs text-muted transition-colors hover:text-white"
           >
             Как считается рейтинг?
           </button>
@@ -82,7 +86,7 @@ export default function WalletsPage() {
       </header>
 
       {tab === 'wallets' && <WalletsTab />}
-      {tab === 'activity' && <ActivityTab />}
+      {tab === 'activity' && <ActivityFeed />}
       {tab === 'following' && <FollowingTab />}
 
       <PageDisclaimer />
@@ -592,27 +596,6 @@ function FilterSheet({
 }
 
 // ────────────────────────── Прочие вкладки ──────────────────────────────────
-
-/**
- * Лента сделок отслеживаемых кошельков.
- *
- * Сейчас показывает честную заглушку, а не выдуманные данные:
- * endpoint для ленты пока не написан, и рисовать правдоподобные
- * строки означало бы обмануть — на такой странице человек принимает
- * решения деньгами.
- */
-function ActivityTab() {
-  return (
-    <div className="panel px-6 py-16 text-center">
-      <p className="text-sm text-muted">Лента сделок ещё не подключена</p>
-      <p className="mx-auto mt-2 max-w-[380px] text-xs leading-relaxed text-muted/70">
-        Сделки отслеживаемых кошельков уже собираются воркером и участвуют
-        в расчёте оценок, но отдельной ленты для них пока нет. Она появится
-        вместе с фильтрами по покупкам, продажам и размеру сделки.
-      </p>
-    </div>
-  );
-}
 
 function FollowingTab() {
   return (

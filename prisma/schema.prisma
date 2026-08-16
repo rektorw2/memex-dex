@@ -1160,3 +1160,179 @@ model IdempotencyKey {
 
   @@index([createdAt])
 }
+
+
+/**
+ * Живая сделка отслеживаемого кошелька.
+ *
+ * Отдельно от WalletTrade намеренно. Там — разобранные экономические
+ * операции, участвующие в расчёте; здесь сырой поток от провайдера,
+ * который ещё предстоит разобрать. Смешивать их значило бы пускать
+ * непроверенное в статистику.
+ */
+model WalletActivity {
+  /** Устойчивый ключ события. Он же защита от повторной записи. */
+  id String @id
+
+  chain         Chain
+  walletAddress String
+  tokenAddress  String
+  tokenSymbol   String?
+
+  /** BUY | SELL */
+  side          String
+  quoteSymbol   String?
+  quoteAmount   Decimal? @db.Decimal(38, 18)
+  priceUsd      Decimal? @db.Decimal(38, 18)
+  marketCapUsd  Decimal? @db.Decimal(24, 8)
+  /** Только для продаж: у покупки результата ещё нет. */
+  realizedPnlUsd Decimal? @db.Decimal(24, 8)
+
+  txHash      String?
+  trackerType Int?
+  /** okx_websocket | okx_rest */
+  source      String
+  /** Насколько полон разбор события, 0-1. */
+  parsingConfidence Decimal @default(1) @db.Decimal(4, 3)
+
+  /**
+   * Событие учтено в позициях кошелька.
+   *
+   * Ставится true только тогда, когда для него нашлась
+   * каноническая сделка из истории DEX с точным количеством
+   * и пересчёт позиции прошёл успешно. Сам факт сохранения
+   * события основанием не является: лента отслеживания не даёт
+   * количества купленного токена, и учесть её напрямую нельзя.
+   */
+  appliedToLedger Boolean @default(false)
+  /** pending | matched | applied | ignored | deferred | failed */
+  ledgerState     String  @default("pending")
+  ledgerAppliedAt DateTime?
+  ledgerErrorCode String?
+  ledgerAttempts  Int     @default(0)
+
+  tradedAt   DateTime
+  receivedAt DateTime @default(now())
+
+  @@index([tradedAt])
+  @@index([chain, tradedAt])
+  @@index([walletAddress, tradedAt])
+  @@index([tokenAddress, tradedAt])
+  @@index([side, tradedAt])
+  @@index([source, tradedAt])
+  @@index([appliedToLedger])
+}
+
+/**
+ * Состояние фоновых поисков.
+ *
+ * Одна строка на задачу. Нужна для двух вещей сразу: не дать двум
+ * экземплярам API запустить один поиск одновременно и показать
+ * администратору, когда поиск последний раз удавался.
+ *
+ * Второе важнее, чем кажется: замерший поиск и спокойный рынок
+ * выглядят одинаково — пустым списком.
+ */
+model JobState {
+  name String @id
+
+  isRunning       Boolean   @default(false)
+  lastStartedAt   DateTime?
+  lastCompletedAt DateTime?
+  /** Последний проход, завершившийся без ошибки. */
+  lastSuccessAt   DateTime?
+  durationMs      Int?
+  itemCount       Int?
+  errorCode       String?
+
+  updatedAt DateTime @updatedAt
+}
+
+
+/**
+ * Каноническая сделка из истории DEX.
+ *
+ * Единственный источник точных количеств. Лента отслеживания
+ * и WebSocket дают направление, цену и количество котировочного
+ * токена, но не количество купленного — вычислять его делением
+ * нельзя, это разные валюты.
+ *
+ * Числа хранятся строками: количество с восемнадцатью знаками
+ * после запятой в double теряет точность молча.
+ */
+model WalletEconomicTrade {
+  /** Ключ из кошелька, токена, направления, времени и сумм. */
+  key String @id
+
+  chain         Chain
+  walletAddress String
+  tokenAddress  String
+  tokenSymbol   String?
+
+  /** BUY | SELL */
+  side       String
+  amount     Decimal  @db.Decimal(40, 18)
+  valueUsd   Decimal  @db.Decimal(30, 10)
+  price      Decimal  @db.Decimal(40, 20)
+  marketCapUsd Decimal? @db.Decimal(30, 10)
+  /** Результат по версии OKX. Для сверки, в расчёт не идёт. */
+  providerPnlUsd Decimal? @db.Decimal(30, 10)
+
+  provider  String   @default("okx_dex_history")
+  tradedAt  DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([walletAddress, chain, tradedAt])
+  @@index([walletAddress, chain, tokenAddress, tradedAt])
+}
+
+/**
+ * Кошельки, которым нужен пересчёт позиций.
+ *
+ * Очередь с объединением: десять событий одного кошелька за двадцать
+ * секунд должны дать один запрос к истории, а не десять.
+ */
+model WalletSyncQueue {
+  /** chain:wallet */
+  id String @id
+
+  chain         Chain
+  walletAddress String
+
+  /** Когда пересчитывать: обновляется при каждом новом событии. */
+  dueAt      DateTime
+  attempts   Int      @default(0)
+  lastErrorCode String?
+  lastSyncAt DateTime?
+  lastSuccessAt DateTime?
+
+  /**
+   * Поколение задачи.
+   *
+   * Растёт с каждым новым событием. Воркер запоминает его при
+   * захвате и снимает задачу только при совпадении: иначе за время
+   * выгрузки истории пришло новое событие, и снятие стёрло бы
+   * работу, о которой воркер не знал. Сделка потерялась бы
+   * навсегда и молча.
+   */
+  generation Int @default(1)
+
+  /**
+   * Аренда задачи.
+   *
+   * Захват делается условным обновлением, а не парой «найти
+   * и обновить»: два экземпляра API увидели бы одну строку и оба
+   * сочли бы, что забрали её. Просроченная аренда перехватывается —
+   * процесс, упавший с захваченной задачей, не должен блокировать
+   * её навсегда.
+   */
+  lockedBy    String?
+  leaseToken  String?
+  lockedUntil DateTime?
+
+  updatedAt DateTime @updatedAt
+
+  @@unique([chain, walletAddress])
+  @@index([dueAt, lockedUntil])
+}

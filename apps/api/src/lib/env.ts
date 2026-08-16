@@ -178,6 +178,74 @@ const schema = z.object({
   OKX_SECRET_KEY: optional(z.string()),
   OKX_API_PASSPHRASE: optional(z.string()),
 
+  /**
+   * Базовый адрес и выключатель кошельковых разделов OKX.
+   *
+   * Адрес вынесен в настройку не ради гибкости, а ради проверки:
+   * без него нельзя направить клиент на локальный стенд и убедиться,
+   * что подпись строится верно, не имея боевых ключей.
+   */
+  OKX_API_BASE_URL: z.string().default('https://web3.okx.com'),
+  OKX_MARKET_ENABLED: z.coerce.boolean().default(true),
+
+  /**
+   * Пороги отбора кандидатов при поиске смарт-кошельков.
+   *
+   * Это фильтр поиска, а не доказательство качества. Он отсекает шум,
+   * чтобы не заводить в базу кошельки с тремя сделками на двадцать
+   * долларов; настоящая оценка считается позже собственным ядром
+   * по закрытым позициям.
+   *
+   * Ноль в любом из них выключает соответствующее условие.
+   */
+  SMART_WALLET_MIN_REALIZED_PNL_USD: z.coerce.number().default(1_000),
+  SMART_WALLET_MIN_WIN_RATE_PERCENT: z.coerce.number().default(50),
+  SMART_WALLET_MIN_TXS: z.coerce.number().default(10),
+  SMART_WALLET_MIN_VOLUME_USD: z.coerce.number().default(5_000),
+
+  /**
+   * Живая лента через WebSocket.
+   *
+   * Пороги вынесены в настройки не ради гибкости, а потому что
+   * подобрать их без наблюдения за живым потоком нельзя: как часто
+   * OKX присылает сообщения по спокойному рынку, заранее неизвестно,
+   * а от этого зависит, что считать зависшим соединением.
+   *
+   * Значения по умолчанию выбраны осторожно: лишнее переподключение
+   * дешевле, чем источник, который висит мёртвым и выглядит живым.
+   */
+  OKX_WS_ENABLED: z.coerce.boolean().default(true),
+  OKX_WS_URL: z.string().default('wss://wsdex.okx.com/ws/v6/dex'),
+  OKX_WS_CONNECT_TIMEOUT_MS: z.coerce.number().default(10_000),
+  OKX_WS_LOGIN_TIMEOUT_MS: z.coerce.number().default(10_000),
+  OKX_WS_SUBSCRIBE_TIMEOUT_MS: z.coerce.number().default(15_000),
+  OKX_WS_HEARTBEAT_INTERVAL_MS: z.coerce.number().default(20_000),
+  /** Молчание дольше этого — соединение считается зависшим. */
+  OKX_WS_STALE_AFTER_MS: z.coerce.number().default(90_000),
+  OKX_WS_RECONNECT_BASE_MS: z.coerce.number().default(1_000),
+  OKX_WS_RECONNECT_MAX_MS: z.coerce.number().default(60_000),
+  /** Сколько соединение должно продержаться, чтобы счётчик попыток обнулился. */
+  OKX_WS_HEALTHY_RESET_MS: z.coerce.number().default(60_000),
+  OKX_ACTIVITY_REST_FALLBACK_INTERVAL_MS: z.coerce.number().default(20_000),
+
+  /**
+   * Перенос сделок в позиции.
+   *
+   * Объединение по времени — главная настройка: десять событий
+   * одного кошелька за двадцать секунд должны дать один запрос
+   * к истории, а не десять. Параллельность намеренно маленькая:
+   * сотня кошельков разом — это залп по лимиту провайдера.
+   */
+  WALLET_LEDGER_SYNC_ENABLED: z.coerce.boolean().default(true),
+  WALLET_LEDGER_SYNC_DEBOUNCE_MS: z.coerce.number().default(20_000),
+  WALLET_LEDGER_SYNC_CONCURRENCY: z.coerce.number().default(3),
+  WALLET_LEDGER_SYNC_RETRY_BASE_MS: z.coerce.number().default(5_000),
+  WALLET_LEDGER_SYNC_RETRY_MAX_MS: z.coerce.number().default(300_000),
+  WALLET_LEDGER_SYNC_MAX_ATTEMPTS: z.coerce.number().default(5),
+  WALLET_LEDGER_BACKFILL_DAYS: z.coerce.number().default(90),
+  /** Перекрытие: история обновляется позже сокета. */
+  WALLET_LEDGER_OVERLAP_MS: z.coerce.number().default(600_000),
+
   /** Токен бота Telegram для уведомлений радара. Получить у @BotFather. */
   TELEGRAM_BOT_TOKEN: optional(z.string()),
 

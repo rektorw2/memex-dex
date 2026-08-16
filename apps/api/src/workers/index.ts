@@ -9,6 +9,9 @@ import { startWalletTracker, stopWalletTracker } from './wallet-tracker.js';
 import { startAutoPublisher, stopAutoPublisher } from './auto-publisher.js';
 import { startScamChecker, stopScamChecker } from './scam-checker.js';
 import { startRadarRisk, stopRadarRisk } from './radar-risk.js';
+import { startWalletDiscovery, stopWalletDiscovery } from './wallet-discovery.js';
+import { startActivityIngest, stopActivityIngest } from '../services/okx-ws-pool.js';
+import { startLedgerSync, stopLedgerSync } from './wallet-ledger-sync.js';
 import { logger } from '../lib/logger.js';
 import { prisma } from '../lib/prisma.js';
 
@@ -23,6 +26,9 @@ startWalletTracker();
 startAutoPublisher();
 startScamChecker();
 startRadarRisk();
+startWalletDiscovery();
+startActivityIngest();
+startLedgerSync();
 
 const shutdown = async () => {
   logger.info('останавливаем воркеры');
@@ -37,6 +43,9 @@ const shutdown = async () => {
   stopAutoPublisher();
   stopScamChecker();
   stopRadarRisk();
+  stopWalletDiscovery();
+  stopActivityIngest();
+  stopLedgerSync();
   await prisma.$disconnect();
   process.exit(0);
 };

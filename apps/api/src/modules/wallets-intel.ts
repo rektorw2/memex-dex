@@ -14,6 +14,79 @@ import { walletActivityForToken } from '../workers/wallet-tracker.js';
  */
 export const walletIntelRoutes: FastifyPluginAsync = async (app) => {
   /**
+   * Живая лента сделок отслеживаемых кошельков.
+   *
+   * Заменяет заглушку на вкладке «Активность». Данные настоящие,
+   * из ленты отслеживания OKX; выдуманных строк здесь нет и быть
+   * не может — на этой странице человек принимает решения деньгами.
+   *
+   * Состояние без ключей обрабатывается отдельно и честно: пустая
+   * лента и ненастроенный провайдер выглядят одинаково, а означают
+   * разное, и различать их обязан сервер, а не догадка интерфейса.
+   */
+  /** Состояние поиска кошельков. Замерший поиск и спокойный рынок
+      выглядят одинаково — пустым списком, и различить их должен сервер. */
+  app.get('/wallets/discovery-status', { preHandler: [app.requireAdmin] }, async () => {
+    const { discoveryStatus } = await import('../workers/wallet-discovery.js');
+    return discoveryStatus();
+  });
+
+  /**
+   * Состояние источника живых событий.
+   *
+   * Нужно, чтобы отличить три вещи, которые снаружи выглядят
+   * одинаково: спокойный рынок, оборванный сокет и невыставленные
+   * ключи. Наружу идёт только код ошибки — объект ошибки провайдера
+   * содержит заголовки запроса.
+   */
+  app.get('/wallets/activity/status', async () => {
+    const { getIngestor } = await import('../services/okx-ws-pool.js');
+    const { ledgerStatus } = await import('../workers/wallet-ledger-sync.js');
+
+    return { ...getIngestor().status(), ledger: await ledgerStatus() };
+  });
+
+  app.get('/wallets/activity', async (req) => {
+    const q = z
+      .object({
+        chain: z.string().optional(),
+        /** all | buy | sell */
+        side: z.enum(['all', 'buy', 'sell']).default('all'),
+        minVolumeUsd: z.coerce.number().optional(),
+        minLiquidityUsd: z.coerce.number().optional(),
+        limit: z.coerce.number().max(100).default(50),
+      })
+      .parse(req.query);
+
+    const { isOkxWalletConfigured, fetchTrades } = await import('../services/okx-wallets.js');
+
+    if (!isOkxWalletConfigured()) {
+      return {
+        configured: false,
+        source: 'OKX Onchain OS',
+        events: [],
+        note: 'OKX provider is not configured',
+      };
+    }
+
+    const events = await fetchTrades({
+      // Лента Smart Money самого OKX: она и есть предмет вкладки.
+      trackerType: 1,
+      chain: q.chain as never,
+      tradeType: q.side === 'buy' ? 1 : q.side === 'sell' ? 2 : 0,
+      minVolumeUsd: q.minVolumeUsd,
+      minLiquidityUsd: q.minLiquidityUsd,
+    });
+
+    return {
+      configured: true,
+      source: 'OKX Onchain OS',
+      fetchedAt: new Date().toISOString(),
+      events: events.slice(0, q.limit),
+    };
+  });
+
+  /**
    * Рейтинг кошельков.
    *
    * По умолчанию — только те, у кого оценка вообще выставлена. Кошельки

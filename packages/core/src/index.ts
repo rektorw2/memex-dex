@@ -33,3 +33,17 @@ export * from './pool-health.js';
 export * from './downsample.js';
 // Уверенность в оценке кошелька — отдельно от самой оценки.
 export * from './wallet-confidence.js';
+// Расчёт результата кошелька: что считать сделкой, учёт позиций,
+// четыре независимые оценки вместо одной.
+export * from './economic-trade.js';
+export * from './position-ledger.js';
+export * from './smart-score-v2.js';
+// Модели кошельков OKX и разбор ответов. Чистая часть интеграции:
+// проверяется тестами без сети и без ключей.
+export * from './okx-wallet-model.js';
+// Живые события и раскладка подписок. Тоже чистая часть: сокета здесь нет.
+export * from './okx-ws-model.js';
+// История DEX — единственный источник точных количеств.
+export * from './okx-dex-history.js';
+// Полнота истории и позиции с неизвестной себестоимостью.
+export * from './ledger-completeness.js';
