@@ -31,3 +31,5 @@ export * from './risk-scale.js';
 // «можно ли продать в принципе», эта — «есть ли кому продать сейчас».
 export * from './pool-health.js';
 export * from './downsample.js';
+// Уверенность в оценке кошелька — отдельно от самой оценки.
+export * from './wallet-confidence.js';

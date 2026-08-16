@@ -12,6 +12,15 @@ export interface ChainInfo {
   nativeSymbol: string;
   /** Обозреватель блоков: контракт токена. */
   explorerToken: (address: string) => string;
+  /**
+   * Страница кошелька в обозревателе.
+   *
+   * Отдельно от explorerToken: у обозревателей это разные разделы,
+   * и открытие адреса кошелька по пути токена даёт пустую страницу
+   * с ошибкой. Снаружи такая ссылка выглядит рабочей, поэтому
+   * ошибка живёт долго.
+   */
+  explorerAddress: (address: string) => string;
   /** Страница пары на DexScreener. */
   dexScreener: (address: string) => string;
   /** Идентификатор сети в GeckoTerminal, null — не поддерживается. */
@@ -23,6 +32,7 @@ export const CHAINS: Record<string, ChainInfo> = {
     label: 'Solana',
     nativeSymbol: 'SOL',
     explorerToken: (a) => `https://solscan.io/token/${a}`,
+    explorerAddress: (a) => `https://solscan.io/account/${a}`,
     dexScreener: (a) => `https://dexscreener.com/solana/${a}`,
     geckoNetwork: 'solana',
   },
@@ -30,6 +40,7 @@ export const CHAINS: Record<string, ChainInfo> = {
     label: 'BNB Chain',
     nativeSymbol: 'BNB',
     explorerToken: (a) => `https://bscscan.com/token/${a}`,
+    explorerAddress: (a) => `https://bscscan.com/address/${a}`,
     dexScreener: (a) => `https://dexscreener.com/bsc/${a}`,
     geckoNetwork: 'bsc',
   },
@@ -37,6 +48,7 @@ export const CHAINS: Record<string, ChainInfo> = {
     label: 'Base',
     nativeSymbol: 'ETH',
     explorerToken: (a) => `https://basescan.org/token/${a}`,
+    explorerAddress: (a) => `https://basescan.org/address/${a}`,
     dexScreener: (a) => `https://dexscreener.com/base/${a}`,
     geckoNetwork: 'base',
   },
@@ -44,6 +56,7 @@ export const CHAINS: Record<string, ChainInfo> = {
     label: 'Ethereum',
     nativeSymbol: 'ETH',
     explorerToken: (a) => `https://etherscan.io/token/${a}`,
+    explorerAddress: (a) => `https://etherscan.io/address/${a}`,
     dexScreener: (a) => `https://dexscreener.com/ethereum/${a}`,
     geckoNetwork: 'eth',
   },
@@ -51,6 +64,7 @@ export const CHAINS: Record<string, ChainInfo> = {
     label: 'Robinhood Chain',
     nativeSymbol: 'ETH',
     explorerToken: (a) => `https://explorer.robinhood.com/token/${a}`,
+    explorerAddress: (a) => `https://explorer.robinhood.com/address/${a}`,
     dexScreener: (a) => `https://dexscreener.com/search?q=${a}`,
     geckoNetwork: null,
   },
