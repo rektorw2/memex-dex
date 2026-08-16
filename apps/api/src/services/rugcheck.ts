@@ -28,11 +28,37 @@ export interface RugcheckRisk {
   score: number | null;
 }
 
+/**
+ * Находки, означающие невозможность выйти из позиции.
+ *
+ * Только они блокируют токен. Всё остальное — активная эмиссия,
+ * высокая концентрация, незалоченный пул — RugCheck тоже помечает
+ * уровнем danger, и на мем-коинах это встречается у подавляющего
+ * большинства. Принимать их метку за приговор значит заблокировать
+ * почти всю Solana и подменить своё правило чужим.
+ *
+ * Сравнение идёт по ключевым словам названия, а не по точному
+ * совпадению: RugCheck меняет формулировки, и жёсткий список названий
+ * молча перестал бы срабатывать — самый неприятный вид поломки,
+ * потому что выглядит как отсутствие проблем.
+ */
+const ABSOLUTE_FINDINGS = ['honeypot', 'cannot sell', 'transfer disabled', 'blacklist'];
+
+export function isAbsoluteFinding(name: string): boolean {
+  const n = name.toLowerCase();
+  return ABSOLUTE_FINDINGS.some((k) => n.includes(k));
+}
+
 export interface RugcheckResult {
   /** Найденные проблемы. Пустой список означает «проверили, чисто». */
   risks: RugcheckRisk[];
-  /** Есть ли среди них критические. */
+  /**
+   * Найдено то, что делает выход невозможным. Не то же самое, что
+   * «RugCheck поставил danger»: их шкала строже нашей задачи.
+   */
   hasCritical: boolean;
+  /** Помечено уровнем danger по их шкале. Учитывается как повод, не приговор. */
+  dangerCount: number;
   /** Доля предложения у крупнейших держателей, если сервис её посчитал. */
   topHoldersPct: number | null;
   /** Полномочия эмиссии отозваны. */
@@ -89,7 +115,12 @@ export function parseRugcheck(json: any): RugcheckResult {
 
   return {
     risks,
-    hasCritical: risks.some((r) => r.level === 'danger'),
+    // Блокирует только невозможность выйти. Прежде здесь стояло
+    // `r.level === 'danger'`, и это заблокировало 137 токенов
+    // из 173: на мем-коинах RugCheck помечает уровнем danger
+    // и активную эмиссию, и концентрацию у топ-10 — то есть норму.
+    hasCritical: risks.some((r) => isAbsoluteFinding(r.name)),
+    dangerCount: risks.filter((r) => r.level === 'danger').length,
     topHoldersPct: num(json?.topHolders ?? json?.topHoldersPct),
     mintAuthorityRevoked: bool(json?.mintAuthority === null || json?.mintAuthorityRevoked),
     freezeAuthorityRevoked: bool(json?.freezeAuthority === null || json?.freezeAuthorityRevoked),

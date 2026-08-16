@@ -29,7 +29,7 @@ import {
 import { fetchRwaRegistry, fetchPriceInfo, safeCall } from '../services/okx-market.js';
 import { fetchAdvancedInfo, readTags, readOkxRisk } from '../services/okx-security.js';
 import { checkHoneypot, isHoneypotSupported } from '../services/honeypot.js';
-import { checkRugcheck } from '../services/rugcheck.js';
+import { checkRugcheck, isAbsoluteFinding } from '../services/rugcheck.js';
 
 /**
  * Проверка токенов витрины на очевидные ловушки.
@@ -85,8 +85,12 @@ const RECHECK_HOURS = 24;
  *   5 — OKX advanced-info, реестр подтверждённых RWA, Honeypot.is,
  *       RugCheck; подделки под биржевые тикеры отделены от подделок
  *       под криптоактивы
+ *   6 — метка danger от RugCheck больше не блокирует сама по себе.
+ *       Версия 5 заблокировала 137 токенов из 173: на мем-коинах
+ *       RugCheck помечает уровнем danger активную эмиссию и высокую
+ *       концентрацию, то есть норму этого рынка.
  */
-export const RULES_VERSION = 5;
+export const RULES_VERSION = 6;
 
 let timer: NodeJS.Timeout | null = null;
 let running = false;
@@ -96,9 +100,40 @@ export interface CheckResult {
   blocked: number;
   warned: number;
   ok: number;
+  /** Проход остановлен по времени, а не потому что кончились токены. */
+  timedOut?: boolean;
+  /** Сколько токенов из выборки остались неразобранными. */
+  remaining?: number;
 }
 
-export async function checkBatch(limit = BATCH): Promise<CheckResult> {
+/**
+ * Предел времени на один проход.
+ *
+ * Появился после того, как проверка одного токена выросла до семи
+ * обращений к внешним источникам: GoPlus, DexScreener, OKX detail,
+ * advanced-info, Honeypot.is, RugCheck и замер круга. Шестьдесят
+ * токенов при таком наборе — это минуты, а вызов из админки при этом
+ * просто висит без единого признака жизни.
+ *
+ * Ограничение по времени честнее ограничения по количеству: сколько
+ * токенов успеет разобраться, зависит от того, как отвечают источники
+ * сегодня, и угадать это числом заранее нельзя. Незаконченную работу
+ * подхватит следующий проход — очередь и так устроена так, что
+ * прерывание её не портит.
+ */
+const DEFAULT_BUDGET_MS = 20_000;
+
+export interface CheckOptions {
+  /** Сколько времени отвести проходу. */
+  budgetMs?: number;
+}
+
+export async function checkBatch(
+  limit = BATCH,
+  opts: CheckOptions = {},
+): Promise<CheckResult> {
+  const budgetMs = opts.budgetMs ?? DEFAULT_BUDGET_MS;
+  const deadline = Date.now() + budgetMs;
   const stale = new Date(Date.now() - RECHECK_HOURS * 3_600_000);
 
   const tokens = await prisma.token.findMany({
@@ -136,7 +171,20 @@ export async function checkBatch(limit = BATCH): Promise<CheckResult> {
   // в месяц, а нужен при проверке каждого токена.
   const rwaRegistry = await fetchRwaRegistry();
 
-  for (const token of tokens) {
+  for (const [index, token] of tokens.entries()) {
+    // Проверка времени до начала работы над токеном, а не после:
+    // прерывать на середине незачем, а начинать восьмой токен,
+    // когда бюджет уже вышел, — тем более.
+    if (Date.now() > deadline) {
+      result.timedOut = true;
+      result.remaining = tokens.length - index;
+      logger.info(
+        { checked: result.checked, remaining: result.remaining },
+        'проверка витрины: проход остановлен по времени',
+      );
+      break;
+    }
+
     try {
       const chain = token.chain as ChainKey;
 
@@ -351,14 +399,31 @@ export async function checkBatch(limit = BATCH): Promise<CheckResult> {
       }
 
       // RugCheck на Solana играет роль, которую на EVM играет симуляция.
+      //
+      // Блокирует только невозможность выйти из позиции. Их метка
+      // danger стоит и на активной эмиссии, и на концентрации
+      // у топ-10 — на мем-коинах это норма, и принимать её
+      // за приговор значит заблокировать почти всю сеть.
       if (rug?.hasCritical) {
-        const worst = rug.risks.find((r) => r.level === 'danger');
+        const worst = rug.risks.find((r) => isAbsoluteFinding(r.name));
         reasons.push({
           code: 'RUGCHECK_CRITICAL',
           message: worst?.description
             ? `RugCheck: ${worst.description}`
-            : `RugCheck нашёл критическую проблему: ${worst?.name ?? 'без описания'}`,
+            : `RugCheck: ${worst?.name ?? 'выход из позиции невозможен'}`,
           weight: 100,
+        });
+      } else if (rug && rug.dangerCount > 0) {
+        // Прочие находки уровня danger — повод для осторожности,
+        // взвешенный нашей мерой, а не их.
+        reasons.push({
+          code: 'OKX_CAUTION',
+          message: `RugCheck отметил ${rug.dangerCount} проблем(ы): ${rug.risks
+            .filter((r) => r.level === 'danger')
+            .map((r) => r.name)
+            .slice(0, 3)
+            .join(', ')}`,
+          weight: Math.min(30, rug.dangerCount * 10),
         });
       }
 
@@ -874,7 +939,11 @@ async function tick(): Promise<void> {
   if (running) return;
   running = true;
   try {
-    await checkBatch();
+    // Бюджет заметно меньше интервала между проходами. Иначе проход,
+    // затянувшийся на источниках, наезжает на следующий: флаг running
+    // его отменит, и очередь встанет — при том что снаружи всё будет
+    // выглядеть работающим.
+    await checkBatch(BATCH, { budgetMs: Math.floor(TICK_MS * 0.6) });
   } catch (e: any) {
     logger.warn({ err: e?.message }, 'проверка витрины: ошибка прохода');
   } finally {

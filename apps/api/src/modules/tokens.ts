@@ -32,17 +32,39 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
    * подделки.
    */
   app.post('/admin/tokens/recheck', { preHandler: [app.requireAdmin] }, async (req) => {
-    const body = z.object({ limit: z.number().int().min(1).max(60).default(30) })
+    const body = z
+      .object({
+        limit: z.number().int().min(1).max(60).default(30),
+        /**
+         * Сколько секунд отвести проходу.
+         *
+         * Ограничение по времени, а не только по количеству, появилось
+         * потому что проверка одного токена стоит семи обращений
+         * к внешним источникам. Шестьдесят токенов — это минуты,
+         * и вызов из консоли всё это время выглядит как зависший.
+         *
+         * Тридцать секунд сверху: дольше держать соединение открытым
+         * бессмысленно, обратный прокси всё равно его оборвёт, и это
+         * будет выглядеть как ошибка сервера вместо честного
+         * «успели столько».
+         */
+        budgetSeconds: z.number().int().min(5).max(30).default(20),
+      })
       .parse(req.body ?? {});
 
     const { checkBatch } = await import('../workers/scam-checker.js');
-    const result = await checkBatch(body.limit);
+    const result = await checkBatch(body.limit, { budgetMs: body.budgetSeconds * 1000 });
 
     return {
       ...result,
-      note:
-        'Проверено за один проход. Повторите, если осталось непроверенное — ' +
-        'за раз разбирается ограниченное число токенов из-за лимитов источников.',
+      note: result.timedOut
+        ? `Проход остановлен по времени: разобрано ${result.checked}, ` +
+          `осталось ${result.remaining} из выборки. Повторите вызов — ` +
+          'очередь продолжится с того же места.'
+        : result.checked === 0
+          ? 'Проверять нечего: все токены разобраны по действующим правилам.'
+          : `Разобрано ${result.checked} токенов. Повторите, если check-status ` +
+            'показывает непроверенные.',
     };
   });
 
@@ -65,6 +87,52 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
     ]);
 
     return { total, ok, warn, blocked, unchecked, stale };
+  });
+
+  /**
+   * Что именно режет выдачу.
+   *
+   * Появилось после случая, когда версия правил 5 заблокировала 137
+   * токенов из 173, и понять причину можно было только перебором
+   * гипотез. Счётчик по кодам отвечает на этот вопрос сразу: видно,
+   * какое правило сработало сколько раз, и правило, сработавшее
+   * на трёх четвертях витрины, почти наверняка описывает норму
+   * рынка, а не нарушение.
+   */
+  app.get('/tokens/risk-breakdown', async (req) => {
+    const q = z
+      .object({ level: z.enum(['blocked', 'high', 'medium', 'all']).default('blocked') })
+      .parse(req.query ?? {});
+
+    const rows = await prisma.token.findMany({
+      where: {
+        isQuote: false,
+        isHidden: false,
+        ...(q.level === 'all' ? {} : { riskLevel: q.level }),
+      },
+      select: { riskCodes: true },
+    });
+
+    const counts = new Map<string, number>();
+    for (const r of rows) {
+      for (const code of r.riskCodes ?? []) {
+        counts.set(code, (counts.get(code) ?? 0) + 1);
+      }
+    }
+
+    return {
+      level: q.level,
+      tokens: rows.length,
+      codes: [...counts.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .map(([code, count]) => ({
+          code,
+          count,
+          // Доля от выборки: код, встречающийся почти у всех,
+          // описывает рынок, а не отдельный токен.
+          share: rows.length > 0 ? Math.round((count / rows.length) * 100) : 0,
+        })),
+    };
   });
 
   app.get('/tokens', async (req) => {

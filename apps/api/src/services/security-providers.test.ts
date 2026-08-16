@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { parseHoneypot, isHoneypotSupported } from './honeypot.js';
-import { parseRugcheck } from './rugcheck.js';
+import { parseRugcheck, isAbsoluteFinding } from './rugcheck.js';
 import { parseAdvancedInfo, readTags, readOkxRisk } from './okx-security.js';
 
 /**
@@ -57,20 +57,44 @@ describe('Honeypot.is', () => {
 });
 
 describe('RugCheck', () => {
-  it('критическая находка помечается', () => {
+  it('невозможность продать блокирует', () => {
     const r = parseRugcheck({
-      risks: [
-        { name: 'Mint authority', level: 'danger', description: 'Эмиссия не отозвана', score: 90 },
-        { name: 'Low holders', level: 'warn', description: 'Мало держателей', score: 10 },
-      ],
+      risks: [{ name: 'Honeypot detected', level: 'danger', description: 'Продажа отклоняется' }],
     });
     expect(r.hasCritical).toBe(true);
-    expect(r.risks).toHaveLength(2);
+  });
+
+  it('метка danger сама по себе не блокирует', () => {
+    // Это исправление версии правил 6. Версия 5 принимала их danger
+    // за приговор и заблокировала 137 токенов из 173: RugCheck ставит
+    // эту метку и на активную эмиссию, и на концентрацию у топ-10 —
+    // то есть на норму мем-коинов.
+    const r = parseRugcheck({
+      risks: [
+        { name: 'Mint Authority still enabled', level: 'danger', description: 'Эмиссия не отозвана' },
+        { name: 'Top 10 holders high ownership', level: 'danger', description: '' },
+      ],
+    });
+    expect(r.hasCritical).toBe(false);
+    // Но незамеченными они не остаются — учитываются своим весом.
+    expect(r.dangerCount).toBe(2);
+  });
+
+  it('абсолютные находки распознаются по ключевым словам', () => {
+    // Формулировки у RugCheck меняются, и жёсткий список названий
+    // однажды молча перестал бы срабатывать.
+    for (const name of ['Honeypot', 'Token cannot sell', 'Transfer disabled', 'Blacklist function']) {
+      expect(isAbsoluteFinding(name), name).toBe(true);
+    }
+    for (const name of ['Mint Authority still enabled', 'Low amount of LP Providers']) {
+      expect(isAbsoluteFinding(name), name).toBe(false);
+    }
   });
 
   it('только предупреждения критикой не считаются', () => {
     const r = parseRugcheck({ risks: [{ name: 'x', level: 'warn' }] });
     expect(r.hasCritical).toBe(false);
+    expect(r.dangerCount).toBe(0);
   });
 
   it('пустой список означает «проверили, чисто»', () => {
