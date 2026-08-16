@@ -8,6 +8,7 @@ import { startRadarTracker, stopRadarTracker } from './radar-tracker.js';
 import { startWalletTracker, stopWalletTracker } from './wallet-tracker.js';
 import { startAutoPublisher, stopAutoPublisher } from './auto-publisher.js';
 import { startScamChecker, stopScamChecker } from './scam-checker.js';
+import { startRadarRisk, stopRadarRisk } from './radar-risk.js';
 import { logger } from '../lib/logger.js';
 import { prisma } from '../lib/prisma.js';
 
@@ -21,6 +22,7 @@ startRadarTracker();
 startWalletTracker();
 startAutoPublisher();
 startScamChecker();
+startRadarRisk();
 
 const shutdown = async () => {
   logger.info('останавливаем воркеры');
@@ -34,6 +36,7 @@ const shutdown = async () => {
   stopWalletTracker();
   stopAutoPublisher();
   stopScamChecker();
+  stopRadarRisk();
   await prisma.$disconnect();
   process.exit(0);
 };

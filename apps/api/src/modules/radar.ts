@@ -8,6 +8,61 @@ import { isOkxConfigured } from '../services/okx.js';
 import { isTelegramConfigured, pollTelegramUpdates } from '../services/telegram.js';
 import { radarPerformance } from '../workers/radar-tracker.js';
 
+/**
+ * Порядки выдачи ленты.
+ *
+ * Вынесены в таблицу, а не в цепочку тернарных операторов: вариантов
+ * шесть, и в выражении они перестают читаться. Каждый заканчивается
+ * временем находки — при равных значениях порядок должен быть
+ * определённым, иначе список прыгает между обновлениями.
+ */
+const RADAR_SORTS: Record<string, P.RadarEventOrderByWithRelationInput[]> = {
+  recent: [{ firstSeenAt: 'desc' }],
+  growth: [{ currentMultiple: 'desc' }, { firstSeenAt: 'desc' }],
+  liquidity: [{ liquidityUsd: 'desc' }, { firstSeenAt: 'desc' }],
+  // По риску — от безопасного к опасному: смотреть список начинают
+  // с того, что можно рассматривать всерьёз.
+  risk: [{ riskScore: 'asc' }, { firstSeenAt: 'desc' }],
+  holders: [{ currentHolders: 'desc' }, { firstSeenAt: 'desc' }],
+  wallets: [{ walletSignalScore: 'desc' }, { firstSeenAt: 'desc' }],
+};
+
+/**
+ * Живая сводка для шапки радара.
+ *
+ * Отвечает на вопрос «что происходит прямо сейчас» до того, как человек
+ * начнёт читать карточки. Считается за сутки: радар про свежее,
+ * и находка трёхдневной давности к текущей картине отношения не имеет.
+ */
+async function radarSummary(chain?: string) {
+  const since = new Date(Date.now() - 24 * 3_600_000);
+  const where = { firstSeenAt: { gte: since }, ...(chain ? { chain: chain as never } : {}) };
+
+  const [total, lowRisk, highRisk, agg, latest] = await Promise.all([
+    prisma.radarEvent.count({ where }),
+    prisma.radarEvent.count({ where: { ...where, riskScore: { lt: 30 } } }),
+    prisma.radarEvent.count({ where: { ...where, riskScore: { gte: 60 } } }),
+    prisma.radarEvent.aggregate({ where, _avg: { currentMultiple: true } }),
+    prisma.radarEvent.findFirst({
+      where: chain ? { chain: chain as never } : {},
+      orderBy: { lastCheckedAt: 'desc' },
+      select: { lastCheckedAt: true },
+    }),
+  ]);
+
+  const avg = agg._avg?.currentMultiple;
+
+  return {
+    found24h: total,
+    lowRisk,
+    highRisk,
+    // Средний рост в процентах, а не кратностью: «+4%» понятнее,
+    // чем «1.04×», когда речь о среднем по выборке.
+    avgGrowthPct: avg != null ? (Number(avg) - 1) * 100 : null,
+    lastCheckedAt: latest?.lastCheckedAt ?? null,
+  };
+}
+
 export const radarRoutes: FastifyPluginAsync = async (app) => {
   /** Лента находок. Открыта всем: это витрина, а не персональные данные. */
   app.get('/radar', async (req) => {
@@ -19,7 +74,15 @@ export const radarRoutes: FastifyPluginAsync = async (app) => {
         maxAgeHours: z.coerce.number().optional(),
         /** Показать только находки, где есть покупки размеченных кошельков. */
         smartOnly: z.coerce.boolean().optional(),
-        sort: z.enum(['recent', 'wallets']).default('recent'),
+        /**
+         * Порядок выдачи.
+         *
+         * «Сначала новые» — основной: радар про свежесть. Остальные
+         * нужны, когда список накопился и хронология перестаёт помогать.
+         */
+        sort: z
+          .enum(['recent', 'growth', 'liquidity', 'risk', 'holders', 'wallets'])
+          .default('recent'),
         limit: z.coerce.number().max(100).default(50),
       })
       .parse(req.query);
@@ -32,16 +95,17 @@ export const radarRoutes: FastifyPluginAsync = async (app) => {
         ...(q.maxAgeHours != null ? { poolAgeHours: { lte: q.maxAgeHours } } : {}),
         ...(q.smartOnly ? { smartBuyers: { gt: 0 } } : {}),
       },
-      orderBy:
-        q.sort === 'wallets'
-          ? [{ walletSignalScore: 'desc' as const }, { firstSeenAt: 'desc' as const }]
-          : { firstSeenAt: 'desc' as const },
+      orderBy: RADAR_SORTS[q.sort],
       take: q.limit,
     });
 
     return {
       sources: { okx: isOkxConfigured(), geckoterminal: true },
       minLiquidityUsd: env.RADAR_MIN_LIQUIDITY_USD,
+      // Сводка считается по тем же условиям, что и лента: цифра
+      // в шапке, не совпадающая со списком под ней, хуже отсутствия
+      // цифры — она выглядит как факт и вводит в заблуждение.
+      summary: await radarSummary(q.chain),
       events: events.map(serializeEvent),
     };
   });
@@ -249,7 +313,10 @@ function serializeEvent(e: {
   currentMcapUsd: P.Decimal | null; peakMcapUsd: P.Decimal | null;
   currentMultiple: P.Decimal | null; peakMultiple: P.Decimal | null;
   peakAt: Date | null; poolAgeHours: P.Decimal | null;
+  currentHolders: number | null; holdersAtSignal: number | null;
+  currentTop10Pct: P.Decimal | null;
   riskScore: number | null; riskFlags: unknown; source: string;
+  riskLevel: string | null; riskCodes: string[];
   pricePoints: unknown; firstSeenAt: Date; lastCheckedAt: Date | null;
   isTracking: boolean; smartBuyers: number; smartBuyVolumeUsd: P.Decimal;
   whaleBuyers: number; walletSignalScore: number;
@@ -260,7 +327,12 @@ function serializeEvent(e: {
     address: e.address,
     symbol: e.symbol,
     name: e.name,
+    // Цена находки и текущая — разные величины, и склеивать их нельзя:
+    // без цены на момент обнаружения кратность не с чем сверить,
+    // а именно она объясняет, откуда взялся показанный рост.
     priceUsd: (e.currentPriceUsd ?? e.priceUsd)?.toString() ?? null,
+    discoveryPriceUsd: e.priceUsd?.toString() ?? null,
+    currentPriceUsd: e.currentPriceUsd?.toString() ?? null,
     liquidityUsd: e.liquidityUsd?.toString() ?? null,
     volume24hUsd: e.volume24hUsd?.toString() ?? null,
     mcapAtSignalUsd: e.mcapAtSignalUsd?.toString() ?? null,
@@ -272,6 +344,14 @@ function serializeEvent(e: {
     poolAgeHours: e.poolAgeHours ? Number(e.poolAgeHours) : null,
     riskScore: e.riskScore,
     riskFlags: e.riskFlags,
+    // Уровень и коды из движка терминала. Пока проверка до находки
+    // не дошла, оба пусты — и это честнее, чем показывать уровень,
+    // посчитанный по другим правилам.
+    riskLevel: e.riskLevel,
+    riskCodes: e.riskCodes ?? [],
+    holders: e.currentHolders,
+    holdersAtSignal: e.holdersAtSignal,
+    top10Pct: e.currentTop10Pct != null ? Number(e.currentTop10Pct) : null,
     source: e.source,
     points: Array.isArray(e.pricePoints) ? e.pricePoints : [],
     firstSeenAt: e.firstSeenAt,

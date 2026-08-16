@@ -24,3 +24,6 @@ export * from './token-registry.js';
 // первое — про формат чужих ответов, второе — про подделки под бумаги.
 export * from './okx-model.js';
 export * from './rwa.js';
+// Шкала риска для показа человеку: подписи, знаки, время, кратность.
+// Отдельно от risk-model.ts — тот про допуск, эта про читаемость.
+export * from './risk-scale.js';
