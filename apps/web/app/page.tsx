@@ -30,7 +30,10 @@ export default function TerminalPage() {
   const [interval, setInterval] = useState<string>('5m');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [tab, setTab] = useState<'market' | 'chart' | 'portfolio'>('market');
-  const [safeOnly, setSafeOnly] = useState(false);
+  // По умолчанию показываем только прошедшие проверку. Витрина, где
+  // безопасное и сомнительное лежат вперемешку, перекладывает разбор
+  // на человека — а он для того и пришёл, чтобы этого не делать.
+  const [safeOnly, setSafeOnly] = useState(true);
 
   const params = new URLSearchParams({ sort, limit: '60' });
   if (chain) params.set('chain', chain);
@@ -48,7 +51,8 @@ export default function TerminalPage() {
   // нет», хотя на самом деле проверка ещё идёт.
   const { data: checkStatus } = useSWR<{
     total: number; ok: number; warn: number; blocked: number; unchecked: number;
-  }>('/tokens/check-status', fetcher, { refreshInterval: 60_000 });
+    stale?: number;
+  }>('/tokens/check-status', fetcher, { refreshInterval: 30_000 });
 
   const active =
     tokens?.find((t) => t.id === selectedId) ?? tokens?.find((t) => !t.isQuote) ?? null;
@@ -226,7 +230,9 @@ function MarketStats({ summary, compact }: { summary: any; compact?: boolean }) 
   }
 
   const items: Array<[string, string]> = [
-    ['Токенов', String(summary.tokens)],
+    // «Прошли проверку», а не «Токенов»: число в шапке должно совпадать
+    // с тем, что человек видит в списке, иначе оно вводит в заблуждение.
+    ['Прошли проверку', String(summary.passedCheck ?? summary.tokens)],
     ['Объём 24ч', fmtUsd(summary.volume24hUsd)],
     ['Ликвидность', fmtUsd(summary.liquidityUsd)],
     ...Object.entries(summary.byChain ?? {}).map(
@@ -271,7 +277,10 @@ function Filters({
   setSearch: (v: string) => void;
   safeOnly: boolean;
   setSafeOnly: (v: boolean) => void;
-  checkStatus?: { total: number; ok: number; warn: number; blocked: number; unchecked: number };
+  checkStatus?: {
+    total: number; ok: number; warn: number; blocked: number;
+    unchecked: number; stale?: number;
+  };
 }) {
   return (
     <div className="space-y-2">
@@ -343,10 +352,19 @@ function Filters({
 
       {/* Состояние проверки. Показывается только пока она не закончена:
           у готовой витрины эта строка была бы шумом. */}
-      {checkStatus && checkStatus.unchecked > 0 && (
+      {checkStatus && (
         <p className="text-muted text-[11px] leading-relaxed">
-          Проверено {checkStatus.total - checkStatus.unchecked} из {checkStatus.total} токенов.
-          Скрыто как ловушки: {checkStatus.blocked}.
+          {safeOnly
+            ? `Показаны ${checkStatus.ok} токенов, прошедших проверку. ` +
+              `Скрыто: ${checkStatus.blocked} ловушек, ${checkStatus.warn} с замечаниями.`
+            : `Проверено ${checkStatus.total - checkStatus.unchecked} из ${checkStatus.total}. ` +
+              `Скрыто как ловушки: ${checkStatus.blocked}.`}
+          {(checkStatus.stale ?? 0) > 0 && (
+            <span className="text-warn">
+              {' '}
+              {checkStatus.stale} проверено по устаревшим правилам — идёт перепроверка.
+            </span>
+          )}
         </p>
       )}
     </div>

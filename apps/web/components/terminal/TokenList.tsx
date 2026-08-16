@@ -1,6 +1,8 @@
 'use client';
 
+import { useState } from 'react';
 import { TokenLogo } from '@/components/TokenLogo';
+import { RiskBadge, RiskPanel } from './RiskBadge';
 import { fmtPrice, fmtUsd, fmtPct } from '@/lib/api';
 import type { Token } from './types';
 import { CHAIN_LABEL } from './types';
@@ -29,6 +31,9 @@ interface Props {
 }
 
 export function TokenList({ tokens, activeId, onSelect, isLoading, touch }: Props) {
+  // Разбор открывается по нажатию на щит и только для одного токена:
+  // несколько открытых панелей превращают список в простыню.
+  const [detailsFor, setDetailsFor] = useState<string | null>(null);
   if (isLoading && !tokens) {
     return (
       <div className="space-y-px p-2">
@@ -74,8 +79,8 @@ export function TokenList({ tokens, activeId, onSelect, isLoading, touch }: Prop
         const isActive = t.id === activeId;
 
         return (
+          <div key={t.id}>
           <button
-            key={t.id}
             role="option"
             aria-selected={isActive}
             onClick={() => onSelect(t)}
@@ -103,7 +108,10 @@ export function TokenList({ tokens, activeId, onSelect, isLoading, touch }: Prop
                     ✓
                   </span>
                 )}
-                <ScamMark verdict={t.scamVerdict} reasons={t.scamReasons} />
+                <RiskBadge
+                  level={t.riskLevel}
+                  onOpen={() => setDetailsFor(detailsFor === t.id ? null : t.id)}
+                />
               </div>
               <div className="truncate text-xs text-muted">
                 {CHAIN_LABEL[t.chain] ?? t.chain} · {fmtUsd(t.liquidityUsd)}
@@ -125,6 +133,24 @@ export function TokenList({ tokens, activeId, onSelect, isLoading, touch }: Prop
               {ch == null ? '—' : fmtPct(ch)}
             </span>
           </button>
+
+          {detailsFor === t.id && (
+            <RiskPanel
+              token={{
+                symbol: t.symbol,
+                address: t.address,
+                chainLabel: CHAIN_LABEL[t.chain] ?? t.chain,
+                level: t.riskLevel,
+                score: t.scamReasons?.score ?? null,
+                reasons: t.scamReasons?.reasons ?? [],
+                sources: t.scamReasons?.sources ?? null,
+                checkedAt: t.scamCheckedAt,
+                liquidityUsd: t.liquidityUsd,
+              }}
+              onClose={() => setDetailsFor(null)}
+            />
+          )}
+          </div>
         );
       })}
     </div>

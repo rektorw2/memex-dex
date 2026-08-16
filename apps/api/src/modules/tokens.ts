@@ -21,16 +21,48 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
    * «ничего не найдено» и «проверено ещё не всё» — разные сообщения,
    * и второе не должно выглядеть как первое.
    */
+  /**
+   * Немедленная перепроверка витрины.
+   *
+   * Нужна после изменения правил: обычная очередь разбирает по восемь
+   * токенов раз в сорок пять секунд, и дожидаться её на полутора сотнях
+   * токенов — это двадцать минут, в течение которых в списке висят
+   * подделки.
+   */
+  app.post('/admin/tokens/recheck', { preHandler: [app.requireAdmin] }, async (req) => {
+    const body = z.object({ limit: z.number().int().min(1).max(60).default(30) })
+      .parse(req.body ?? {});
+
+    const { checkBatch } = await import('../workers/scam-checker.js');
+    const result = await checkBatch(body.limit);
+
+    return {
+      ...result,
+      note:
+        'Проверено за один проход. Повторите, если осталось непроверенное — ' +
+        'за раз разбирается ограниченное число токенов из-за лимитов источников.',
+    };
+  });
+
   app.get('/tokens/check-status', async () => {
-    const [total, ok, warn, blocked, unchecked] = await Promise.all([
-      prisma.token.count({ where: { isQuote: false, isHidden: false } }),
-      prisma.token.count({ where: { isQuote: false, isHidden: false, scamVerdict: 'OK' } }),
-      prisma.token.count({ where: { isQuote: false, isHidden: false, scamVerdict: 'WARN' } }),
-      prisma.token.count({ where: { isQuote: false, isHidden: false, scamVerdict: 'BLOCK' } }),
-      prisma.token.count({ where: { isQuote: false, isHidden: false, scamVerdict: null } }),
+    const base = { isQuote: false, isHidden: false } as const;
+
+    const [total, ok, warn, blocked, unchecked, stale] = await Promise.all([
+      prisma.token.count({ where: base }),
+      // «Прошли проверку» — это verified и low, а не всё, что не заблокировано.
+      prisma.token.count({ where: { ...base, riskLevel: { in: ['verified', 'low'] } } }),
+      prisma.token.count({ where: { ...base, riskLevel: { in: ['medium', 'high'] } } }),
+      prisma.token.count({ where: { ...base, riskLevel: 'blocked' } }),
+      prisma.token.count({
+        where: { ...base, OR: [{ riskLevel: null }, { riskLevel: 'pending' }] },
+      }),
+      // Проверенные по устаревшим правилам. Их вердикт формально есть,
+      // но верить ему нельзя — считаем отдельно, иначе «проверено 148
+      // из 152» выглядит как готовность, которой нет.
+      prisma.token.count({ where: { ...base, scamRulesVersion: { lt: 4 } } }),
     ]);
 
-    return { total, ok, warn, blocked, unchecked };
+    return { total, ok, warn, blocked, unchecked, stale };
   });
 
   app.get('/tokens', async (req) => {
@@ -78,16 +110,18 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
               // поэтому непроверенным токенам здесь не место. Показывать
               // «+543%» рядом с вопросительным знаком значит предлагать
               // сделку, о предмете которой мы сами ничего не знаем.
-              scamVerdict: 'OK',
+              riskLevel: { in: ['verified', 'low'] },
             }
           : {}),
         ...(q.maxRiskScore != null ? { riskScore: { lte: q.maxRiskScore } } : {}),
 
-        // Доказанные ловушки скрыты по умолчанию. Непроверенные при этом
-        // остаются видимыми: отсутствие проверки — не повод прятать токен,
-        // это повод его пометить, что и делается в ответе ниже.
-        ...(q.includeBlocked ? {} : { scamVerdict: { not: 'BLOCK' } }),
-        ...(q.safeOnly ? { scamVerdict: 'OK' } : {}),
+        // Заблокированные скрыты всегда, кроме явного запроса.
+        ...(q.includeBlocked ? {} : { riskLevel: { not: 'blocked' } }),
+        // Строгий режим: только подтверждённые и низкий риск.
+        // Непроверенные сюда не попадают принципиально — незавершённая
+        // проверка это отсутствие сведений, а не сведения об отсутствии
+        // проблем.
+        ...(q.safeOnly ? { riskLevel: { in: ['verified', 'low'] } } : {}),
         ...(q.search
           ? {
               OR: [
@@ -123,6 +157,9 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
 
       // Вердикт отдаётся всегда, включая null: интерфейс должен уметь
       // отличить «проверен и чист» от «ещё не проверялся».
+      riskLevel: t.riskLevel,
+      riskCodes: t.riskCodes,
+      isRegistered: t.isRegistered,
       scamVerdict: t.scamVerdict,
       scamReasons: t.scamReasons,
       scamCheckedAt: t.scamCheckedAt,
@@ -298,21 +335,24 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
 
   /** Сводка по рынку — для шапки витрины. */
   app.get('/market/summary', async () => {
-    const [total, byChain, agg] = await Promise.all([
+    // Сводка считается по тем же токенам, что попадают в список:
+    // объём и ликвидность, включающие заблокированные, описывают
+    // не тот рынок, который человек видит на экране.
+    const listed = { isHidden: false, riskLevel: { in: ['verified', 'low'] } } as const;
+
+    const [total, passed, byChain, agg] = await Promise.all([
       prisma.token.count({ where: { isHidden: false } }),
-      prisma.token.groupBy({
-        by: ['chain'],
-        where: { isHidden: false },
-        _count: true,
-      }),
+      prisma.token.count({ where: listed }),
+      prisma.token.groupBy({ by: ['chain'], where: listed, _count: true }),
       prisma.token.aggregate({
-        where: { isHidden: false },
+        where: listed,
         _sum: { volume24hUsd: true, liquidityUsd: true },
       }),
     ]);
 
     return {
       tokens: total,
+      passedCheck: passed,
       byChain: Object.fromEntries(byChain.map((c) => [c.chain, c._count])),
       volume24hUsd: agg._sum?.volume24hUsd?.toString() ?? '0',
       liquidityUsd: agg._sum?.liquidityUsd?.toString() ?? '0',

@@ -1,17 +1,22 @@
 import { Prisma as P } from '@prisma/client';
 import {
   checkScam,
-  checkImpersonation,
   checkSanity,
   crossCheck,
   judgeRoundTrip,
+  checkAuthenticity,
+  assessRisk,
+  DEFAULT_RISK_CONFIG,
   type ScamSignals,
   type SourceReading,
+  type Reason,
+  type ChainKey,
 } from '@memex/core';
 import { prisma } from '../lib/prisma.js';
 import { logger } from '../lib/logger.js';
 import { fetchSecurityFacts } from '../services/token-intel.js';
 import { fetchTokenPair, isDexScreenerSupported } from '../services/dexscreener.js';
+import { fetchJupiterToken } from '../services/jupiter.js';
 import {
   fetchOkxTokenDetail,
   checkRoundTrip,
@@ -53,6 +58,25 @@ const BATCH = 8;
 /** Перепроверка не чаще раза в сутки: свойства контракта меняются редко. */
 const RECHECK_HOURS = 24;
 
+/**
+ * Версия набора правил.
+ *
+ * Увеличивается при каждом изменении логики проверки. Токены, у которых
+ * записана меньшая версия, перепроверяются вне очереди, независимо
+ * от времени последней проверки.
+ *
+ * Без этого механизма новое правило не действовало на уже проверенные
+ * токены целые сутки: у них стояла свежая отметка времени, и очередь
+ * до них не доходила. Подделки под NVDA так и остались в витрине после
+ * добавления проверки, которая их ловит.
+ *
+ * История версий:
+ *   1 — контракт (GoPlus), счётчики сделок, поведение пула
+ *   2 — подделки под известные тикеры, клоны, правдоподобность чисел
+ *   3 — сверка источников между собой, замер выхода через агрегатор
+ */
+const RULES_VERSION = 4;
+
 let timer: NodeJS.Timeout | null = null;
 let running = false;
 
@@ -70,11 +94,20 @@ export async function checkBatch(limit = BATCH): Promise<CheckResult> {
     where: {
       isQuote: false,
       isHidden: false,
-      OR: [{ scamCheckedAt: null }, { scamCheckedAt: { lt: stale } }],
+      OR: [
+        { scamCheckedAt: null },
+        // Устаревшие правила важнее устаревшего времени: токен, проверенный
+        // час назад по прежним правилам, опаснее проверенного вчера
+        // по нынешним.
+        { scamRulesVersion: { lt: RULES_VERSION } },
+        { scamCheckedAt: { lt: stale } },
+      ],
     },
-    // Непроверенные вперёд: у них вердикта нет вообще, и в терминале
-    // они висят без пометки.
-    orderBy: [{ scamCheckedAt: { sort: 'asc', nulls: 'first' } }, { volume24hUsd: 'desc' }],
+    orderBy: [
+      { scamRulesVersion: 'asc' },
+      { scamCheckedAt: { sort: 'asc', nulls: 'first' } },
+      { volume24hUsd: 'desc' },
+    ],
     take: limit,
   });
 
@@ -147,6 +180,8 @@ export async function checkBatch(limit = BATCH): Promise<CheckResult> {
       const liquidityUsd = cross.agreed.liquidityUsd;
       const volume24hUsd = cross.agreed.volume24hUsd;
 
+      // Сигналы собираются для наглядности и журнала; решение
+      // принимается по кодам причин ниже.
       const signals: ScamSignals = {
         isHoneypot: security?.isHoneypot ?? null,
         mintable: security?.mintable ?? null,
@@ -168,7 +203,6 @@ export async function checkBatch(limit = BATCH): Promise<CheckResult> {
         securityChecked: Boolean(security?.source),
       };
 
-      const decision = checkScam(signals);
 
       // ─── Подделки и клоны ─────────────────────────────────────────
       // Проверка контракта этот класс не ловит вовсе: у токена может
@@ -179,13 +213,21 @@ export async function checkBatch(limit = BATCH): Promise<CheckResult> {
         maxLiquidity: null,
       };
 
-      const imp = checkImpersonation({
-        symbol: token.symbol,
-        name: token.name,
-        sameSymbolCount: clone.count,
-        liquidityUsd,
-        maxSameSymbolLiquidityUsd: clone.maxLiquidity,
-      });
+      // Подлинность определяется совпадением адреса, а не тикером.
+      // Прежняя проверка блокировала любой токен с символом NVDA,
+      // включая настоящий, если бы он появился.
+      const auth = checkAuthenticity(
+        token.chain as ChainKey,
+        token.address,
+        token.symbol,
+      );
+
+      // Jupiter знает про Solana то, чего не знает никто: собственные
+      // метки banned и isSus по итогам их аудита.
+      const jup =
+        token.chain === 'SOLANA'
+          ? await fetchJupiterToken(token.address).catch(() => null)
+          : null;
 
       const sanity = checkSanity({
         liquidityUsd,
@@ -194,92 +236,250 @@ export async function checkBatch(limit = BATCH): Promise<CheckResult> {
         priceChange24h: token.priceChange24h != null ? Number(token.priceChange24h) : null,
       });
 
-      // Присвоение чужого тикера и заведомо ложные числа блокируют
-      // независимо от состояния контракта: покупка такого токена —
-      // это всегда покупка по недоразумению.
-      if (imp.impersonatesKnown) {
-        decision.verdict = 'BLOCK';
-        decision.blockers.unshift(imp.reasons[0]!);
-        decision.score = 100;
-      } else if (sanity.length > 0) {
-        decision.verdict = 'BLOCK';
-        decision.blockers.unshift(sanity[0]!);
-        decision.score = 100;
-      } else if (imp.isMinorClone) {
-        // Младший клон не блокируем: он может оказаться и настоящим.
-        // Но показывать его наравне с крупнейшим одноимённым нельзя.
-        if (decision.verdict === 'OK') decision.verdict = 'WARN';
-        decision.warnings.unshift(...imp.reasons);
-        decision.score = Math.min(100, decision.score + 30);
-      } else if (imp.hasClones) {
-        if (decision.verdict === 'OK') decision.verdict = 'WARN';
-        decision.warnings.push(...imp.reasons);
-        decision.score = Math.min(100, decision.score + 10);
+      // ─── Сбор причин с кодами ─────────────────────────────────────
+      const reasons: Reason[] = [];
+      const cfg = DEFAULT_RISK_CONFIG;
+
+      if (auth.isImpersonation) {
+        reasons.push({ code: 'FAKE_SYMBOL', message: auth.reason!, weight: 100 });
       }
 
-      if (decision.verdict !== 'BLOCK' && sanity.length > 0) {
-        decision.warnings.push(...sanity);
+      if (jup?.isBanned) {
+        reasons.push({
+          code: 'JUPITER_BANNED',
+          message: 'Jupiter исключил токен из реестра',
+          weight: 100,
+        });
+      }
+      if (jup?.isSuspicious) {
+        reasons.push({
+          code: 'JUPITER_SUSPICIOUS',
+          message: 'Аудит Jupiter пометил токен как подозрительный',
+          weight: 100,
+        });
       }
 
-      // Расхождение источников блокирует само по себе: если числа
-      // не сходятся, любая проверка по ним теряет смысл.
-      if (cross.blockers.length > 0) {
-        decision.verdict = 'BLOCK';
-        decision.blockers.unshift(...cross.blockers);
-        decision.score = 100;
-      } else if (cross.warnings.length > 0) {
-        if (decision.verdict === 'OK') decision.verdict = 'WARN';
-        decision.warnings.push(...cross.warnings);
-        decision.score = Math.min(100, decision.score + 15);
+      if (security?.isHoneypot === true) {
+        reasons.push({
+          code: 'HONEYPOT',
+          message: 'Продажа заблокирована контрактом',
+          weight: 100,
+        });
       }
+      if (security?.sellTaxPct != null && security.sellTaxPct >= cfg.maxSellTaxPct) {
+        reasons.push({
+          code: 'HIGH_SELL_TAX',
+          message: `Налог на продажу ${security.sellTaxPct.toFixed(0)}%`,
+          weight: 100,
+        });
+      }
+      if (security?.freezable === true) {
+        reasons.push({
+          code: 'FREEZE_AUTHORITY_ACTIVE',
+          message: 'Токен можно заморозить на вашем кошельке',
+          weight: 100,
+        });
+      }
+      if (security?.creatorPct != null && security.creatorPct > cfg.maxCreatorPct) {
+        reasons.push({
+          code: 'CREATOR_CONTROLS_SUPPLY',
+          message: `У создателя ${security.creatorPct.toFixed(0)}% предложения`,
+          weight: 100,
+        });
+      }
+      if (liquidityUsd != null && liquidityUsd > 0 && liquidityUsd < cfg.minLiquidityUsd) {
+        reasons.push({
+          code: 'LOW_LIQUIDITY',
+          message: `Ликвидность $${Math.round(liquidityUsd).toLocaleString('ru-RU')} — выйти без обвала нельзя`,
+          weight: 100,
+        });
+      }
+      for (const s of sanity) {
+        reasons.push({ code: 'IMPLAUSIBLE_METRICS', message: s, weight: 100 });
+      }
+      for (const b of cross.blockers) {
+        reasons.push({ code: 'SOURCE_PRICE_MISMATCH', message: b, weight: 100 });
+      }
+
+      // ─── Повышающие риск ──────────────────────────────────────────
+      if (security?.mintable === true || jup?.mintAuthorityActive === true) {
+        reasons.push({
+          code: 'MINT_AUTHORITY_ACTIVE',
+          message: 'Эмиссию можно допечатать',
+          weight: 30,
+        });
+      }
+      if (security?.lpLocked === false) {
+        reasons.push({
+          code: 'UNLOCKED_LIQUIDITY',
+          message: 'Ликвидность не залочена',
+          weight: 20,
+        });
+      }
+      if (security?.ownerCanModify === true) {
+        reasons.push({
+          code: 'OWNER_CAN_MODIFY',
+          message: 'Владелец может менять правила контракта',
+          weight: 15,
+        });
+      }
+      if (
+        security?.sellTaxPct != null &&
+        security.sellTaxPct > cfg.elevatedSellTaxPct &&
+        security.sellTaxPct < cfg.maxSellTaxPct
+      ) {
+        reasons.push({
+          code: 'ELEVATED_SELL_TAX',
+          message: `Налог на продажу ${security.sellTaxPct.toFixed(0)}%`,
+          weight: 10,
+        });
+      }
+
+      const top10 = jup?.topHoldersPct ?? security?.top10Pct ?? null;
+      if (top10 != null && top10 > cfg.highConcentrationPct) {
+        reasons.push({
+          code: 'HIGH_HOLDER_CONCENTRATION',
+          message: `У топ-10 держателей ${top10.toFixed(0)}% предложения`,
+          weight: top10 > cfg.criticalConcentrationPct ? 30 : 15,
+        });
+      }
+
+      const holders = jup?.holderCount ?? security?.holderCount ?? null;
+      if (holders != null && holders < cfg.minHolders) {
+        reasons.push({
+          code: 'FEW_HOLDERS',
+          message: `Держателей всего ${holders}`,
+          weight: 10,
+        });
+      }
+
+      if (
+        volume24hUsd != null &&
+        liquidityUsd != null &&
+        liquidityUsd > 0 &&
+        volume24hUsd / liquidityUsd > cfg.maxVolumeToLiquidity
+      ) {
+        reasons.push({
+          code: 'SUSPICIOUS_VOLUME',
+          message: `Оборот в ${Math.round(volume24hUsd / liquidityUsd)} раз выше ликвидности`,
+          weight: 20,
+        });
+      }
+
+      const buys = pair?.buys24h ?? null;
+      const sells = pair?.sells24h ?? null;
+      if (buys != null && sells != null && buys + sells >= cfg.minTradesForRatio) {
+        if (sells === 0 || buys / sells > cfg.maxBuySellRatio) {
+          reasons.push({
+            code: 'ONE_SIDED_TRADING',
+            message:
+              sells === 0
+                ? `${buys} покупок и ни одной продажи за сутки`
+                : `Покупок в ${(buys / sells).toFixed(0)} раз больше, чем продаж`,
+            weight: sells === 0 ? 35 : 25,
+          });
+        }
+      }
+
+      if (poolAgeHours != null && poolAgeHours < cfg.youngPoolHours) {
+        reasons.push({
+          code: 'YOUNG_POOL',
+          message: `Пулу ${poolAgeHours.toFixed(1)} ч — история не сложилась`,
+          weight: 10,
+        });
+      }
+
+      if (clone.count > 1) {
+        const minor =
+          liquidityUsd != null &&
+          clone.maxLiquidity != null &&
+          liquidityUsd * 10 < clone.maxLiquidity;
+
+        reasons.push({
+          code: minor ? 'MINOR_CLONE' : 'DUPLICATE_SYMBOL',
+          message: minor
+            ? `Ещё ${clone.count - 1} токен(ов) с этим тикером, и этот не крупнейший`
+            : `Токенов с тикером ${token.symbol}: ${clone.count}`,
+          weight: minor ? 30 : 10,
+        });
+      }
+
+      for (const w of cross.warnings) {
+        reasons.push({ code: 'SINGLE_SOURCE', message: w, weight: 15 });
+      }
+
+      if (!security?.source) {
+        reasons.push({
+          code: 'SECURITY_DATA_UNAVAILABLE',
+          message: 'Проверка контракта недоступна',
+          weight: 25,
+        });
+      }
+
+
 
       // ─── Замер выхода через агрегатор OKX ──────────────────────────
       //
       // Самая сильная проверка и самая дорогая: два запроса на токен.
-      // Поэтому применяется только к тем, кто прошёл всё остальное —
-      // тратить лимит агрегатора на токен, уже заблокированный
-      // по контракту, незачем.
-      //
-      // Все прочие проверки косвенные: списки отвечают «признаков
-      // не нашли», счётчики — «никто не продавал». Эта отвечает
-      // на сам вопрос: сколько вернётся, если выйти сейчас.
+      // Применяется только к тем, у кого нет критических причин —
+      // тратить лимит на уже заблокированный токен незачем.
       let roundTrip: ReturnType<typeof judgeRoundTrip> | null = null;
+      const hasCriticalSoFar = reasons.some((r) => r.weight >= 100);
 
-      if (
-        decision.verdict !== 'BLOCK' &&
-        isOkxConfigured() &&
-        isOkxSupported(token.chain)
-      ) {
+      if (!hasCriticalSoFar && isOkxConfigured() && isOkxSupported(token.chain)) {
         const rt = await checkRoundTrip(token.chain, token.address).catch(() => null);
 
         if (rt) {
           roundTrip = judgeRoundTrip(rt);
 
           if (roundTrip.verdict === 'BLOCK') {
-            decision.verdict = 'BLOCK';
-            decision.blockers.unshift(roundTrip.reason);
-            decision.score = 100;
+            reasons.push({
+              code: rt.canSell ? 'CANNOT_SELL_ALL' : 'SELL_FAILED',
+              message: roundTrip.reason,
+              weight: 100,
+            });
           } else if (roundTrip.verdict === 'WARN') {
-            if (decision.verdict === 'OK') decision.verdict = 'WARN';
-            decision.warnings.push(roundTrip.reason);
-            decision.score = Math.min(100, decision.score + 20);
+            reasons.push({
+              code: 'COSTLY_ROUND_TRIP',
+              message: roundTrip.reason,
+              weight: 20,
+            });
           }
-          // UNKNOWN не меняет вердикт: неудавшийся замер — это
-          // отсутствие сведений, а не сведения об отсутствии проблем.
         }
       }
+
+      // ─── Итоговый уровень ─────────────────────────────────────────
+      const risk = assessRisk({
+        reasons,
+        securityChecked: Boolean(security?.source) || Boolean(jup),
+        isVerifiedAsset: auth.isVerified,
+      });
+
+      // Совместимость со старым полем: часть запросов ещё смотрит
+      // на scamVerdict, и оставлять его рассогласованным нельзя.
+      const legacyVerdict =
+        risk.level === 'blocked' ? 'BLOCK' : risk.level === 'verified' || risk.level === 'low' ? 'OK' : 'WARN';
 
       await prisma.token.update({
         where: { id: token.id },
         data: {
-          scamVerdict: decision.verdict,
+          riskLevel: risk.level,
+          riskCodes: risk.codes,
+          isRegistered: auth.isVerified,
+          scamVerdict: legacyVerdict,
           scamReasons: {
-            blockers: decision.blockers,
-            warnings: decision.warnings,
+            level: risk.level,
+            score: risk.score,
+            reasons: risk.reasons.map((r) => ({ code: r.code, message: r.message })),
+            // Старые поля оставлены: интерфейс переходит на новые
+            // постепенно, и ломать его одним махом незачем.
+            blockers: risk.reasons.filter((r) => r.weight >= 100).map((r) => r.message),
+            warnings: risk.reasons.filter((r) => r.weight < 100).map((r) => r.message),
             sources: {
               goplus: Boolean(security?.source),
               dexscreener: Boolean(pair),
               okx: Boolean(okx),
+              jupiter: Boolean(jup),
               // Согласие источников — часть объяснения вердикта:
               // «цена подтверждена тремя» и «известен одному» это
               // разные основания доверять числу.
@@ -294,7 +494,8 @@ export async function checkBatch(limit = BATCH): Promise<CheckResult> {
             },
           } as unknown as P.InputJsonValue,
           scamCheckedAt: new Date(),
-          riskScore: decision.score,
+          scamRulesVersion: RULES_VERSION,
+          riskScore: risk.score,
 
           buys24h: pair?.buys24h ?? null,
           sells24h: pair?.sells24h ?? null,
@@ -328,13 +529,18 @@ export async function checkBatch(limit = BATCH): Promise<CheckResult> {
       });
 
       result.checked++;
-      if (decision.verdict === 'BLOCK') result.blocked++;
-      else if (decision.verdict === 'WARN') result.warned++;
-      else result.ok++;
+      if (risk.level === 'blocked') result.blocked++;
+      else if (risk.level === 'verified' || risk.level === 'low') result.ok++;
+      else result.warned++;
 
-      if (decision.verdict === 'BLOCK') {
+      if (risk.level === 'blocked') {
         logger.info(
-          { symbol: token.symbol, chain: token.chain, reason: decision.blockers[0] },
+          {
+            symbol: token.symbol,
+            chain: token.chain,
+            codes: risk.codes,
+            reason: risk.reasons[0]?.message,
+          },
           'токен заблокирован в витрине',
         );
       }
@@ -345,6 +551,9 @@ export async function checkBatch(limit = BATCH): Promise<CheckResult> {
 
       // Отметку времени ставим всё равно, иначе токен, который стабильно
       // роняет проверку, будет вечно занимать место в очереди.
+      // Версию не проставляем: токен, который уронил проверку, должен
+      // попасть в неё снова при следующем изменении правил, а не считаться
+      // разобранным.
       await prisma.token
         .update({ where: { id: token.id }, data: { scamCheckedAt: new Date() } })
         .catch(() => undefined);

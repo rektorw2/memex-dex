@@ -11,8 +11,18 @@ export interface Token {
   fdvUsd: string | null;
   riskScore: number | null;
   logoUrl: string | null;
+  riskLevel?: 'verified' | 'low' | 'medium' | 'high' | 'blocked' | 'pending' | null;
+  riskCodes?: string[];
+  isRegistered?: boolean;
   scamVerdict?: string | null;
-  scamReasons?: { blockers?: string[]; warnings?: string[] } | null;
+  scamReasons?: {
+    level?: string;
+    score?: number;
+    reasons?: Array<{ code: string; message: string }>;
+    sources?: Record<string, unknown>;
+    blockers?: string[];
+    warnings?: string[];
+  } | null;
   scamCheckedAt?: string | null;
   buys24h?: number | null;
   sells24h?: number | null;

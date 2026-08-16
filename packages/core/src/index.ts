@@ -13,6 +13,10 @@ export * from './withdrawal.js';
 export * from './scam-gate.js';
 export * from './api-scopes.js';
 export * from './exit-presets.js';
-export * from './impersonation.js';
 export * from './cross-source.js';
 export * from './round-trip.js';
+// Из impersonation остались только checkSanity и пороги: проверка
+// подделок переехала в token-registry.
+export { checkSanity, MAX_PLAUSIBLE_LIQUIDITY_USD, MAX_PLAUSIBLE_CHANGE_PCT } from './impersonation.js';
+export * from './risk-model.js';
+export * from './token-registry.js';
