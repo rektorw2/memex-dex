@@ -89,8 +89,14 @@ const RECHECK_HOURS = 24;
  *       Версия 5 заблокировала 137 токенов из 173: на мем-коинах
  *       RugCheck помечает уровнем danger активную эмиссию и высокую
  *       концентрацию, то есть норму этого рынка.
+ *   7 — устранён круг в сверке источников: сохранённое значение
+ *       больше не участвует в сравнении. Версия 6 сверяла свежие
+ *       котировки с ценой, которую сама же и записала в базу,
+ *       и разницу объявляла подделкой — 106 блокировок из 132.
+ *       Заодно метка isSus от Jupiter понижена с приговора
+ *       до тяжёлого замечания по той же причине, что и danger.
  */
-export const RULES_VERSION = 6;
+export const RULES_VERSION = 7;
 
 let timer: NodeJS.Timeout | null = null;
 let running = false;
@@ -229,7 +235,14 @@ export async function checkBatch(
       // означает, что как минимум один читает подделку.
       const readings: SourceReading[] = [
         {
-          source: 'GeckoTerminal',
+          // Сохранённое значение, а не источник. Пометка live: false
+          // выводит его из сверки: в базу эту цену пишет эта же
+          // проверка, и сравнение с ней означало бы сверку с самой
+          // собой. Ровно так правило расхождения цен заблокировало
+          // 106 токенов из 132 — оно измеряло не согласие источников,
+          // а время, прошедшее с прошлого прохода.
+          source: 'сохранённое значение',
+          live: false,
           priceUsd: token.priceUsd != null ? Number(token.priceUsd) : null,
           liquidityUsd: token.liquidityUsd != null ? Number(token.liquidityUsd) : null,
           volume24hUsd: token.volume24hUsd != null ? Number(token.volume24hUsd) : null,
@@ -239,6 +252,7 @@ export async function checkBatch(
       if (isDexScreenerSupported(token.chain)) {
         readings.push({
           source: 'DexScreener',
+          live: true,
           priceUsd: pair?.priceUsd ?? null,
           liquidityUsd: pair?.liquidityUsd ?? null,
           volume24hUsd: pair?.volume24hUsd ?? null,
@@ -248,6 +262,7 @@ export async function checkBatch(
       if (isOkxConfigured() && isOkxSupported(token.chain)) {
         readings.push({
           source: 'OKX',
+          live: true,
           priceUsd: okx?.priceUsd ?? null,
           liquidityUsd: okx?.liquidityUsd ?? null,
           volume24hUsd: okx?.volume24hUsd ?? null,
@@ -453,7 +468,15 @@ export async function checkBatch(
         reasons.push({
           code: 'JUPITER_SUSPICIOUS',
           message: 'Аудит Jupiter пометил токен как подозрительный',
-          weight: 100,
+          // Не приговор, а тяжёлое замечание. Ошибка та же, что была
+          // с меткой danger у RugCheck: чужая осторожность принималась
+          // за установленный факт. Метка стояла у 47% заблокированных —
+          // столько подтверждённого мошенничества не бывает, значит
+          // метка означает «есть к чему придраться», а не «мошенник».
+          //
+          // Веса хватает, чтобы токен не попал в строгий режим,
+          // но не хватает, чтобы исчезнуть совсем.
+          weight: 45,
         });
       }
 

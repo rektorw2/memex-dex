@@ -45,6 +45,56 @@ describe('crossCheck — расхождения', () => {
     expect(r.blockers[0]).toContain('DexScreener');
   });
 
+  it('умеренное расхождение предупреждает, но не блокирует', () => {
+    // Треть разницы объясняется временем: пока идёт цепочка запросов,
+    // цена мем-коина успевает уйти. Объявлять это подделкой значит
+    // блокировать волатильность.
+    const r = crossCheck([gecko(1.0, 100_000), dex(1.35, 100_000)]);
+    expect(r.blockers).toHaveLength(0);
+    expect(r.warnings.some((w) => w.includes('расходятся в цене'))).toBe(true);
+  });
+
+  it('сохранённое значение в сверке не участвует', () => {
+    // Главная правка версии 7. В базу цену пишет сама проверка,
+    // и сравнение с ней — это сверка с собственным прошлым выводом.
+    // Так 106 токенов из 132 оказались заблокированы за то, что
+    // цена изменилась с прошлого прохода.
+    const stored = {
+      source: 'сохранённое значение',
+      live: false,
+      priceUsd: 1.0,
+      liquidityUsd: 100_000,
+      volume24hUsd: 50_000,
+    };
+
+    const r = crossCheck([stored, dex(9.0, 100_000)]);
+    expect(r.blockers).toHaveLength(0);
+    // Разброс тоже не считается: сравнивать не с чем, живой источник один.
+    expect(r.priceSpread).toBeNull();
+  });
+
+  it('но в согласованное значение сохранённое входит', () => {
+    // Из сверки исключено, из расчёта медианы — нет: это наша лучшая
+    // догадка о цене, и отбрасывать её незачем.
+    const stored = {
+      source: 'сохранённое значение',
+      live: false,
+      priceUsd: 2.0,
+      liquidityUsd: 100_000,
+      volume24hUsd: 50_000,
+    };
+    const r = crossCheck([stored, dex(1.0, 100_000)]);
+    expect(r.agreed.priceUsd).toBeCloseTo(1.5, 6);
+  });
+
+  it('два живых источника с разницей в разы блокируют по-прежнему', () => {
+    const r = crossCheck([
+      { source: 'DexScreener', live: true, priceUsd: 1.0, liquidityUsd: 100_000, volume24hUsd: 1 },
+      { source: 'OKX', live: true, priceUsd: 50.0, liquidityUsd: 100_000, volume24hUsd: 1 },
+    ]);
+    expect(r.blockers.some((b) => b.includes('расходятся в цене'))).toBe(true);
+  });
+
   it('расхождение в пределах порога допустимо', () => {
     // Разные пулы и задержка обновления дают единицы процентов.
     const r = crossCheck([gecko(1.0, 100_000), dex(1.15, 100_000)]);
