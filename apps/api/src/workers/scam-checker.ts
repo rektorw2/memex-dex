@@ -95,8 +95,12 @@ const RECHECK_HOURS = 24;
  *       и разницу объявляла подделкой — 106 блокировок из 132.
  *       Заодно метка isSus от Jupiter понижена с приговора
  *       до тяжёлого замечания по той же причине, что и danger.
+ *   8 — JUPITER_SUSPICIOUS убран из критических кодов. В версии 7
+ *       ему понизили вес, но оставили в CRITICAL_CODES, где вес
+ *       не значит ничего: правка выглядела осмысленной и не делала
+ *       ничего. Метка стояла у 54% заблокированных.
  */
-export const RULES_VERSION = 7;
+export const RULES_VERSION = 8;
 
 let timer: NodeJS.Timeout | null = null;
 let running = false;
