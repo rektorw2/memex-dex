@@ -88,6 +88,7 @@ export interface RiskDetails {
   checkedAt?: string | null;
   liquidityUsd?: string | null;
   poolAgeHours?: number | null;
+  holders?: number | null;
 }
 
 export function RiskPanel({ token, onClose }: { token: RiskDetails; onClose: () => void }) {
@@ -95,9 +96,31 @@ export function RiskPanel({ token, onClose }: { token: RiskDetails; onClose: () 
   const l = token.level ?? 'pending';
   const s = STYLES[l];
 
-  const sources = Object.entries(token.sources ?? {})
-    .filter(([, v]) => v === true)
-    .map(([k]) => k);
+  const src = (token.sources ?? {}) as Record<string, any>;
+
+  // Названия источников для человека. Ключи в базе технические,
+  // и показывать «honeypotIs» в интерфейсе значит требовать от
+  // читателя знания наших внутренностей.
+  const SOURCE_LABELS: Record<string, string> = {
+    goplus: 'GoPlus',
+    dexscreener: 'DexScreener',
+    okx: 'OKX Onchain OS',
+    jupiter: 'Jupiter',
+    honeypotIs: 'Honeypot.is',
+    rugcheck: 'RugCheck',
+  };
+
+  const sources = Object.keys(SOURCE_LABELS)
+    .filter((k) => src[k] === true)
+    .map((k) => SOURCE_LABELS[k]);
+
+  const pct = (v: unknown): string | null =>
+    typeof v === 'number' && Number.isFinite(v) ? `${v.toFixed(0)}%` : null;
+
+  const sell = src.sellSimulation as
+    | { ran?: boolean; isHoneypot?: boolean; sellTaxPct?: number | null }
+    | null
+    | undefined;
 
   return (
     <div className="border-border bg-raised space-y-3 border-b p-3 text-xs">
@@ -168,6 +191,97 @@ export function RiskPanel({ token, onClose }: { token: RiskDetails; onClose: () 
               {token.poolAgeHours < 48
                 ? `${token.poolAgeHours.toFixed(0)} ч`
                 : `${(token.poolAgeHours / 24).toFixed(0)} дн`}
+            </span>
+          </Row>
+        )}
+
+        {token.holders != null && (
+          <Row label="Держателей">
+            <span className="num">{token.holders.toLocaleString('ru-RU')}</span>
+          </Row>
+        )}
+
+        {/* Распределение владения. Показывается целиком, а не только
+            то, что вызвало замечание: человеку важно видеть картину,
+            а не список претензий. У честного токена эти числа тоже
+            бывают высокими, и он вправе судить сам. */}
+        {pct(src.top10HoldPct) && (
+          <Row label="Топ-10">
+            <span className="num">{pct(src.top10HoldPct)}</span>
+          </Row>
+        )}
+
+        {pct(src.devHoldingPct) && (
+          <Row label="У создателя">
+            <span className="num">{pct(src.devHoldingPct)}</span>
+          </Row>
+        )}
+
+        {pct(src.bundleHoldingPct) && (
+          <Row label="Связанные кошельки">
+            <span className="num">{pct(src.bundleHoldingPct)}</span>
+          </Row>
+        )}
+
+        {pct(src.suspiciousHoldingPct) && (
+          <Row label="Подозрительные адреса">
+            <span className="num">{pct(src.suspiciousHoldingPct)}</span>
+          </Row>
+        )}
+
+        {pct(src.lpBurnedPct) && (
+          <Row label="Ликвидность сожжена">
+            <span className="num">{pct(src.lpBurnedPct)}</span>
+          </Row>
+        )}
+
+        {/* Симуляция продажи — самое конкретное, что мы знаем.
+            Не мнение о коде, а результат попытки продать. */}
+        {sell?.ran && (
+          <Row label="Симуляция продажи">
+            <span className={sell.isHoneypot ? 'text-down' : 'text-up'}>
+              {sell.isHoneypot
+                ? 'продать нельзя'
+                : sell.sellTaxPct != null
+                  ? `прошла, налог ${sell.sellTaxPct.toFixed(1)}%`
+                  : 'прошла'}
+            </span>
+          </Row>
+        )}
+
+        {typeof src.okxRiskLevel === 'number' && (
+          <Row label="Уровень риска OKX">
+            <span className="num">
+              {src.okxRiskLevel === 0 ? 'не выставлен' : `${src.okxRiskLevel} из 5`}
+            </span>
+          </Row>
+        )}
+
+        {/* История создателя. Самый предсказуемый признак из известных:
+            человек, бросивший три токена, бросит и четвёртый. */}
+        {typeof src.devRugPullCount === 'number' && src.devRugPullCount > 0 && (
+          <Row label="Брошено создателем">
+            <span className="num text-down">{src.devRugPullCount}</span>
+          </Row>
+        )}
+
+        {src.rwa?.genuine === true && (
+          <Row label="Токенизированный актив">
+            <span className="text-up">
+              подтверждён{src.rwa.issuer ? `, ${src.rwa.issuer}` : ''}
+            </span>
+          </Row>
+        )}
+
+        {/* Признаки внимания рынка. Показываются отдельно и с оговоркой,
+            потому что их постоянно принимают за знак качества. */}
+        {Array.isArray(src.attention) && src.attention.length > 0 && (
+          <Row label="Отметки рынка">
+            <span
+              className="text-muted"
+              title="Продвижение и упоминания говорят о бюджете на маркетинг, а не о безопасности"
+            >
+              {src.attention.join(', ')}
             </span>
           </Row>
         )}

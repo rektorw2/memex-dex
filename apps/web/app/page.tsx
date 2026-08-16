@@ -76,6 +76,35 @@ export default function TerminalPage() {
     setTab('chart');
   }
 
+  /**
+   * Поиск по адресу показывает и то, что скрыто фильтрами.
+   *
+   * Это осознанное решение: человек, вставивший адрес контракта,
+   * всё равно найдёт токен в другом месте — только уже без наших
+   * предупреждений. Но появление скрытого токена нельзя оставлять
+   * без объяснения, иначе фильтр выглядит сломанным.
+   */
+  const isAddressSearch = search.trim().length > 25;
+  const hiddenFound = isAddressSearch
+    ? (tokens ?? []).filter(
+        (t) => t.riskLevel === 'blocked' || t.riskLevel === 'high' || t.riskLevel === 'pending',
+      )
+    : [];
+
+  const addressNotice =
+    hiddenFound.length > 0 ? (
+      <div className="border-down/40 bg-down/10 text-down space-y-1 rounded border p-3 text-xs leading-relaxed">
+        <p className="font-medium">
+          Этот токен скрыт из общего списка
+        </p>
+        <p className="text-down/80">
+          {hiddenFound[0].riskLevel === 'pending'
+            ? 'Проверка ещё не завершена — это не то же самое, что «всё чисто».'
+            : 'Проверка нашла причины его не показывать. Нажмите на щит рядом с тикером, чтобы увидеть какие.'}
+        </p>
+      </div>
+    ) : null;
+
   const filters = (
     <Filters
       chain={chain}
@@ -99,7 +128,10 @@ export default function TerminalPage() {
         <div className="grid min-h-0 flex-1 grid-cols-[340px_minmax(0,1fr)_300px] gap-4 xl:grid-cols-[380px_minmax(0,1fr)_320px]">
           {/* Список рынков */}
           <aside className="panel flex min-h-0 flex-col overflow-hidden">
-            <div className="shrink-0 border-b border-border p-3">{filters}</div>
+            <div className="shrink-0 space-y-3 border-b border-border p-3">
+              {filters}
+              {addressNotice}
+            </div>
             <div className="scroll-y min-h-0 flex-1">
               <TokenList
                 tokens={tokens}
@@ -139,8 +171,9 @@ export default function TerminalPage() {
           <>
             <MarketStats summary={summary} compact />
             <div className="panel overflow-hidden">
-              <div className="sticky top-header z-20 border-b border-border bg-panel p-3">
+              <div className="sticky top-header z-20 space-y-3 border-b border-border bg-panel p-3">
                 {filters}
+                {addressNotice}
               </div>
               <TokenList
                 tokens={tokens}
@@ -252,8 +285,33 @@ function MarketStats({ summary, compact }: { summary: any; compact?: boolean }) 
           <div className="num text-sm leading-tight">{value}</div>
         </div>
       ))}
+
+      {/* Источник и время последнего обновления.
+          Оба нужны по одной причине: число без указания, откуда оно
+          и насколько свежее, читается как вечная истина. Цена
+          мем-коина живёт секунды, и человек имеет право видеть,
+          на что он смотрит. */}
+      {summary.dataSource && (
+        <div className="ml-auto shrink-0 pl-4 text-right">
+          <div className="text-[11px] leading-tight text-muted">
+            Рыночные данные: {summary.dataSource}
+          </div>
+          <div className="text-[11px] leading-tight text-muted/70">
+            Обновлено {fmtTime(summary.updatedAt)}
+          </div>
+        </div>
+      )}
     </div>
   );
+}
+
+/** Время обновления в местном формате. Дата не нужна — данные минутные. */
+function fmtTime(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return Number.isFinite(d.getTime())
+    ? d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
+    : '—';
 }
 
 /* ─────────────────────────── Фильтры списка ─────────────────────────── */
@@ -323,8 +381,11 @@ function Filters({
         </select>
       </div>
 
-      {/* Быстрые фильтры остаются на виду: ими пользуются постоянно. */}
-      <div className="scroll-x flex gap-1.5">
+      {/* Быстрые фильтры переносятся по строкам, а не прокручиваются.
+          Прокрутка обрезала последнюю кнопку у края экрана, и о её
+          существовании нельзя было догадаться: горизонтальный скролл
+          внутри узкой панели пальцем почти не нащупывается. */}
+      <div className="flex flex-wrap gap-1.5">
         {QUICK_FILTERS.map(([k, label]) => (
           <button
             key={k}
@@ -353,19 +414,37 @@ function Filters({
       {/* Состояние проверки. Показывается только пока она не закончена:
           у готовой витрины эта строка была бы шумом. */}
       {checkStatus && (
-        <p className="text-muted text-[11px] leading-relaxed">
-          {safeOnly
-            ? `Показаны ${checkStatus.ok} токенов, прошедших проверку. ` +
-              `Скрыто: ${checkStatus.blocked} ловушек, ${checkStatus.warn} с замечаниями.`
-            : `Проверено ${checkStatus.total - checkStatus.unchecked} из ${checkStatus.total}. ` +
-              `Скрыто как ловушки: ${checkStatus.blocked}.`}
-          {(checkStatus.stale ?? 0) > 0 && (
-            <span className="text-warn">
-              {' '}
-              {checkStatus.stale} проверено по устаревшим правилам — идёт перепроверка.
-            </span>
+        <div className="text-muted space-y-1 text-[11px] leading-relaxed">
+          <p>
+            {safeOnly
+              ? `Прошли проверку: ${checkStatus.ok}. Скрыто: ${checkStatus.blocked} ловушек, ` +
+                `${checkStatus.warn} с замечаниями.`
+              : `Проверено ${checkStatus.total - checkStatus.unchecked} из ${checkStatus.total}. ` +
+                `Скрыто как ловушки: ${checkStatus.blocked}.`}
+            {(checkStatus.stale ?? 0) > 0 && (
+              <span className="text-warn">
+                {' '}
+                {checkStatus.stale} проверено по устаревшим правилам — идёт перепроверка.
+              </span>
+            )}
+          </p>
+
+          {/* Когда строгий фильтр оставляет почти пустой список, о выходе
+              из него надо сказать прямо. Молча ослаблять фильтр нельзя:
+              человек включал его сознательно. */}
+          {safeOnly && checkStatus.ok < 10 && checkStatus.warn > 0 && (
+            <p>
+              Список короткий.{' '}
+              <button
+                onClick={() => setSafeOnly(false)}
+                className="text-accent underline underline-offset-2"
+              >
+                Показать ещё {checkStatus.warn} с замечаниями
+              </button>{' '}
+              — у каждого будет виден жёлтый щит и причины.
+            </p>
           )}
-        </p>
+        </div>
       )}
     </div>
   );

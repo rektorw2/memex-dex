@@ -81,16 +81,32 @@ describe('checkAuthenticity — подделки', () => {
     expect(r.reason).toContain('не совпадает');
   });
 
-  it('ловит подделки под акции со скриншота', () => {
-    for (const s of ['NVDA', 'TSLA', 'HOOD', 'SNDK', 'IPO']) {
+  it('ловит подделки под крупные криптоактивы', () => {
+    for (const s of ['USDT', 'WETH', 'WBTC', 'STETH']) {
       const r = checkAuthenticity('SOLANA', FAKE, s);
       expect(r.isImpersonation, s).toBe(true);
     }
   });
 
-  it('ловит подделки сквозь оформление тикера', () => {
-    for (const s of ['$NVDA', 'H00D', 'T.S.L.A']) {
+  it('ловит подделки под бренды, токенов не выпускавшие', () => {
+    for (const s of ['OPENAI', 'ANTHROPIC', 'BLACKROCK', 'NASA']) {
       expect(checkAuthenticity('SOLANA', FAKE, s).isImpersonation, s).toBe(true);
+    }
+  });
+
+  it('ловит подделки сквозь оформление тикера', () => {
+    for (const s of ['$USDC', 'US.DT', 'W3TH'.replace('3', 'E')]) {
+      expect(checkAuthenticity('SOLANA', FAKE, s).isImpersonation, s).toBe(true);
+    }
+  });
+
+  it('биржевые тикеры сюда больше не относятся', () => {
+    // Проверка подделок под акции переехала в rwa.ts, и это не ослабление,
+    // а исправление. Статический список не различал фальшивый NVDA
+    // и выпущенный xStocks: он блокировал бы оба. Различить их можно
+    // только по списку адресов эмитента — см. rwa.test.ts.
+    for (const s of ['NVDA', 'TSLA', 'HOOD', 'QQQ']) {
+      expect(checkAuthenticity('SOLANA', FAKE, s).isImpersonation, s).toBe(false);
     }
   });
 

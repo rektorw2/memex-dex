@@ -62,12 +62,16 @@ export const REASON_CODES = [
   'JUPITER_BANNED',
   'JUPITER_SUSPICIOUS',
   'FAKE_SYMBOL',
+  'FAKE_RWA_TICKER',
   'LOW_LIQUIDITY',
   'CREATOR_CONTROLS_SUPPLY',
   'FREEZE_AUTHORITY_ACTIVE',
   'DANGEROUS_TOKEN_EXTENSION',
   'SOURCE_PRICE_MISMATCH',
   'IMPLAUSIBLE_METRICS',
+  'OKX_HIGH_RISK',
+  'RUGCHECK_CRITICAL',
+  'DEV_RUG_HISTORY',
 
   // Повышающие риск
   'MINT_AUTHORITY_ACTIVE',
@@ -75,6 +79,12 @@ export const REASON_CODES = [
   'OWNER_CAN_MODIFY',
   'ELEVATED_SELL_TAX',
   'HIGH_HOLDER_CONCENTRATION',
+  'HIGH_TOP10_CONCENTRATION',
+  'HIGH_DEV_HOLDING',
+  'HIGH_BUNDLE_HOLDING',
+  'SUSPICIOUS_HOLDERS',
+  'HIGH_SNIPER_HOLDING',
+  'DEV_SOLD_HOLDINGS',
   'FEW_HOLDERS',
   'SUSPICIOUS_VOLUME',
   'ONE_SIDED_TRADING',
@@ -83,6 +93,8 @@ export const REASON_CODES = [
   'MINOR_CLONE',
   'COSTLY_ROUND_TRIP',
   'SINGLE_SOURCE',
+  'OKX_CAUTION',
+  'UNVERIFIED_RWA_CLAIM',
 
   // Отсутствие данных
   'SECURITY_DATA_UNAVAILABLE',
@@ -117,7 +129,30 @@ export const CRITICAL_CODES = new Set<ReasonCode>([
   'DANGEROUS_TOKEN_EXTENSION',
   'SOURCE_PRICE_MISMATCH',
   'IMPLAUSIBLE_METRICS',
+
+  // Подделка под биржевую бумагу. Стоит рядом с FAKE_SYMBOL, потому
+  // что это тот же обман, только под другое имя: человек, покупающий
+  // «NVDA», рассчитывает на долю в NVIDIA.
+  'FAKE_RWA_TICKER',
+
+  // Приговоры внешних проверок. Оба означают найденное нарушение,
+  // а не подозрение: уровень 3 у OKX и danger у RugCheck выставляются
+  // по факту, а не по совокупности признаков.
+  'OKX_HIGH_RISK',
+  'RUGCHECK_CRITICAL',
 ]);
+
+/**
+ * Почему DEV_RUG_HISTORY сюда не входит.
+ *
+ * Соблазн велик: создатель, бросивший три токена, почти наверняка
+ * бросит и четвёртый. Но «почти наверняка» — это прогноз, а не факт
+ * о данном токене, и смешивать их нельзя. Критические коды означают
+ * найденное нарушение; история создателя означает вероятность
+ * будущего. Такой токен и так уходит в high и не показывается —
+ * разница только в том, что мы называем его подозрительным,
+ * а не уличённым.
+ */
 
 // ──────────────────────────────── Пороги ────────────────────────────────────
 
@@ -198,8 +233,17 @@ export const DEFAULT_RISK_CONFIG: RiskConfig = {
   trapReturnRatio: 0.5,
   costlyReturnRatio: 0.85,
 
-  lowRiskMaxScore: 25,
-  mediumRiskMaxScore: 55,
+  // Границы уровней.
+  //
+  // Калибровка под мем-коины, а не под идеальный актив. Незалоченная
+  // ликвидность и половина предложения у топ-10 — для этого рынка норма,
+  // а не аномалия: если считать их серьёзными замечаниями, в «низкий
+  // риск» не попадёт почти ничего, и фильтр перестанет быть полезным.
+  //
+  // Уровень должен отвечать на вопрос «насколько это необычно для
+  // мем-коина», а не «насколько это далеко от голубой фишки».
+  lowRiskMaxScore: 30,
+  mediumRiskMaxScore: 60,
 };
 
 // ───────────────────────────── Сведение оценки ──────────────────────────────

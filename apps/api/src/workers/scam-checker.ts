@@ -5,12 +5,15 @@ import {
   crossCheck,
   judgeRoundTrip,
   checkAuthenticity,
+  checkRwa,
+  concentrationRulesApply,
   assessRisk,
   DEFAULT_RISK_CONFIG,
   type ScamSignals,
   type SourceReading,
   type Reason,
   type ChainKey,
+  type RwaRegistry,
 } from '@memex/core';
 import { prisma } from '../lib/prisma.js';
 import { logger } from '../lib/logger.js';
@@ -23,6 +26,10 @@ import {
   isOkxConfigured,
   isOkxSupported,
 } from '../services/okx.js';
+import { fetchRwaRegistry, fetchPriceInfo, safeCall } from '../services/okx-market.js';
+import { fetchAdvancedInfo, readTags, readOkxRisk } from '../services/okx-security.js';
+import { checkHoneypot, isHoneypotSupported } from '../services/honeypot.js';
+import { checkRugcheck } from '../services/rugcheck.js';
 
 /**
  * Проверка токенов витрины на очевидные ловушки.
@@ -74,8 +81,12 @@ const RECHECK_HOURS = 24;
  *   1 — контракт (GoPlus), счётчики сделок, поведение пула
  *   2 — подделки под известные тикеры, клоны, правдоподобность чисел
  *   3 — сверка источников между собой, замер выхода через агрегатор
+ *   4 — веса пересчитаны под мем-коины, а не под голубые фишки
+ *   5 — OKX advanced-info, реестр подтверждённых RWA, Honeypot.is,
+ *       RugCheck; подделки под биржевые тикеры отделены от подделок
+ *       под криптоактивы
  */
-const RULES_VERSION = 4;
+export const RULES_VERSION = 5;
 
 let timer: NodeJS.Timeout | null = null;
 let running = false;
@@ -120,9 +131,16 @@ export async function checkBatch(limit = BATCH): Promise<CheckResult> {
   // её можно только глядя на витрину целиком, а не на токен по отдельности.
   const clones = await countClones(tokens.map((t) => t.symbol));
 
+  // Реестр подтверждённых токенизированных акций берётся один раз
+  // на всю пачку и живёт в кеше часами: он меняется несколько раз
+  // в месяц, а нужен при проверке каждого токена.
+  const rwaRegistry = await fetchRwaRegistry();
+
   for (const token of tokens) {
     try {
-      const [security, pair, okx] = await Promise.all([
+      const chain = token.chain as ChainKey;
+
+      const [security, pair, okx, advanced, honeypot, rug] = await Promise.all([
         fetchSecurityFacts(token.chain, token.address).catch(() => null),
         isDexScreenerSupported(token.chain)
           ? fetchTokenPair(token.chain, token.address).catch(() => null)
@@ -130,7 +148,22 @@ export async function checkBatch(limit = BATCH): Promise<CheckResult> {
         isOkxConfigured() && isOkxSupported(token.chain)
           ? fetchOkxTokenDetail(token.chain, token.address).catch(() => null)
           : Promise.resolve(null),
+        // Расширенные сведения: доли insider/bundle/sniper, история
+        // создателя, теги. Плановая проверка — как раз тот случай,
+        // ради которого этот запрос и делается выборочно.
+        isOkxConfigured() && isOkxSupported(chain)
+          ? fetchAdvancedInfo(chain, token.address, safeCall).catch(() => null)
+          : Promise.resolve(null),
+        // Симуляция продажи. Единственная проверка, которая не спрашивает
+        // мнения, а пробует продать.
+        isHoneypotSupported(chain)
+          ? checkHoneypot(chain, token.address).catch(() => null)
+          : Promise.resolve(null),
+        chain === 'SOLANA' ? checkRugcheck(token.address).catch(() => null) : Promise.resolve(null),
       ]);
+
+      const tagReading = advanced ? readTags(advanced.tags) : null;
+      const okxRisk = readOkxRisk(advanced?.riskControlLevel ?? null);
 
       const poolAgeHours = pair?.pairCreatedAt
         ? (Date.now() - pair.pairCreatedAt.getTime()) / 3_600_000
@@ -216,10 +249,23 @@ export async function checkBatch(limit = BATCH): Promise<CheckResult> {
       // Подлинность определяется совпадением адреса, а не тикером.
       // Прежняя проверка блокировала любой токен с символом NVDA,
       // включая настоящий, если бы он появился.
-      const auth = checkAuthenticity(
-        token.chain as ChainKey,
-        token.address,
-        token.symbol,
+      const auth = checkAuthenticity(chain, token.address, token.symbol);
+
+      // Подделки под биржевые бумаги проверяются отдельно от подделок
+      // под криптоактивы. Для USDC вопрос решается статическим реестром:
+      // настоящий один и он известен. Для NVDA — только списком
+      // эмитента, потому что настоящий токенизированный NVDA существует
+      // и блокировать его вместе с подделками было бы худшим исходом
+      // из возможных.
+      const rwa = checkRwa(
+        {
+          chain,
+          address: token.address,
+          symbol: token.symbol,
+          tags: advanced?.tags,
+          communityRecognized: tagReading?.communityRecognized,
+        },
+        rwaRegistry,
       );
 
       // Jupiter знает про Solana то, чего не знает никто: собственные
@@ -242,6 +288,93 @@ export async function checkBatch(limit = BATCH): Promise<CheckResult> {
 
       if (auth.isImpersonation) {
         reasons.push({ code: 'FAKE_SYMBOL', message: auth.reason!, weight: 100 });
+      }
+
+      // Подделка под биржевую бумагу. Блокируется полностью: человек,
+      // покупающий «NVDA», рассчитывает на долю в NVIDIA, а не на мем-коин
+      // с тем же тикером, и никакое предупреждение этого не исправит.
+      if (rwa.isFakeRwa) {
+        reasons.push({ code: 'FAKE_RWA_TICKER', message: rwa.reason!, weight: 100 });
+      }
+
+      // Претендует на бумагу, но списка подтверждённых у нас нет.
+      // Не блокируем — мы не проверили, а не нашли нарушение. Но и
+      // в безопасные такой токен не пустим: вес держит его вне
+      // строгого режима.
+      if (rwa.isUndetermined) {
+        reasons.push({ code: 'UNVERIFIED_RWA_CLAIM', message: rwa.reason!, weight: 40 });
+      }
+
+      // ─── Приговор OKX ─────────────────────────────────────────────
+      // Первый уровень отсева, но не единственный. Уровень 3 и выше —
+      // полное скрытие; уровень 2 — повод для осторожности, а не
+      // приговор; ноль не означает ничего.
+      if (okxRisk.hardBlock) {
+        reasons.push({ code: 'OKX_HIGH_RISK', message: okxRisk.explanation, weight: 100 });
+      } else if (okxRisk.band === 'caution') {
+        reasons.push({ code: 'OKX_CAUTION', message: okxRisk.explanation, weight: 20 });
+      }
+
+      if (tagReading?.isHoneypot) {
+        reasons.push({
+          code: 'HONEYPOT',
+          message: 'OKX пометил контракт как ловушку',
+          weight: 100,
+        });
+      }
+
+      // ─── Симуляция продажи ────────────────────────────────────────
+      // Самое весомое свидетельство из имеющихся: не мнение о коде,
+      // а результат попытки продать.
+      if (honeypot?.isHoneypot) {
+        reasons.push({
+          code: 'HONEYPOT',
+          message: honeypot.reason
+            ? `Симуляция продажи: ${honeypot.reason}`
+            : 'Симуляция показала, что продать токен нельзя',
+          weight: 100,
+        });
+      }
+      if (honeypot?.sellFailed) {
+        reasons.push({
+          code: 'SELL_FAILED',
+          message: 'Симуляция продажи не прошла',
+          weight: 100,
+        });
+      }
+      if (honeypot?.sellTaxPct != null && honeypot.sellTaxPct >= cfg.maxSellTaxPct) {
+        reasons.push({
+          code: 'HIGH_SELL_TAX',
+          message: `Симуляция: налог на продажу ${honeypot.sellTaxPct.toFixed(0)}%`,
+          weight: 100,
+        });
+      }
+
+      // RugCheck на Solana играет роль, которую на EVM играет симуляция.
+      if (rug?.hasCritical) {
+        const worst = rug.risks.find((r) => r.level === 'danger');
+        reasons.push({
+          code: 'RUGCHECK_CRITICAL',
+          message: worst?.description
+            ? `RugCheck: ${worst.description}`
+            : `RugCheck нашёл критическую проблему: ${worst?.name ?? 'без описания'}`,
+          weight: 100,
+        });
+      }
+
+      // История создателя — самый предсказуемый признак из известных.
+      // Человек, бросивший три токена, бросит и четвёртый.
+      if (advanced?.devRugPullTokenCount != null && advanced.devRugPullTokenCount > 0) {
+        const total = advanced.devCreateTokenCount;
+        reasons.push({
+          code: 'DEV_RUG_HISTORY',
+          message:
+            `У создателя ${advanced.devRugPullTokenCount} брошенных токенов` +
+            (total ? ` из ${total} выпущенных` : ''),
+          // Один брошенный токен может быть неудачей, три и больше —
+          // это уже способ работы.
+          weight: advanced.devRugPullTokenCount >= 3 ? 100 : 45,
+        });
       }
 
       if (jup?.isBanned) {
@@ -306,14 +439,19 @@ export async function checkBatch(limit = BATCH): Promise<CheckResult> {
         reasons.push({
           code: 'MINT_AUTHORITY_ACTIVE',
           message: 'Эмиссию можно допечатать',
-          weight: 30,
+          // Серьёзно, но само по себе не должно прятать токен:
+          // у части живых мем-коинов эмиссия не отозвана, и в паре
+          // с чем-то ещё это уже средний риск.
+          weight: 25,
         });
       }
       if (security?.lpLocked === false) {
         reasons.push({
           code: 'UNLOCKED_LIQUIDITY',
           message: 'Ликвидность не залочена',
-          weight: 20,
+          // Настоящий риск, но на этом рынке повсеместный. Вес такой,
+          // чтобы он не перевешивал в одиночку.
+          weight: 15,
         });
       }
       if (security?.ownerCanModify === true) {
@@ -335,12 +473,81 @@ export async function checkBatch(limit = BATCH): Promise<CheckResult> {
         });
       }
 
-      const top10 = jup?.topHoldersPct ?? security?.top10Pct ?? null;
-      if (top10 != null && top10 > cfg.highConcentrationPct) {
+      // ─── Распределение владения ───────────────────────────────────
+      //
+      // К подтверждённому токенизированному активу эти правила
+      // не применяются вовсе. У настоящего Ondo или xStocks эмитент
+      // держит основную часть выпуска — это обеспечение бумаги,
+      // а не подготовка к обвалу. Применять к нему мерки мем-коина
+      // значит прятать именно то, что надёжнее всего в списке.
+      if (concentrationRulesApply(rwa)) {
+        const top10 = advanced?.top10HoldPct ?? jup?.topHoldersPct ?? security?.top10Pct ?? null;
+        if (top10 != null && top10 > cfg.highConcentrationPct) {
+          reasons.push({
+            code: 'HIGH_TOP10_CONCENTRATION',
+            message: `У топ-10 держателей ${top10.toFixed(0)}% предложения`,
+            // Половина предложения у топ-10 — для мем-коина обычное дело:
+            // пул и команда почти всегда там. Тревожно становится за 85%,
+            // где одна продажа обваливает всё.
+            weight: top10 > cfg.criticalConcentrationPct ? 25 : 10,
+          });
+        }
+
+        // Доля разработчика — отдельно от топ-10, потому что это
+        // один человек с одним решением, а не десять с разными.
+        if (advanced?.devHoldingPct != null && advanced.devHoldingPct > cfg.maxCreatorPct) {
+          reasons.push({
+            code: 'HIGH_DEV_HOLDING',
+            message: `У создателя ${advanced.devHoldingPct.toFixed(0)}% предложения`,
+            weight: advanced.devHoldingPct > 40 ? 100 : 35,
+          });
+        }
+
+        // Bundle-кошельки: закупка пачкой адресов в одной транзакции.
+        // Признак того, что «держатели» — один человек, и распределение
+        // нарисовано.
+        if (advanced?.bundleHoldingPct != null && advanced.bundleHoldingPct > 25) {
+          reasons.push({
+            code: 'HIGH_BUNDLE_HOLDING',
+            message: `Связанные кошельки держат ${advanced.bundleHoldingPct.toFixed(0)}% предложения`,
+            weight: advanced.bundleHoldingPct > 50 ? 100 : 35,
+          });
+        }
+
+        if (advanced?.suspiciousHoldingPct != null && advanced.suspiciousHoldingPct > 20) {
+          reasons.push({
+            code: 'SUSPICIOUS_HOLDERS',
+            message: `Подозрительные адреса держат ${advanced.suspiciousHoldingPct.toFixed(0)}%`,
+            weight: advanced.suspiciousHoldingPct > 50 ? 100 : 30,
+          });
+        }
+
+        // Снайперы — те, кто вошёл в первом блоке. Их доля говорит
+        // о том, сколько предложения окажется на продаже при первом
+        // же росте.
+        if (advanced?.sniperHoldingPct != null && advanced.sniperHoldingPct > 30) {
+          reasons.push({
+            code: 'HIGH_SNIPER_HOLDING',
+            message: `Вошедшие в первом блоке держат ${advanced.sniperHoldingPct.toFixed(0)}%`,
+            weight: 20,
+          });
+        }
+      }
+
+      // Выход разработчика — событие, а не свойство. Полный выход
+      // весомее частичного: продавший всё больше не заинтересован
+      // в проекте ничем.
+      if (tagReading?.devSoldAll) {
         reasons.push({
-          code: 'HIGH_HOLDER_CONCENTRATION',
-          message: `У топ-10 держателей ${top10.toFixed(0)}% предложения`,
-          weight: top10 > cfg.criticalConcentrationPct ? 30 : 15,
+          code: 'DEV_SOLD_HOLDINGS',
+          message: 'Создатель продал всю свою долю',
+          weight: 40,
+        });
+      } else if (tagReading?.devSold) {
+        reasons.push({
+          code: 'DEV_SOLD_HOLDINGS',
+          message: 'Создатель продал часть своей доли',
+          weight: 15,
         });
       }
 
@@ -385,7 +592,9 @@ export async function checkBatch(limit = BATCH): Promise<CheckResult> {
         reasons.push({
           code: 'YOUNG_POOL',
           message: `Пулу ${poolAgeHours.toFixed(1)} ч — история не сложилась`,
-          weight: 10,
+          // Молодость пула — свойство, а не порок: на вкладке «Новые»
+          // такие токены и ищут.
+          weight: 5,
         });
       }
 
@@ -405,14 +614,18 @@ export async function checkBatch(limit = BATCH): Promise<CheckResult> {
       }
 
       for (const w of cross.warnings) {
-        reasons.push({ code: 'SINGLE_SOURCE', message: w, weight: 15 });
+        reasons.push({ code: 'SINGLE_SOURCE', message: w, weight: 10 });
       }
 
       if (!security?.source) {
         reasons.push({
           code: 'SECURITY_DATA_UNAVAILABLE',
           message: 'Проверка контракта недоступна',
-          weight: 25,
+          // Вес нулевой намеренно: отсутствие проверки уже переводит
+          // токен в pending отдельной веткой. Добавлять за это ещё
+          // и баллы значит наказывать дважды за одно и то же — токен
+          // получал high вместо честного «не проверен».
+          weight: 0,
         });
       }
 
@@ -449,10 +662,26 @@ export async function checkBatch(limit = BATCH): Promise<CheckResult> {
       }
 
       // ─── Итоговый уровень ─────────────────────────────────────────
+      //
+      // Проверенным считается токен, о котором хоть один источник
+      // безопасности действительно высказался. Список источников
+      // расширился, и это меняет дело: раньше токен без ответа GoPlus
+      // висел в pending, даже если симуляция продажи прошла успешно.
+      const securityChecked =
+        Boolean(security?.source) ||
+        Boolean(jup) ||
+        Boolean(advanced) ||
+        Boolean(honeypot?.simulated) ||
+        Boolean(rug);
+
+      // Подтверждённым активом считается и токен из нашего реестра,
+      // и подтверждённая токенизированная бумага. Признание сообществом
+      // по версии OKX сюда не входит: это репутация, а не проверяемый
+      // факт о контракте, и приравнивать её к записи в реестре нельзя.
       const risk = assessRisk({
         reasons,
-        securityChecked: Boolean(security?.source) || Boolean(jup),
-        isVerifiedAsset: auth.isVerified,
+        securityChecked,
+        isVerifiedAsset: auth.isVerified || rwa.isGenuineRwa,
       });
 
       // Совместимость со старым полем: часть запросов ещё смотрит
@@ -478,8 +707,39 @@ export async function checkBatch(limit = BATCH): Promise<CheckResult> {
             sources: {
               goplus: Boolean(security?.source),
               dexscreener: Boolean(pair),
-              okx: Boolean(okx),
+              okx: Boolean(okx) || Boolean(advanced),
               jupiter: Boolean(jup),
+              honeypotIs: Boolean(honeypot?.simulated),
+              rugcheck: Boolean(rug),
+              // Мнение OKX сохраняется отдельно от нашего вывода:
+              // человеку полезно видеть, совпали они или разошлись.
+              okxRiskLevel: okxRisk.level,
+              okxTags: advanced?.tags ?? [],
+              // Признаки внимания рынка. Показываются, но в оценку
+              // не входят: оплаченное продвижение говорит о бюджете,
+              // а не о свойствах контракта.
+              attention: tagReading?.attention ?? [],
+              rwa: rwa.isGenuineRwa
+                ? { genuine: true, issuer: rwa.entry?.issuer ?? null }
+                : rwa.isFakeRwa
+                  ? { genuine: false, fake: true }
+                  : null,
+              sellSimulation: honeypot
+                ? {
+                    ran: honeypot.simulated,
+                    isHoneypot: honeypot.isHoneypot,
+                    sellTaxPct: honeypot.sellTaxPct,
+                  }
+                : null,
+              lpBurnedPct: advanced?.lpBurnedPct ?? null,
+              top10HoldPct:
+                advanced?.top10HoldPct ?? jup?.topHoldersPct ?? security?.top10Pct ?? null,
+              devHoldingPct: advanced?.devHoldingPct ?? null,
+              bundleHoldingPct: advanced?.bundleHoldingPct ?? null,
+              suspiciousHoldingPct: advanced?.suspiciousHoldingPct ?? null,
+              creatorAddress: advanced?.creatorAddress ?? null,
+              devRugPullCount: advanced?.devRugPullTokenCount ?? null,
+              tokenCreatedAt: advanced?.createdAt ?? null,
               // Согласие источников — часть объяснения вердикта:
               // «цена подтверждена тремя» и «известен одному» это
               // разные основания доверять числу.

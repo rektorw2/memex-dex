@@ -26,6 +26,7 @@ export interface Token {
   scamCheckedAt?: string | null;
   buys24h?: number | null;
   sells24h?: number | null;
+  holders?: number | null;
   isVerified: boolean;
   hasChart: boolean;
   isQuote: boolean;

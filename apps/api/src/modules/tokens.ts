@@ -1,9 +1,11 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
-import { assessToken } from '@memex/core';
+import { assessToken, SAFE_LEVELS, TRADEABLE_LEVELS, looksLikeAddress } from '@memex/core';
 import { prisma } from '../lib/prisma.js';
 import { SUPPORTED_INTERVALS } from '../services/market-data.js';
 import { serializeResearch } from '../services/research.js';
+import { RULES_VERSION } from '../workers/scam-checker.js';
+import { MARKET_DATA_SOURCE } from '../services/okx-market.js';
 
 const SORTS = {
   volume: { volume24hUsd: 'desc' },
@@ -50,7 +52,7 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
     const [total, ok, warn, blocked, unchecked, stale] = await Promise.all([
       prisma.token.count({ where: base }),
       // «Прошли проверку» — это verified и low, а не всё, что не заблокировано.
-      prisma.token.count({ where: { ...base, riskLevel: { in: ['verified', 'low'] } } }),
+      prisma.token.count({ where: { ...base, riskLevel: { in: [...SAFE_LEVELS] } } }),
       prisma.token.count({ where: { ...base, riskLevel: { in: ['medium', 'high'] } } }),
       prisma.token.count({ where: { ...base, riskLevel: 'blocked' } }),
       prisma.token.count({
@@ -59,7 +61,7 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
       // Проверенные по устаревшим правилам. Их вердикт формально есть,
       // но верить ему нельзя — считаем отдельно, иначе «проверено 148
       // из 152» выглядит как готовность, которой нет.
-      prisma.token.count({ where: { ...base, scamRulesVersion: { lt: 4 } } }),
+      prisma.token.count({ where: { ...base, scamRulesVersion: { lt: RULES_VERSION } } }),
     ]);
 
     return { total, ok, warn, blocked, unchecked, stale };
@@ -96,8 +98,33 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
     const isChangeSort = q.sort === 'gainers' || q.sort === 'losers';
     const liquidityFloor = q.minLiquidity ?? (isChangeSort ? 100_000 : undefined);
 
+    /**
+     * Поиск по точному адресу — особый случай.
+     *
+     * Человек, вставивший адрес контракта, знает, что ищет, и скрывать
+     * от него результат неправильно: он всё равно найдёт токен в другом
+     * месте, только уже без наших предупреждений. Поэтому по точному
+     * адресу показываем всё, включая заблокированное, — но вместе
+     * с уровнем риска и причинами, которые интерфейс обязан показать
+     * красным.
+     *
+     * Это не дыра в фильтрации. Разница между «попался в списке»
+     * и «нашёл по адресу, который сам ввёл» существенна: в первом
+     * случае мы предлагаем, во втором отвечаем на вопрос.
+     */
+    const byExactAddress = q.search != null && looksLikeAddress(q.search);
+
     const tokens = await prisma.token.findMany({
-      where: {
+      where: byExactAddress
+        ? {
+            // Регистронезависимо: EVM-адреса хранятся в нижнем регистре,
+            // а вставляют их обычно в контрольной форме с заглавными.
+            // Требовать точного совпадения строк значило бы не находить
+            // токен по его же собственному адресу.
+            address: { equals: q.search!.trim(), mode: 'insensitive' },
+            ...(q.chain ? { chain: q.chain as never } : {}),
+          }
+        : {
         isHidden: false,
         ...(q.verifiedOnly ? { isVerified: true } : {}),
         ...(q.chain ? { chain: q.chain as never } : {}),
@@ -110,7 +137,7 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
               // поэтому непроверенным токенам здесь не место. Показывать
               // «+543%» рядом с вопросительным знаком значит предлагать
               // сделку, о предмете которой мы сами ничего не знаем.
-              riskLevel: { in: ['verified', 'low'] },
+              riskLevel: { in: [...SAFE_LEVELS] },
             }
           : {}),
         ...(q.maxRiskScore != null ? { riskScore: { lte: q.maxRiskScore } } : {}),
@@ -121,7 +148,7 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
         // Непроверенные сюда не попадают принципиально — незавершённая
         // проверка это отсутствие сведений, а не сведения об отсутствии
         // проблем.
-        ...(q.safeOnly ? { riskLevel: { in: ['verified', 'low'] } } : {}),
+        ...(q.safeOnly ? { riskLevel: { in: [...SAFE_LEVELS] } } : {}),
         ...(q.search
           ? {
               OR: [
@@ -338,7 +365,7 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
     // Сводка считается по тем же токенам, что попадают в список:
     // объём и ликвидность, включающие заблокированные, описывают
     // не тот рынок, который человек видит на экране.
-    const listed = { isHidden: false, riskLevel: { in: ['verified', 'low'] } } as const;
+    const listed = { isHidden: false, riskLevel: { in: [...SAFE_LEVELS] } };
 
     const [total, passed, byChain, agg] = await Promise.all([
       prisma.token.count({ where: { isHidden: false } }),
@@ -356,6 +383,11 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
       byChain: Object.fromEntries(byChain.map((c) => [c.chain, c._count])),
       volume24hUsd: agg._sum?.volume24hUsd?.toString() ?? '0',
       liquidityUsd: agg._sum?.liquidityUsd?.toString() ?? '0',
+      // Источник подписывается на стороне сервера, а не зашивается
+      // в интерфейс: если завтра основной поставщик сменится, подпись
+      // должна смениться вместе с ним, а не остаться прежней.
+      dataSource: MARKET_DATA_SOURCE,
+      updatedAt: new Date().toISOString(),
       intervals: SUPPORTED_INTERVALS,
     };
   });

@@ -20,6 +20,19 @@ import { CHAIN_LABEL } from './types';
  * цифр эту возможность убивает.
  */
 
+/**
+ * Адрес в виде, пригодном для сверки глазами.
+ *
+ * Показываются начало и конец: подделка обычно отличается серединой,
+ * но совпадение первых и последних символов у двух разных адресов —
+ * событие настолько редкое, что для беглой проверки этого достаточно.
+ * Полный адрес доступен по наведению и в панели разбора.
+ */
+function shortAddress(a: string): string {
+  if (!a) return '';
+  return a.length > 12 ? `${a.slice(0, 5)}…${a.slice(-4)}` : a;
+}
+
 interface Props {
   tokens: Token[] | undefined;
   activeId: string | null;
@@ -113,8 +126,17 @@ export function TokenList({ tokens, activeId, onSelect, isLoading, touch }: Prop
                   onOpen={() => setDetailsFor(detailsFor === t.id ? null : t.id)}
                 />
               </div>
+              {/* Короткий адрес контракта рядом с сетью и ликвидностью.
+                  Тикер уникальным не является — под именем NVDA в списке
+                  может оказаться что угодно, и адрес это единственное,
+                  что отличает один токен от другого. Показывать его
+                  мелко, но постоянно: человек, который знает, что ищет,
+                  должен иметь возможность сверить, не открывая карточку. */}
               <div className="truncate text-xs text-muted">
-                {CHAIN_LABEL[t.chain] ?? t.chain} · {fmtUsd(t.liquidityUsd)}
+                {CHAIN_LABEL[t.chain] ?? t.chain} · {fmtUsd(t.liquidityUsd)} ·{' '}
+                <span className="num" title={t.address}>
+                  {shortAddress(t.address)}
+                </span>
               </div>
             </div>
 
@@ -146,6 +168,7 @@ export function TokenList({ tokens, activeId, onSelect, isLoading, touch }: Prop
                 sources: t.scamReasons?.sources ?? null,
                 checkedAt: t.scamCheckedAt,
                 liquidityUsd: t.liquidityUsd,
+                holders: t.holders ?? null,
               }}
               onClose={() => setDetailsFor(null)}
             />

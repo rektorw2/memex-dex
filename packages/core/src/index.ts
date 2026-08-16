@@ -20,3 +20,7 @@ export * from './round-trip.js';
 export { checkSanity, MAX_PLAUSIBLE_LIQUIDITY_USD, MAX_PLAUSIBLE_CHANGE_PCT } from './impersonation.js';
 export * from './risk-model.js';
 export * from './token-registry.js';
+// Модель OKX и реестр токенизированных акций. Разделены намеренно:
+// первое — про формат чужих ответов, второе — про подделки под бумаги.
+export * from './okx-model.js';
+export * from './rwa.js';

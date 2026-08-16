@@ -149,14 +149,34 @@ const schema = z.object({
   GEMINI_MODEL: z.string().default('gemini-2.5-flash'),
 
   /**
-   * Учётные данные Web3 API OKX для радара новых токенов.
+   * Учётные данные OKX Onchain OS — основного источника рыночных данных.
    * Регистрация бесплатна: web3.okx.com → Developer Portal.
-   * Без них радар работает на бесплатном источнике GeckoTerminal.
+   *
+   * Без них список токенов строится на запасном источнике
+   * (GeckoTerminal), а расширенная проверка безопасности не работает.
+   * Терминал при этом не ломается, но проверенных токенов в нём
+   * не будет: непроверенное безопасным не считается.
+   *
+   * Читаются только на сервере. В клиентский бандл они не попадают
+   * ни при каких обстоятельствах — за этим следит отдельный тест,
+   * apps/api/src/lib/no-secrets.test.ts.
    */
   OKX_API_KEY: optional(z.string()),
   OKX_API_SECRET: optional(z.string()),
   OKX_PASSPHRASE: optional(z.string()),
   OKX_PROJECT_ID: optional(z.string()),
+
+  /**
+   * Те же ключи под именами из документации OKX.
+   *
+   * Документация называет их OKX_SECRET_KEY и OKX_API_PASSPHRASE,
+   * а в проекте исторически прижились OKX_API_SECRET и OKX_PASSPHRASE.
+   * Принимаем оба написания вместо переименования: переименование
+   * тихо сломало бы уже настроенные развёртывания, и обнаружилось бы
+   * это как «OKX перестал отвечать», а не как «переменная не найдена».
+   */
+  OKX_SECRET_KEY: optional(z.string()),
+  OKX_API_PASSPHRASE: optional(z.string()),
 
   /** Токен бота Telegram для уведомлений радара. Получить у @BotFather. */
   TELEGRAM_BOT_TOKEN: optional(z.string()),
@@ -227,6 +247,12 @@ if (!parsed.success) {
 export const env = {
   ...parsed.data,
   API_PORT: parsed.data.PORT ?? parsed.data.API_PORT,
+
+  // Приведение двух написаний ключей OKX к одному. Сведение делается
+  // здесь и один раз: если бы каждый потребитель проверял оба имени
+  // сам, рано или поздно один из них проверил бы только одно.
+  OKX_API_SECRET: parsed.data.OKX_API_SECRET ?? parsed.data.OKX_SECRET_KEY,
+  OKX_PASSPHRASE: parsed.data.OKX_PASSPHRASE ?? parsed.data.OKX_API_PASSPHRASE,
 };
 
 // Предохранитель: боевой режим с локальным KMS — это утечка ключей,
