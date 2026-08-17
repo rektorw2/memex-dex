@@ -108,6 +108,28 @@ export function mandatoryChecks(chain: ChainKey): readonly string[] {
 }
 
 /**
+ * Сколько проверок обязательно в этой сети.
+ *
+ * Источник истины ровно один — этот. Интерфейс не имеет права знать
+ * размер набора: наборы разной длины в разных сетях, и они меняются.
+ * Зашитая в разметку пятёрка разошлась бы с расчётом при первом же
+ * добавлении проверки, и человек читал бы «Проверено 6 из 5».
+ */
+export function requiredChecksCount(chain: ChainKey): number {
+  return mandatoryChecks(chain).length;
+}
+
+/** Сколько обязательных проверок получили ответ. */
+export function completedChecksCount(chain: ChainKey, signals: RiskSignal[]): number {
+  return assessCompleteness(chain, signals).known;
+}
+
+/** Полнота в процентах. Округление одно и то же везде. */
+export function riskCompletenessPercent(c: CompletenessResult): number {
+  return Math.round(c.ratio * 100);
+}
+
+/**
  * Проверки, чей провал закрывает вопрос сразу.
  *
  * Токен, который нельзя продать, не становится лучше от хорошей

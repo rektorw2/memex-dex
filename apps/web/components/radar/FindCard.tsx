@@ -54,6 +54,8 @@ export interface RadarEvent {
    */
   riskState?: string | null;
   riskCompletenessPercent?: number | null;
+  requiredChecksCount?: number | null;
+  completedChecksCount?: number | null;
   missingChecks?: string[];
   riskUpdatedAt?: string | null;
   riskLevel?: string | null;
@@ -177,6 +179,8 @@ export function FindCard({
         reasons={flags}
         state={e.riskState}
         completenessPercent={e.riskCompletenessPercent}
+        requiredChecksCount={e.requiredChecksCount}
+        completedChecksCount={e.completedChecksCount}
         missingChecks={e.missingChecks}
         updatedAt={e.riskUpdatedAt}
       />

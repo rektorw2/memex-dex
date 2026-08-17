@@ -37,6 +37,8 @@ export function RiskMeter({
   compact,
   state,
   completenessPercent,
+  requiredChecksCount,
+  completedChecksCount,
   missingChecks,
   updatedAt,
 }: {
@@ -55,6 +57,16 @@ export function RiskMeter({
    */
   state?: string | null;
   completenessPercent?: number | null;
+  /**
+   * Размер обязательного набора и сколько из него закрыто.
+   *
+   * Оба приходят с сервера, где считаются ядром. Разметка не имеет
+   * права знать размер набора: наборы разной длины в разных сетях
+   * и меняются со временем, а зашитое число дало бы «Проверено
+   * 6 из 5» при первом же добавлении проверки.
+   */
+  requiredChecksCount?: number | null;
+  completedChecksCount?: number | null;
   missingChecks?: string[];
   updatedAt?: string | null;
 }) {
@@ -72,7 +84,8 @@ export function RiskMeter({
     return (
       <UnprovenRisk
         state={state}
-        completenessPercent={completenessPercent}
+        required={requiredChecksCount}
+        completed={completedChecksCount}
         missingChecks={missingChecks}
         updatedAt={updatedAt}
         expanded={expanded}
@@ -202,31 +215,39 @@ const CHECK_LABELS: Record<string, string> = {
   holder_count: 'Число держателей',
 };
 
-const STATE_VIEW: Record<
-  string,
-  { title: string; tone: 'warn' | 'muted'; note: (n: number | null, total: number) => string }
-> = {
-  insufficient_data: {
-    title: 'Недостаточно данных',
-    tone: 'warn',
-    note: (_n, total) => `Проверено ${total} из 5 обязательных факторов`,
-  },
-  checking: {
-    title: 'Проверяем контракт',
-    tone: 'muted',
-    note: (_n, total) => `Получено ${total} из 5 проверок`,
-  },
+const STATE_VIEW: Record<string, { title: string; tone: 'warn' | 'muted'; note?: string }> = {
+  insufficient_data: { title: 'Недостаточно данных', tone: 'warn' },
+  checking: { title: 'Проверяем контракт', tone: 'muted' },
   stale: {
     title: 'Данные устарели',
     tone: 'warn',
-    note: () => 'Последняя проверка выполнялась давно',
+    note: 'Последняя проверка выполнялась давно',
   },
   provider_error: {
     title: 'Проверка временно недоступна',
     tone: 'muted',
-    note: () => 'Источник проверок не ответил',
+    note: 'Источник проверок не ответил',
   },
 };
+
+/**
+ * Строка о полноте.
+ *
+ * Собирается из двух чисел, пришедших с сервера. Ни одного литерала
+ * размера набора здесь нет и быть не должно.
+ */
+function completenessNote(
+  state: string,
+  completed: number | null | undefined,
+  required: number | null | undefined,
+): string | null {
+  if (completed == null || required == null || required <= 0) return null;
+
+  const word = state === 'checking' ? 'Получено' : 'Проверено';
+  const tail = state === 'checking' ? 'проверок' : plural(required, 'обязательного фактора', 'обязательных фактора', 'обязательных факторов');
+
+  return `${word} ${completed} из ${required} ${tail}`;
+}
 
 /**
  * Блок без числа.
@@ -236,14 +257,16 @@ const STATE_VIEW: Record<
  */
 function UnprovenRisk({
   state,
-  completenessPercent,
+  required,
+  completed,
   missingChecks,
   updatedAt,
   expanded,
   onExpand,
 }: {
   state: string;
-  completenessPercent?: number | null;
+  required?: number | null;
+  completed?: number | null;
   missingChecks?: string[];
   updatedAt?: string | null;
   expanded: boolean;
@@ -251,13 +274,7 @@ function UnprovenRisk({
 }) {
   const view = STATE_VIEW[state] ?? STATE_VIEW.insufficient_data!;
   const missing = missingChecks ?? [];
-
-  // Сколько закрыто: из процента, если он пришёл, иначе из числа
-  // недостающих. Пять — размер обязательного набора в обеих сетях.
-  const done =
-    completenessPercent != null
-      ? Math.round((completenessPercent / 100) * 5)
-      : Math.max(0, 5 - missing.length);
+  const note = completenessNote(state, completed, required) ?? view.note ?? null;
 
   const tone =
     view.tone === 'warn'
@@ -276,7 +293,7 @@ function UnprovenRisk({
         <span className={`text-[13px] font-medium ${tone.text}`}>{view.title}</span>
       </div>
 
-      <p className="mt-1 text-[11px] text-muted">{view.note(completenessPercent ?? null, done)}</p>
+      {note && <p className="mt-1 text-[11px] text-muted">{note}</p>}
 
       {updatedAt && state === 'stale' && (
         <p className="mt-0.5 text-[11px] text-muted/70">

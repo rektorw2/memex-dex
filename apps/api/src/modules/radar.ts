@@ -8,6 +8,7 @@ import { isOkxConfigured } from '../services/okx.js';
 import { isTelegramConfigured, pollTelegramUpdates } from '../services/telegram.js';
 import { radarPerformance } from '../workers/radar-tracker.js';
 import { downsample } from '@memex/core';
+import { riskStateFields } from './radar-risk-state.js';
 import { cached } from '../lib/cache.js';
 
 /**
@@ -437,7 +438,7 @@ function serializeEvent(e: {
     // Отдаётся явно, а не выводится из отсутствия числа: по пустому
     // riskScore нельзя отличить «ещё проверяем» от «данных не хватает»,
     // а разница между ними и есть весь смысл.
-    ...riskStateFields(e.riskLevel, e.riskCodes ?? [], e.riskScore, e.lastCheckedAt),
+    ...riskStateFields(e.chain, e.riskLevel, e.riskCodes ?? [], e.riskScore, e.lastCheckedAt),
     holders: e.currentHolders,
     holdersAtSignal: e.holdersAtSignal,
     top10Pct: e.currentTop10Pct != null ? Number(e.currentTop10Pct) : null,
@@ -468,68 +469,3 @@ function serializeEvent(e: {
 }
 
 
-// ─────────────────────── Состояние проверок риска ───────────────────────────
-
-/**
- * Полнота проверок из кодов.
- *
- * Полнота хранится приставками в `riskCodes`, а не отдельными
- * колонками: схема здесь наливается вручную, и код с новой колонкой
- * оказался бы в бою раньше самой колонки, уронив запрос целиком.
- * Разбор обратный записи в воркере.
- */
-export function riskStateFields(
-  level: string | null,
-  codes: string[],
-  score: number | null,
-  checkedAt: Date | null,
-) {
-  const missing = codes
-    .filter((c) => c.startsWith('MISSING_'))
-    .map((c) => c.slice('MISSING_'.length).toLowerCase());
-
-  const percentCode = codes.find((c) => c.startsWith('COMPLETENESS_'));
-  const percent = percentCode ? Number(percentCode.slice('COMPLETENESS_'.length)) : null;
-
-  const state = KNOWN_STATES.has(level ?? '') ? level! : legacyState(level, score);
-
-  return {
-    riskState: state,
-    // Число только там, где набор закрыт. В остальных случаях null:
-    // балл по одной проверке — это не оценка риска.
-    riskStateScore: state === 'low' || state === 'medium' || state === 'high' || state === 'critical' || state === 'stale'
-      ? score
-      : null,
-    riskCompletenessPercent: percent,
-    missingChecks: missing,
-    criticalReasons: codes.filter((c) => CRITICAL_CODE_PREFIXES.some((p) => c.includes(p))),
-    riskUpdatedAt: checkedAt?.toISOString() ?? null,
-  };
-}
-
-const KNOWN_STATES = new Set([
-  'checking',
-  'insufficient_data',
-  'low',
-  'medium',
-  'high',
-  'critical',
-  'stale',
-  'provider_error',
-]);
-
-const CRITICAL_CODE_PREFIXES = ['HONEYPOT', 'SELL_BLOCKED', 'LIQUIDITY_REMOVED', 'MALICIOUS'];
-
-/**
- * Старые записи, сделанные до перехода на состояния.
- *
- * У них в `riskLevel` лежит прежний уровень движка. Превращать их
- * в «низкий риск» по баллу нельзя — именно этого мы и добивались
- * избежать; поэтому они считаются непроверенными до следующего
- * прохода воркера.
- */
-function legacyState(level: string | null, score: number | null): string {
-  if (level === 'blocked') return 'critical';
-  if (score == null) return 'checking';
-  return 'insufficient_data';
-}
