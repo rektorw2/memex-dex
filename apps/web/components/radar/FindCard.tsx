@@ -46,6 +46,16 @@ export interface RadarEvent {
   poolAgeHours: number | null;
   holders?: number | null;
   riskScore: number | null;
+  /**
+   * Состояние проверок с сервера.
+   *
+   * Без него карточка выводила состояние из отсутствия числа
+   * и показывала «Низкий риск 5/100» при одной пройденной проверке.
+   */
+  riskState?: string | null;
+  riskCompletenessPercent?: number | null;
+  missingChecks?: string[];
+  riskUpdatedAt?: string | null;
   riskLevel?: string | null;
   riskCodes?: string[];
   riskFlags?: unknown;
@@ -161,7 +171,15 @@ export function FindCard({
       </div>
 
       {/* ── 5. Риск и его причины ──────────────────────────────── */}
-      <RiskMeter score={e.riskScore} codes={e.riskCodes} reasons={flags} />
+      <RiskMeter
+        score={e.riskScore}
+        codes={e.riskCodes}
+        reasons={flags}
+        state={e.riskState}
+        completenessPercent={e.riskCompletenessPercent}
+        missingChecks={e.missingChecks}
+        updatedAt={e.riskUpdatedAt}
+      />
 
       {/* Покупки размеченных кошельков. Молчит, когда их нет:
           «0 смарт-денег» на каждой карточке перестаёт читаться. */}

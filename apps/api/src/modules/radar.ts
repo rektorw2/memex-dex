@@ -64,10 +64,27 @@ async function computeRadarSummary(chain?: string) {
     ...(chain ? { chain: chain as never } : {}),
   };
 
-  const [total, lowRisk, highRisk, agg, latest] = await Promise.all([
+  /**
+   * Счётчики считаются по состоянию, а не по баллу.
+   *
+   * `riskScore < 30` включал в «низкий риск» токены с одной
+   * пройденной проверкой: балл был низким потому, что проверок было
+   * мало, а не потому, что токен безопасен. Токен учитывается ровно
+   * в одном состоянии.
+   */
+  const [total, lowRisk, mediumRisk, highRisk, insufficient, checking, providerError, agg, latest] =
+    await Promise.all([
     prisma.radarEvent.count({ where }),
-    prisma.radarEvent.count({ where: { ...where, riskScore: { lt: 30 } } }),
-    prisma.radarEvent.count({ where: { ...where, riskScore: { gte: 60 } } }),
+    prisma.radarEvent.count({ where: { ...where, riskLevel: 'low' } }),
+    prisma.radarEvent.count({ where: { ...where, riskLevel: 'medium' } }),
+    prisma.radarEvent.count({
+      where: { ...where, riskLevel: { in: ['high', 'critical'] } },
+    }),
+    prisma.radarEvent.count({
+      where: { ...where, riskLevel: { in: ['insufficient_data', 'stale'] } },
+    }),
+    prisma.radarEvent.count({ where: { ...where, riskLevel: 'checking' } }),
+    prisma.radarEvent.count({ where: { ...where, riskLevel: 'provider_error' } }),
     prisma.radarEvent.aggregate({ where, _avg: { currentMultiple: true } }),
     prisma.radarEvent.findFirst({
       where: chain ? { chain: chain as never } : {},
@@ -81,7 +98,13 @@ async function computeRadarSummary(chain?: string) {
   return {
     found24h: total,
     lowRisk,
+    mediumRisk,
     highRisk,
+    // Отдельным числом, а не внутри «низкого риска». Именно
+    // из-за смешения токен с одной проверкой попадал в безопасные.
+    insufficientData: insufficient,
+    checking,
+    providerError,
     // Средний рост в процентах, а не кратностью: «+4%» понятнее,
     // чем «1.04×», когда речь о среднем по выборке.
     avgGrowthPct: avg != null ? (Number(avg) - 1) * 100 : null,
@@ -97,6 +120,24 @@ export const radarRoutes: FastifyPluginAsync = async (app) => {
         chain: z.string().optional(),
         minLiquidity: z.coerce.number().optional(),
         maxRiskScore: z.coerce.number().optional(),
+        /**
+         * Фильтр по состоянию проверок.
+         *
+         * Серверный, а не клиентский: скрывать уже загруженные
+         * карточки значит показывать «найдено 60» при трёх видимых.
+         */
+        riskState: z
+          .enum([
+            'any',
+            'low',
+            'medium',
+            'high',
+            'critical',
+            'insufficient_data',
+            'checking',
+            'stale',
+          ])
+          .default('any'),
         maxAgeHours: z.coerce.number().optional(),
         /** Показать только находки, где есть покупки размеченных кошельков. */
         smartOnly: z.coerce.boolean().optional(),
@@ -120,6 +161,7 @@ export const radarRoutes: FastifyPluginAsync = async (app) => {
         ...(q.chain ? { chain: q.chain as never } : {}),
         ...(q.minLiquidity ? { liquidityUsd: { gte: q.minLiquidity } } : {}),
         ...(q.maxRiskScore != null ? { riskScore: { lte: q.maxRiskScore } } : {}),
+        ...(q.riskState !== 'any' ? { riskLevel: q.riskState } : {}),
         ...(q.maxAgeHours != null ? { poolAgeHours: { lte: q.maxAgeHours } } : {}),
         ...(q.smartOnly ? { smartBuyers: { gt: 0 } } : {}),
         // Заблокированные находки в ленту не попадают.
@@ -129,7 +171,11 @@ export const radarRoutes: FastifyPluginAsync = async (app) => {
         // нельзя вовсе — покинутый пул, ловушка, подделка. Радар
         // предлагает, а не просто перечисляет, и предлагать такое
         // означает отвечать за последствия.
-        ...(q.includeBlocked ? {} : { riskLevel: { not: 'blocked' } }),
+        // Критический риск скрыт по умолчанию. Записи не удаляются:
+        // причина отклонения и результаты проверок остаются в базе.
+        ...(q.includeBlocked || q.riskState === 'critical'
+          ? {}
+          : { riskLevel: { notIn: ['blocked', 'critical'] } }),
       },
       orderBy: RADAR_SORTS[q.sort],
       take: q.limit,
@@ -385,6 +431,13 @@ function serializeEvent(e: {
     // посчитанный по другим правилам.
     riskLevel: e.riskLevel,
     riskCodes: e.riskCodes ?? [],
+
+    // ─── Состояние проверок ──────────────────────────────────────
+    //
+    // Отдаётся явно, а не выводится из отсутствия числа: по пустому
+    // riskScore нельзя отличить «ещё проверяем» от «данных не хватает»,
+    // а разница между ними и есть весь смысл.
+    ...riskStateFields(e.riskLevel, e.riskCodes ?? [], e.riskScore, e.lastCheckedAt),
     holders: e.currentHolders,
     holdersAtSignal: e.holdersAtSignal,
     top10Pct: e.currentTop10Pct != null ? Number(e.currentTop10Pct) : null,
@@ -412,4 +465,71 @@ function serializeEvent(e: {
       strength: e.walletSignalScore,
     },
   };
+}
+
+
+// ─────────────────────── Состояние проверок риска ───────────────────────────
+
+/**
+ * Полнота проверок из кодов.
+ *
+ * Полнота хранится приставками в `riskCodes`, а не отдельными
+ * колонками: схема здесь наливается вручную, и код с новой колонкой
+ * оказался бы в бою раньше самой колонки, уронив запрос целиком.
+ * Разбор обратный записи в воркере.
+ */
+export function riskStateFields(
+  level: string | null,
+  codes: string[],
+  score: number | null,
+  checkedAt: Date | null,
+) {
+  const missing = codes
+    .filter((c) => c.startsWith('MISSING_'))
+    .map((c) => c.slice('MISSING_'.length).toLowerCase());
+
+  const percentCode = codes.find((c) => c.startsWith('COMPLETENESS_'));
+  const percent = percentCode ? Number(percentCode.slice('COMPLETENESS_'.length)) : null;
+
+  const state = KNOWN_STATES.has(level ?? '') ? level! : legacyState(level, score);
+
+  return {
+    riskState: state,
+    // Число только там, где набор закрыт. В остальных случаях null:
+    // балл по одной проверке — это не оценка риска.
+    riskStateScore: state === 'low' || state === 'medium' || state === 'high' || state === 'critical' || state === 'stale'
+      ? score
+      : null,
+    riskCompletenessPercent: percent,
+    missingChecks: missing,
+    criticalReasons: codes.filter((c) => CRITICAL_CODE_PREFIXES.some((p) => c.includes(p))),
+    riskUpdatedAt: checkedAt?.toISOString() ?? null,
+  };
+}
+
+const KNOWN_STATES = new Set([
+  'checking',
+  'insufficient_data',
+  'low',
+  'medium',
+  'high',
+  'critical',
+  'stale',
+  'provider_error',
+]);
+
+const CRITICAL_CODE_PREFIXES = ['HONEYPOT', 'SELL_BLOCKED', 'LIQUIDITY_REMOVED', 'MALICIOUS'];
+
+/**
+ * Старые записи, сделанные до перехода на состояния.
+ *
+ * У них в `riskLevel` лежит прежний уровень движка. Превращать их
+ * в «низкий риск» по баллу нельзя — именно этого мы и добивались
+ * избежать; поэтому они считаются непроверенными до следующего
+ * прохода воркера.
+ */
+function legacyState(level: string | null, score: number | null): string {
+  if (level === 'blocked') return 'critical';
+  if (score == null) return 'checking';
+  return 'insufficient_data';
 }

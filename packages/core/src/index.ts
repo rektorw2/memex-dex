@@ -54,3 +54,9 @@ export * from './pnl-display.js';
 
 // Ключ избранного кошелька: сеть плюс нормализованный адрес.
 export * from './favorite-key.js';
+
+// Полнота проверок: неизвестное не равно безопасному.
+export * from './risk-completeness.js';
+
+// Перевод ответов провайдеров в обязательные проверки.
+export * from './risk-signal-adapter.js';

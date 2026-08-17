@@ -24,6 +24,8 @@
 import { Prisma as P } from '@prisma/client';
 import {
   assessRisk,
+  toRiskSignals,
+  riskState,
   checkAuthenticity,
   checkRwa,
   concentrationRulesApply,
@@ -267,26 +269,75 @@ export async function assessRadarBatch(limit = BATCH): Promise<RadarRiskResult> 
         });
       }
 
-      const securityChecked =
-        Boolean(security?.source) ||
-        Boolean(advanced) ||
-        Boolean(honeypot?.simulated) ||
-        Boolean(rug) ||
-        Boolean(jup);
+      /**
+       * Полнота обязательных проверок.
+       *
+       * Раньше здесь стоял единственный признак: ответил ли хоть
+       * какой-нибудь источник. Одного ответа хватало, чтобы токен
+       * получил «Низкий риск 5/100» — то есть мы не нашли проблем
+       * там, где не искали, и объявили это безопасностью.
+       *
+       * Теперь набор проверяется по составу, и он разный для EVM
+       * и Solana. Незакрытый набор не даёт права ни на слово
+       * «низкий», ни на число.
+       */
+      const signals = toRiskSignals(e.chain as ChainKey, {
+        isHoneypot: honeypot?.isHoneypot ?? security?.isHoneypot ?? null,
+        sellSimulated: honeypot?.simulated ?? null,
+        sellTaxPct: sellTax,
+        buyTaxPct: honeypot?.buyTaxPct ?? security?.buyTaxPct ?? null,
+        mintable: security?.mintable ?? jup?.mintAuthorityActive ?? null,
+        freezable: security?.freezable ?? jup?.freezeAuthorityActive ?? null,
+        lpLocked: security?.lpLocked ?? null,
+        lpBurnedPct: advanced?.lpBurnedPct ?? null,
+        top10Pct: advanced?.top10HoldPct ?? null,
+        creatorPct: security?.creatorPct ?? null,
+        holderCount: holders,
+        liquidityUsd: e.liquidityUsd != null ? Number(e.liquidityUsd) : null,
+        source: security?.source ?? (advanced ? 'okx' : honeypot ? 'honeypot' : 'none'),
+        checkedAt: Date.now(),
+      });
 
       const risk = assessRisk({
         reasons,
-        securityChecked,
+        // Признак остаётся для обратной совместимости старого движка,
+        // но решение о показе принимает состояние ниже.
+        securityChecked: signals.some((sg) => sg.status !== 'unknown'),
         isVerifiedAsset: auth.isVerified || rwa.isGenuineRwa,
       });
+
+      const state = riskState({
+        chain: e.chain as ChainKey,
+        signals,
+        score: risk.score,
+        computedAt: Date.now(),
+      });
+
+      /**
+       * Недостающие проверки уезжают в riskCodes с приставкой.
+       *
+       * Отдельные колонки потребовали бы применения схемы, а она
+       * здесь наливается вручную: код оказался бы в бою раньше
+       * колонки и уронил бы запрос целиком. Приставка самоописательна
+       * и не мешает существующей фильтрации по кодам.
+       */
+      const completenessCodes = [
+        `COMPLETENESS_${Math.round(state.completeness.ratio * 100)}`,
+        ...state.completeness.missing.map((m) => `MISSING_${m.toUpperCase()}`),
+      ];
 
       await prisma.radarEvent.update({
         where: { id: e.id },
         data: {
-          riskLevel: risk.level,
-          riskCodes: risk.codes,
+          // Состояние вместо уровня: «недостаточно данных»
+          // и «низкий риск» — разные утверждения, и одно нельзя
+          // показывать вместо другого.
+          riskLevel: state.state,
+          riskCodes: [...risk.codes, ...completenessCodes],
           riskRulesVersion: RADAR_RULES_VERSION,
-          riskScore: risk.score,
+          // null, когда обязательный набор не закрыт: число по одной
+          // проверке — это не оценка риска.
+          riskScore: state.score,
           // Тексты причин остаются для карточки: код говорит, что
           // сработало, текст — почему это важно.
           riskFlags: risk.reasons.map((r) => r.message) as unknown as P.InputJsonValue,
