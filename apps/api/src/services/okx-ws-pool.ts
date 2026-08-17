@@ -17,7 +17,6 @@
  * событие не создаёт вторую запись и не трогает позиции второй раз.
  */
 
-import { Prisma as P } from '@prisma/client';
 import {
   planConnections,
   MAX_ADDRESSES_PER_CONNECTION,
@@ -29,6 +28,7 @@ import { logger } from '../lib/logger.js';
 import { env } from '../lib/env.js';
 import { OkxWalletWebSocketClient, type SocketFactory } from './okx-ws-client.js';
 import { isOkxWalletConfigured, fetchTrades } from './okx-wallets.js';
+import { walletLedgerRepo } from '../workers/wallet-ledger-repo.js';
 
 export type SourceMode = 'websocket' | 'rest-fallback' | 'disabled';
 export type SourceStatus = 'healthy' | 'degraded' | 'error';
@@ -174,54 +174,56 @@ export class ActivityIngestor {
   /**
    * Сохранение события.
    *
-   * Возвращает признак новизны: позиции обновляются только после
-   * успешной первой вставки. Повторное событие доходит сюда штатно
-   * при переключении источников, и молча ничего не делает.
+   * Запись и постановка в очередь пересчёта делаются одним действием.
+   * Раздельно нельзя: процесс, упавший между ними, оставил бы сделку
+   * навсегда неучтённой — она есть в ленте, видна человеку, но
+   * в позиции не попадёт никогда и повода к этому не возникнет.
+   *
+   * Возвращает признак новизны: повторное событие доходит сюда штатно
+   * при переключении источников и молча ничего не делает.
    */
   async ingest(e: LiveTradeEvent): Promise<'created' | 'duplicate' | 'failed'> {
     this.lastMessageAt = Date.now();
 
+    const dueAt = new Date(Date.now() + env.WALLET_LEDGER_SYNC_DEBOUNCE_MS);
+
     try {
-      await prisma.walletActivity.create({
-        data: {
+      const { created } = await walletLedgerRepo.ingestAtomically(
+        {
           id: e.id,
-          chain: e.chain as never,
+          chain: e.chain,
           walletAddress: e.wallet,
           tokenAddress: e.tokenAddress,
           tokenSymbol: e.tokenSymbol,
           side: e.side,
           quoteSymbol: e.quoteSymbol,
-          quoteAmount: e.quoteAmount != null ? new P.Decimal(e.quoteAmount) : null,
-          priceUsd: e.priceUsd != null ? new P.Decimal(e.priceUsd) : null,
-          marketCapUsd: e.marketCapUsd != null ? new P.Decimal(e.marketCapUsd) : null,
-          realizedPnlUsd: e.realizedPnlUsd != null ? new P.Decimal(e.realizedPnlUsd) : null,
+          quoteAmount: e.quoteAmount,
+          priceUsd: e.priceUsd,
+          marketCapUsd: e.marketCapUsd,
+          realizedPnlUsd: e.realizedPnlUsd,
           txHash: e.txHash,
           trackerType: e.trackerType,
           source: e.source,
-          parsingConfidence: new P.Decimal(e.parsingConfidence),
+          parsingConfidence: e.parsingConfidence,
           tradedAt: new Date(e.tradedAt),
         },
-      });
+        dueAt,
+      );
 
-      this.lastPersistedAt = Date.now();
-
-      // Событие сохранено — кошелёк помечается на пересчёт.
-      // Сам пересчёт идёт отдельно и не задерживает ленту:
-      // точных количеств в событии нет, их даёт история DEX.
-      const { markDirty } = await import('../workers/wallet-ledger-sync.js');
-      await markDirty(e.chain, e.wallet);
-      // Обновление позиций делает отдельный проход по неучтённым
-      // записям: держать его здесь значило бы связать приём события
-      // со скоростью расчёта.
-      return 'created';
-    } catch (err: any) {
-      // Нарушение уникальности — не ошибка, а ожидаемый исход
-      // при пересечении источников.
-      if (err?.code === 'P2002') {
+      if (!created) {
+        // Повтор — не ошибка, а ожидаемый исход при пересечении
+        // источников. Задача при этом всё равно ставится заново,
+        // если событие ещё не перенесено в позиции.
         this.duplicates++;
         return 'duplicate';
       }
 
+      this.lastPersistedAt = Date.now();
+
+      // Сам пересчёт идёт отдельным воркером и не задерживает ленту:
+      // точных количеств в событии нет, их даёт история DEX.
+      return 'created';
+    } catch (err: any) {
       logger.warn({ err: err?.message }, 'лента активности: запись не удалась');
       return 'failed';
     }
