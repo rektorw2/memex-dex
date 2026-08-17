@@ -29,14 +29,48 @@ import { env } from '../lib/env.js';
 import { OkxWalletWebSocketClient, type SocketFactory } from './okx-ws-client.js';
 import { isOkxWalletConfigured, fetchTrades } from './okx-wallets.js';
 import { walletLedgerRepo } from '../workers/wallet-ledger-repo.js';
+import {
+  okxConfigurationStatus,
+  hasCredentialConflict,
+  type OkxConfigurationStatus,
+} from '../lib/okx-config.js';
 
 export type SourceMode = 'websocket' | 'rest-fallback' | 'disabled';
-export type SourceStatus = 'healthy' | 'degraded' | 'error';
+/**
+ * Состояние источника.
+ *
+ * `configuration_error` отделено от `error` намеренно: незаполненная
+ * переменная и оборванная сеть выглядят снаружи одинаково, а чинятся
+ * в разных местах. `connecting` отделено от `error` по той же причине —
+ * первые секунды после запуска не поломка.
+ */
+export type SourceStatus =
+  | 'healthy'
+  | 'connecting'
+  | 'degraded'
+  | 'error'
+  | 'configuration_error';
 
 export interface ActivityStatus {
   mode: SourceMode;
   status: SourceStatus;
+  /**
+   * Дошли ли переменные до этого процесса.
+   *
+   * Только булевы значения — ни маскированных ключей, ни длины,
+   * ни первых символов. Этого хватает, чтобы отличить «переменные
+   * добавлены не в тот сервис» от «ключ неверный», а это две
+   * совершенно разные починки. Снаружи же оба случая выглядят
+   * одинаково: пустая лента без ошибок.
+   */
+  configuration: OkxConfigurationStatus;
   connections: { total: number; connected: number; reconnecting: number };
+  /** Вход принят хотя бы одним соединением. */
+  loginVerified: boolean;
+  /** Хотя бы одно соединение получило подтверждение подписок. */
+  subscriptionsVerified: boolean;
+  /** Числовой код отказа от OKX, если он был. Секретом не является. */
+  providerErrorCode: string | null;
   trackedWallets: number;
   lastMessageAt: string | null;
   lastPersistedAt: string | null;
@@ -313,23 +347,54 @@ export class ActivityIngestor {
     const connected = stats.filter((s) => s.state === 'connected').length;
     const reconnecting = stats.filter((s) => s.state === 'reconnecting').length;
 
+    const configuration = okxConfigurationStatus();
+
+    const credentialsReady =
+      configuration.apiKeyConfigured &&
+      configuration.apiSecretConfigured &&
+      configuration.passphraseConfigured;
+
     const mode: SourceMode = !env.OKX_WS_ENABLED
       ? 'disabled'
       : this.fallbackActive
         ? 'rest-fallback'
         : 'websocket';
 
-    const status: SourceStatus =
-      connected > 0 && !this.fallbackActive
-        ? 'healthy'
-        : this.fallbackActive
-          ? 'degraded'
-          : 'error';
+    const loginVerified = stats.some((s) => s.loginVerified);
+    const subscriptionsVerified = stats.some((s) => s.subscriptionsVerified);
+
+    // Код отказа от провайдера важнее нашего кода стадии: он
+    // указывает, что именно чинить.
+    const providerErrorCode = stats.find((s) => s.lastProviderCode)?.lastProviderCode ?? null;
+
+    /**
+     * Порядок проверок — от причины к следствию.
+     *
+     * Ненастроенные ключи выглядят как оборванное соединение,
+     * а отклонённый вход — как спокойный рынок. Если сообщить
+     * «ошибка», не различив их, человек пойдёт чинить сеть там,
+     * где не заполнена переменная.
+     */
+    const status: SourceStatus = !credentialsReady
+      ? 'configuration_error'
+      : hasCredentialConflict()
+        ? 'configuration_error'
+        : connected > 0 && !this.fallbackActive
+          ? 'healthy'
+          : this.fallbackActive
+            ? 'degraded'
+            : stats.some((s) => s.state === 'connecting' || s.state === 'authenticating')
+              ? 'connecting'
+              : 'error';
 
     return {
       mode,
       status,
+      configuration,
       connections: { total: stats.length, connected, reconnecting },
+      loginVerified,
+      subscriptionsVerified,
+      providerErrorCode,
       trackedWallets: this.addresses.length,
       lastMessageAt: this.lastMessageAt ? new Date(this.lastMessageAt).toISOString() : null,
       lastPersistedAt: this.lastPersistedAt
@@ -341,7 +406,14 @@ export class ActivityIngestor {
       fallbackActive: this.fallbackActive,
       // Только код, без объекта ошибки провайдера: в нём бывают
       // заголовки запроса.
-      lastErrorCode: this.lastErrorCode,
+      //
+      // Своё поле заполняется лишь при отклонённом событии, поэтому
+      // одного его мало: соединение может переподключаться десятками
+      // раз, ни разу не отклонив событие, и наружу уходило бы «ошибок
+      // нет» при неработающем сокете. Причина обрыва живёт в клиенте —
+      // берём её оттуда.
+      lastErrorCode:
+        this.lastErrorCode ?? stats.find((s) => s.lastErrorCode)?.lastErrorCode ?? null,
     };
   }
 }

@@ -373,8 +373,88 @@ describe('вывод не содержит секретов', () => {
     const r = await runWsSmoke(base(h));
     const text = r.lines.join('\n');
 
-    expect(text).toContain('auth_rejected');
+    // Числовой код провайдера секретом не является и печатается:
+    // по нему понятно, что чинить. Текст сообщения — нет: OKX
+    // вставляет в него имя заголовка и обрывки запроса.
+    expect(text).toContain('60009');
     expect(text).not.toContain('OK-ACCESS-KEY');
     expect(text).not.toContain('abc');
+  });
+});
+
+// ─────────────────── Разбор кодов отказа провайдера ─────────────────────────
+
+describe('коды отказа OKX различаются', () => {
+  /** Отказ входа с заданным кодом провайдера. */
+  function rejectWith(code: string) {
+    return harness((s, tick) => {
+      if (tick === 1) s.open();
+      if (tick === 2) s.deliver({ event: 'login', code });
+    });
+  }
+
+  const cases: Array<[string, string]> = [
+    ['60005', 'OKX_API_KEY'],
+    ['60007', 'OKX_API_SECRET'],
+    ['60024', 'OKX_PASSPHRASE'],
+  ];
+
+  for (const [code, variable] of cases) {
+    it(`${code} указывает на ${variable}`, async () => {
+      // Все три отказа выглядят одинаково — «вход отклонён», — а
+      // чинятся в разных переменных. Без разбора человек проверяет
+      // всё подряд, начиная обычно не с того.
+      const h = rejectWith(code);
+      const r = await runWsSmoke(base(h));
+
+      expect(r.code).toBe(SMOKE_EXIT.auth);
+      expect(r.lines.join('\n')).toContain(variable);
+    });
+  }
+
+  it('60009 — отказ входа без указания конкретной переменной', async () => {
+    const h = rejectWith('60009');
+    const r = await runWsSmoke(base(h));
+
+    expect(r.code).toBe(SMOKE_EXIT.auth);
+    expect(r.lines.join('\n')).toContain('отозван');
+  });
+
+  it('неизвестный код не получает выдуманного объяснения', async () => {
+    // Придуманное пояснение хуже его отсутствия: по нему пойдут
+    // чинить не то.
+    const h = rejectWith('60099');
+    const r = await runWsSmoke(base(h));
+
+    const text = r.lines.join('\n');
+    expect(text).toContain('60099');
+    expect(text).not.toMatch(/OKX_API_KEY|OKX_API_SECRET|OKX_PASSPHRASE/);
+  });
+
+  it('60029 — отдельный код выхода: канал требует доступа', async () => {
+    // Это не поломка настройки и не расхождение контракта: канал
+    // просто не выдан ключу, и чинится это не в коде.
+    const h = harness((s, tick) => {
+      if (tick === 1) s.open();
+      if (tick === 2) s.deliver(loginOk);
+      if (tick === 3) s.deliver({ event: 'error', code: '60029', msg: 'no access' });
+    });
+
+    const r = await runWsSmoke(base(h));
+
+    expect(r.code).toBe(SMOKE_EXIT.channelDenied);
+    expect(r.lines.join('\n')).toContain('отдельного доступа');
+  });
+
+  it('прочая ошибка подписки остаётся расхождением контракта', async () => {
+    const h = harness((s, tick) => {
+      if (tick === 1) s.open();
+      if (tick === 2) s.deliver(loginOk);
+      if (tick === 3) s.deliver({ event: 'error', code: '60012' });
+    });
+
+    const r = await runWsSmoke(base(h));
+
+    expect(r.code).toBe(SMOKE_EXIT.contract);
   });
 });

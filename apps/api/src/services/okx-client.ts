@@ -23,6 +23,7 @@ import { createHmac } from 'node:crypto';
 import { env } from '../lib/env.js';
 import { logger } from '../lib/logger.js';
 import { cached, withRetry, Concurrency, RateLimit } from '../lib/cache.js';
+import { okxCredentialsReady } from '../lib/okx-config.js';
 
 const DEFAULT_BASE = 'https://web3.okx.com';
 
@@ -71,12 +72,13 @@ export function okxTimestamp(now = new Date()): string {
 }
 
 export function isOkxWalletConfigured(): boolean {
-  return Boolean(
-    env.OKX_MARKET_ENABLED !== false &&
-      env.OKX_API_KEY &&
-      env.OKX_API_SECRET &&
-      env.OKX_PASSPHRASE,
-  );
+  // Проверка вынесена целиком: там пустая строка считается
+  // отсутствием значения, а расхождение между новым и устаревшим
+  // именем переменной — поводом не ходить в сеть вовсе. Подписывать
+  // запрос неизвестно каким из двух секретов нельзя: отказ
+  // авторизации в этом случае объясняется чем угодно, кроме
+  // настоящей причины.
+  return env.OKX_MARKET_ENABLED !== false && okxCredentialsReady();
 }
 
 // ─────────────────────── Ограничения обращений ──────────────────────────────

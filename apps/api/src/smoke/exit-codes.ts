@@ -21,7 +21,43 @@ export const SMOKE_EXIT = {
   timeout: 6,
   /** Схема базы отстала от кода. */
   schema: 7,
+  /** Канал требует отдельного доступа у провайдера. */
+  channelDenied: 8,
 } as const;
+
+/**
+ * Что означает числовой код отказа от OKX.
+ *
+ * Все они приходят как «вход отклонён» и выглядят одинаково,
+ * а чинятся в разных местах: один — заменой ключа, другой —
+ * исправлением секрета, третий — обращением в поддержку за доступом
+ * к каналу. Без разбора человек проверяет всё подряд, начиная
+ * обычно не с того.
+ *
+ * Сами коды секретом не являются и печатаются открыто.
+ */
+export const OKX_ERROR_MEANING: Record<string, string> = {
+  '60005': 'Неверный API key — проверьте OKX_API_KEY',
+  '60006': 'Отметка времени вне допустимого окна — разошлись часы сервера',
+  '60007': 'Подпись не сошлась — проверьте OKX_API_SECRET',
+  '60009': 'Вход отклонён — ключ отозван или не активирован',
+  '60024': 'Неверная парольная фраза — проверьте OKX_PASSPHRASE',
+  '60029': 'Канал требует отдельного доступа у провайдера',
+};
+
+/** Коды, при которых канал недоступен по правам, а не по ошибке настройки. */
+export const CHANNEL_DENIED_CODES = new Set(['60029']);
+
+/** Код выхода по числовому коду отказа OKX. */
+export function exitForProviderCode(code: string | null | undefined): SmokeExit {
+  if (!code) return SMOKE_EXIT.auth;
+  return CHANNEL_DENIED_CODES.has(code) ? SMOKE_EXIT.channelDenied : SMOKE_EXIT.auth;
+}
+
+/** Пояснение к коду. Неизвестный код не выдумывается. */
+export function describeProviderCode(code: string | null | undefined): string | null {
+  return code ? (OKX_ERROR_MEANING[code] ?? null) : null;
+}
 
 export type SmokeExit = (typeof SMOKE_EXIT)[keyof typeof SMOKE_EXIT];
 

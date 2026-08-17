@@ -88,6 +88,12 @@ export interface ConnectionStats {
   reconnects: number;
   /** Последняя ошибка без секретов. */
   lastErrorCode: string | null;
+  /** Числовой код отказа от OKX. Секретом не является. */
+  lastProviderCode: string | null;
+  /** Вход был принят хотя бы раз. */
+  loginVerified: boolean;
+  /** Все подписки подтверждены провайдером. */
+  subscriptionsVerified: boolean;
 }
 
 interface PendingCommand {
@@ -124,6 +130,16 @@ export class OkxWalletWebSocketClient {
   private lastMessageAt: number | null = null;
   private lastLoginAt: number | null = null;
   private lastErrorCode: string | null = null;
+  /**
+   * Числовой код отказа от самого OKX.
+   *
+   * Хранится отдельно от нашего кода стадии, потому что различает
+   * то, что для нас выглядит одинаково: 60005 — неверный ключ,
+   * 60007 — не сошлась подпись, 60024 — не та парольная фраза,
+   * 60029 — канал требует доступа. Все четыре дают «вход отклонён»,
+   * а чинятся по-разному. Сам по себе код секретом не является.
+   */
+  private lastProviderCode: string | null = null;
   private stopped = false;
   private commandSeq = 0;
 
@@ -186,6 +202,9 @@ export class OkxWalletWebSocketClient {
       consecutiveErrors: this.consecutiveErrors,
       reconnects: this.reconnects,
       lastErrorCode: this.lastErrorCode,
+      lastProviderCode: this.lastProviderCode,
+      loginVerified: this.lastLoginAt != null,
+      subscriptionsVerified: this.state === 'connected',
     };
   }
 
@@ -334,10 +353,18 @@ export class OkxWalletWebSocketClient {
     }
 
     // ─── Ответ на вход ──────────────────────────────────────────
-    const login = parseLoginReply(msg);
+    //
+    // Только пока мы его ждём. Разбор считает ответом на вход любой
+    // кадр `error`, потому что при отказе авторизации OKX присылает
+    // именно его — но тот же кадр приходит и при отказе в подписке,
+    // спустя долгое время после успешного входа. Без проверки
+    // состояния ошибка доступа к каналу выглядела бы как неверный
+    // ключ, и чинить пошли бы переменные окружения вместо прав.
+    const login = this.state === 'authenticating' ? parseLoginReply(msg) : null;
     if (login) {
       if (!login.ok) {
         this.lastErrorCode = login.code;
+        this.lastProviderCode = login.code;
         // Отказ авторизации — отдельный случай: повторять быстро
         // бессмысленно и вредно.
         this.fail(
@@ -374,6 +401,7 @@ export class OkxWalletWebSocketClient {
 
     if (msg?.event === 'error') {
       this.lastErrorCode = String(msg?.code ?? 'unknown');
+      this.lastProviderCode = this.lastErrorCode;
       this.opts.onRejected?.(`ws_error_${this.lastErrorCode}`);
 
       // Ошибка закрывает текущую команду: иначе очередь встанет

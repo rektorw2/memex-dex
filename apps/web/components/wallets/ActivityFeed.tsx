@@ -137,7 +137,13 @@ export function ActivityFeed() {
       </div>
 
       {error && (
-        <p className="panel border-down/40 p-4 text-sm text-down">{errorMessage(error)}</p>
+        <div className="panel border-down/40 p-4">
+          <p className="text-sm text-down">Лента сейчас недоступна</p>
+          {/* Техническая причина остаётся видимой, но отдельной
+              строкой и мелко: «Not Found» вместо заголовка выглядело
+              как содержимое страницы, а не как сбой запроса. */}
+          <p className="mt-1 text-xs text-muted/70">{errorMessage(error)}</p>
+        </div>
       )}
 
       {/* ── Лента ──────────────────────────────────────────────── */}

@@ -425,7 +425,12 @@ export async function ledgerStatus(): Promise<LedgerStatus> {
       orderBy: { tradedAt: 'asc' },
       select: { tradedAt: true },
     }),
+    // Только строки с состоявшимся успехом: Postgres при сортировке
+    // по убыванию ставит NULL первыми, и без условия сюда попадала бы
+    // задача, не выполнявшаяся ни разу. Наружу уходило бы «успешной
+    // синхронизации не было» даже тогда, когда их прошли тысячи.
     prisma.walletSyncQueue.findFirst({
+      where: { lastSuccessAt: { not: null } },
       orderBy: { lastSuccessAt: 'desc' },
       select: { lastSyncAt: true, lastSuccessAt: true, lastErrorCode: true },
     }),

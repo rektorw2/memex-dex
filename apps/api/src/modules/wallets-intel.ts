@@ -43,7 +43,16 @@ export const walletIntelRoutes: FastifyPluginAsync = async (app) => {
     const { getIngestor } = await import('../services/okx-ws-pool.js');
     const { ledgerStatus } = await import('../workers/wallet-ledger-sync.js');
 
-    return { ...getIngestor().status(), ledger: await ledgerStatus() };
+    const source = getIngestor().status();
+    const ledger = await ledgerStatus();
+
+    // Отставшая схема важнее состояния сокета: пока база не готова,
+    // события некуда складывать, и «здоровый источник» ввёл бы
+    // в заблуждение. Отсутствие ключей при этом не превращается
+    // в пятисотку — это описанное состояние, а не сбой.
+    const status = ledger.status === 'schema_outdated' ? 'schema_outdated' : source.status;
+
+    return { ...source, status, ledger };
   });
 
   /**

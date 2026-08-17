@@ -27,7 +27,14 @@ import {
   ADDRESS_CHANNEL,
   type SocketFactory,
 } from '../services/okx-ws-client.js';
-import { SMOKE_EXIT, NETWORK_UNAVAILABLE, maskAddress, type SmokeExit } from './exit-codes.js';
+import {
+  SMOKE_EXIT,
+  NETWORK_UNAVAILABLE,
+  maskAddress,
+  exitForProviderCode,
+  describeProviderCode,
+  type SmokeExit,
+} from './exit-codes.js';
 
 export interface WsSmokeOptions {
   /** Настроены ли ключи. Проверяется до всякой сети. */
@@ -135,8 +142,20 @@ export async function runWsSmoke(opts: WsSmokeOptions): Promise<WsSmokeResult> {
       // что мы ещё ждём, — тоже.
       if (stats.lastErrorCode && AUTH_CODES.has(stats.lastErrorCode)) {
         log('Вход отклонён провайдером.');
-        log(`Код: ${stats.lastErrorCode}`);
-        return done(SMOKE_EXIT.auth, lines, events, false, stopSafely(client));
+        log(`Код OKX: ${stats.lastProviderCode ?? 'неизвестен'}`);
+
+        // Пояснение печатается, только если код известен. Выдуманное
+        // объяснение хуже его отсутствия: по нему пойдут чинить не то.
+        const meaning = describeProviderCode(stats.lastProviderCode);
+        if (meaning) log(meaning);
+
+        return done(
+          exitForProviderCode(stats.lastProviderCode),
+          lines,
+          events,
+          false,
+          stopSafely(client),
+        );
       }
 
       if (stats.lastErrorCode && NETWORK_CODES.has(stats.lastErrorCode)) {
@@ -149,8 +168,22 @@ export async function runWsSmoke(opts: WsSmokeOptions): Promise<WsSmokeResult> {
       // это расхождение контракта, а не сеть.
       if (stats.lastErrorCode?.startsWith('subscribe_error_')) {
         log('Провайдер отклонил подписку.');
-        log(`Код: ${stats.lastErrorCode}`);
-        return done(SMOKE_EXIT.contract, lines, events, false, stopSafely(client));
+        log(`Код OKX: ${stats.lastProviderCode ?? 'неизвестен'}`);
+
+        const meaning = describeProviderCode(stats.lastProviderCode);
+        if (meaning) log(meaning);
+
+        // Отказ по правам — не расхождение контракта: канал требует
+        // отдельного доступа, и починка тут не в коде.
+        const denied = exitForProviderCode(stats.lastProviderCode) === SMOKE_EXIT.channelDenied;
+
+        return done(
+          denied ? SMOKE_EXIT.channelDenied : SMOKE_EXIT.contract,
+          lines,
+          events,
+          false,
+          stopSafely(client),
+        );
       }
 
       await wait(POLL_MS);
