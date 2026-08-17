@@ -7,6 +7,8 @@ import { fetcher, fmtUsd, fmtPrice, errorMessage } from '@/lib/api';
 import { chainLabel, CHAINS } from '@/lib/chains';
 import { Identicon } from './SmartScore';
 import { short } from './WalletViews';
+import { PnlValue } from './PnlValue';
+import { FavoriteStar } from './FavoriteStar';
 
 /**
  * Живая лента сделок отслеживаемых кошельков.
@@ -38,6 +40,15 @@ interface ActivityEvent {
   priceUsd: number | null;
   marketCapUsd: number | null;
   realizedPnlUsd: number | null;
+  /**
+   * Вердикт нашего учёта, а не ленты провайдера.
+   *
+   * Лента приходит от OKX вместе с его собственным расчётом прибыли.
+   * Показывать это число как истину нельзя: оно посчитано по данным,
+   * которых мы не видели. Состояние решает, показывать ли его вообще.
+   */
+  pnlState?: 'available' | 'pending' | 'incomplete_history' | 'open_position';
+  pnlSource?: 'okx' | null;
   tradedAt: number;
 }
 
@@ -184,6 +195,11 @@ function Row({ event: e }: { event: ActivityEvent }) {
   const isBuy = e.side === 'BUY';
   const pnl = e.realizedPnlUsd;
 
+  // Состояние приходит с сервера. Выводить его из отсутствия числа
+  // нельзя: по пустому значению не отличить «ещё считаем»
+  // от «истории не хватает».
+  const state = e.pnlState ?? (isBuy ? 'open_position' : 'pending');
+
   return (
     <div className="panel flex items-center gap-3 p-3">
       <Identicon address={e.wallet} size={32} />
@@ -205,6 +221,10 @@ function Row({ event: e }: { event: ActivityEvent }) {
           </span>
 
           <span className="num shrink-0 text-[11px] text-muted">{short(e.wallet)}</span>
+
+          {/* Звезда рядом с адресом: отметить кошелёк можно там,
+              где он попался на глаза, а не только в общем списке. */}
+          <FavoriteStar chain={e.chain} address={e.wallet} size="sm" className="-my-1" />
         </div>
 
         <div className="mt-0.5 truncate text-[11px] text-muted">
@@ -218,15 +238,22 @@ function Row({ event: e }: { event: ActivityEvent }) {
       </div>
 
       <div className="shrink-0 text-right">
-        {/* Зафиксированный результат бывает только у продажи:
-            у покупки его ещё нет, и ноль означал бы «продал в ноль». */}
-        {pnl != null && (
-          <div className={`num text-[13px] ${pnl >= 0 ? 'text-up' : 'text-down'}`}>
-            {pnl >= 0 ? '+' : '−'}
-            {fmtUsd(Math.abs(pnl))}
-          </div>
-        )}
-        <div className="text-[11px] text-muted/70">{timeAgo(new Date(e.tradedAt))}</div>
+        {/*
+          Здесь раньше было пустое место — у покупки результата нет,
+          и колонка просто пустовала. Выглядело это как потерянные
+          данные. Теперь показывается причина отсутствия числа,
+          и причины эти разные: открытая позиция, идущий пересчёт
+          и нехватка истории означают совершенно не одно и то же.
+        */}
+        <PnlValue
+          valueUsd={state === 'available' ? pnl : null}
+          isOpen={state === 'open_position'}
+          isPending={state === 'pending'}
+          hasIncompleteHistory={state === 'incomplete_history'}
+          kind="realized"
+          size="sm"
+        />
+        <div className="mt-0.5 text-[11px] text-muted/70">{timeAgo(new Date(e.tradedAt))}</div>
       </div>
 
       {chain && (

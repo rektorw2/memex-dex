@@ -14,6 +14,7 @@ import { fetcher, fmtUsd, fmtPrice } from '@/lib/api';
 import { chainLabel, CHAINS } from '@/lib/chains';
 import { SmartScore, Identicon } from './SmartScore';
 import { WalletIdentity, statsOf, categoryOf, type Wallet } from './WalletViews';
+import { FavoriteStar } from './FavoriteStar';
 
 /**
  * Подробности кошелька.
@@ -55,7 +56,13 @@ export function WalletDrawer({ wallet: w, onClose }: { wallet: Wallet; onClose: 
             <path d="M10 3L5 8l5 5" stroke="currentColor" strokeWidth="1.6" />
           </svg>
         </button>
-        <WalletIdentity wallet={w} size={32} />
+        <div className="min-w-0 flex-1">
+          <WalletIdentity wallet={w} size={32} />
+        </div>
+
+        {/* Та же звезда, что в списке и в ленте: состояние общее,
+            и переключение здесь видно везде без перезагрузки. */}
+        <FavoriteStar chain={w.chain} address={w.address} />
       </header>
 
       <div className="scroll-y flex-1 space-y-4 p-4">

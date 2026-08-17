@@ -193,15 +193,17 @@ export function parseLiveTrade(
   const txHash = okxStr(r.txHash, 160);
   const quoteAmount = okxNum(r.quoteTokenAmount);
 
-  const id = txHash
-    ? [chainRaw, txHash, normWallet, normToken, typeRaw].join('|')
-    : // Без хеша ключ собирается из того, что делает событие
-      // уникальным: те же кошелёк, токен, направление, время
-      // и объём дважды не повторяются.
-      'h:' +
-      stableHash(
-        [chainRaw, normWallet, normToken, typeRaw, tradedAt, quoteAmount ?? ''].join('|'),
-      );
+  // Ключ строится общей функцией: у сокета и у опроса он обязан
+  // совпадать, иначе одна сделка запишется дважды.
+  const id = liveEventId({
+    chain,
+    wallet: normWallet,
+    tokenAddress: normToken,
+    side,
+    txHash,
+    tradedAt,
+    quoteAmount,
+  });
 
   const optional = [symbolRaw, priceRaw, r.marketCap, r.quoteTokenSymbol, quoteAmount];
   const present = optional.filter((v) => v != null && v !== '').length;
@@ -306,4 +308,55 @@ export function reconnectDelay(attempt: number, random = Math.random): number {
   const base = Math.min(RECONNECT_BASE_MS * 2 ** Math.max(0, attempt), RECONNECT_MAX_MS);
   // Разброс до четверти задержки в обе стороны.
   return Math.round(base * (0.75 + random() * 0.5));
+}
+
+// ─────────────────────── Общий ключ живого события ──────────────────────────
+
+/**
+ * Ключ события, одинаковый для сокета и для опроса.
+ *
+ * Существует ради одной конкретной поломки. Сокет и REST описывают
+ * одну и ту же сделку по-разному: первый называет сеть числовым
+ * индексом («56») и направление числом («1»), второй — именем сети
+ * («BNB») и словом («BUY»). Пока ключ собирался в каждом месте
+ * по-своему, одна сделка получала два разных ключа, и защита
+ * от повторной записи между источниками не работала совсем.
+ *
+ * Заметить это трудно: пока сокет лежит, повторов нет, потому что
+ * источник один. Они появляются ровно в тот момент, когда сокет
+ * поднимается, — и тогда каждая сделка записывается дважды, каждая
+ * повторная запись поднимает поколение задачи, а очередь пересчёта
+ * начинает расти без причины.
+ *
+ * Поэтому ключ строится здесь и только здесь, из нормализованных
+ * значений: сеть по имени, направление словом, адреса — в той форме,
+ * в которой они сравниваются.
+ */
+export function liveEventId(input: {
+  chain: ChainKey;
+  wallet: string;
+  tokenAddress: string;
+  side: 'BUY' | 'SELL';
+  txHash?: string | null;
+  tradedAt?: number | null;
+  quoteAmount?: number | null;
+}): string {
+  const wallet = normalizeAddress(input.chain, input.wallet);
+  const token = normalizeAddress(input.chain, input.tokenAddress);
+
+  if (input.txHash) {
+    return [input.chain, input.txHash, wallet, token, input.side].join('|');
+  }
+
+  // Без хеша ключ собирается из того, что делает событие уникальным:
+  // те же кошелёк, токен, направление, время и объём дважды
+  // не повторяются.
+  return (
+    'h:' +
+    stableHash(
+      [input.chain, wallet, token, input.side, input.tradedAt ?? '', input.quoteAmount ?? ''].join(
+        '|',
+      ),
+    )
+  );
 }

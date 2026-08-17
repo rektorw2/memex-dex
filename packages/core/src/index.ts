@@ -48,3 +48,9 @@ export * from './okx-dex-history.js';
 // Полнота истории и позиции с неизвестной себестоимостью.
 export * from './ledger-completeness.js';
 export * from './decimal-fit.js';
+
+// Состояния результата: пустота, ожидание и недостаток истории — разное.
+export * from './pnl-display.js';
+
+// Ключ избранного кошелька: сеть плюс нормализованный адрес.
+export * from './favorite-key.js';

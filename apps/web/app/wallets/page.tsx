@@ -14,6 +14,7 @@ import {
 import { WalletDrawer } from '@/components/wallets/WalletDrawer';
 import { ScoreMethodology } from '@/components/wallets/ScoreMethodology';
 import { ActivityFeed } from '@/components/wallets/ActivityFeed';
+import { FollowingTab } from '@/components/wallets/FollowingTab';
 
 /**
  * Смарт-кошельки.
@@ -87,7 +88,7 @@ export default function WalletsPage() {
 
       {tab === 'wallets' && <WalletsTab />}
       {tab === 'activity' && <ActivityFeed />}
-      {tab === 'following' && <FollowingTab />}
+      {tab === 'following' && <FollowingTab onFind={() => setTab('wallets')} />}
 
       <PageDisclaimer />
 
@@ -597,17 +598,7 @@ function FilterSheet({
 
 // ────────────────────────── Прочие вкладки ──────────────────────────────────
 
-function FollowingTab() {
-  return (
-    <div className="panel px-6 py-16 text-center">
-      <p className="text-sm text-muted">Подписки ещё не подключены</p>
-      <p className="mx-auto mt-2 max-w-[380px] text-xs leading-relaxed text-muted/70">
-        Слежение за кошельком и уведомления о его сделках требуют привязки
-        к аккаунту. Пока следить можно через раздел «Копитрейдинг».
-      </p>
-    </div>
-  );
-}
+
 
 // ─────────────────────────────── Состояния ──────────────────────────────────
 

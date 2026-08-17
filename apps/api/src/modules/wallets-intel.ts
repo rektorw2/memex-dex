@@ -1,6 +1,12 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
-import { summarizeWalletSignal, MIN_TRADES_FOR_SCORE } from '@memex/core';
+import {
+  summarizeWalletSignal,
+  liveEventId,
+  MIN_TRADES_FOR_SCORE,
+  type ChainKey,
+  type WalletTradeEvent,
+} from '@memex/core';
 import { prisma } from '../lib/prisma.js';
 import { walletActivityForToken } from '../workers/wallet-tracker.js';
 
@@ -108,11 +114,13 @@ export const walletIntelRoutes: FastifyPluginAsync = async (app) => {
       minLiquidityUsd: q.minLiquidityUsd,
     });
 
+    const page = events.slice(0, q.limit);
+
     return {
       configured: true,
       source: 'OKX Onchain OS',
       fetchedAt: new Date().toISOString(),
-      events: events.slice(0, q.limit),
+      events: await withLedgerVerdict(page),
     };
   });
 
@@ -283,4 +291,79 @@ function serializeWallet(w: {
     firstSeenAt: w.firstSeenAt,
     lastActiveAt: w.lastActiveAt,
   };
+}
+
+// ───────────────────── Вердикт нашего учёта для ленты ───────────────────────
+
+/**
+ * Состояние результата по каждому событию ленты.
+ *
+ * Лента приходит от OKX и содержит его собственный расчёт прибыли.
+ * Показывать его как истину нельзя: он посчитан по данным, которых
+ * мы не видели, и по правилам, которых не знаем. Но и прятать нечего —
+ * если наш учёт подтвердил, что себестоимость этой продажи известна,
+ * число провайдера перестаёт быть догадкой и становится сверяемым.
+ *
+ * Отсюда три состояния, и все три берутся из нашего учёта, а не
+ * из ленты:
+ *
+ *   open_position       — покупка, фиксировать нечего;
+ *   pending             — событие ещё не перенесено в позиции;
+ *   incomplete_history  — покупок этого токена мы не видели;
+ *   available           — учёт подтвердил, число можно показывать.
+ *
+ * Один запрос на всю страницу. Спрашивать про каждое событие
+ * отдельно значило бы полсотни запросов каждые двадцать секунд.
+ */
+async function withLedgerVerdict(events: WalletTradeEvent[]): Promise<unknown[]> {
+  if (events.length === 0) return [];
+
+  // Ключ считается той же функцией, что и при записи события:
+  // собранный здесь по-своему, он не совпал бы ни с одной строкой,
+  // и все продажи вечно висели бы в состоянии «рассчитывается».
+  const ids = new Map(events.map((e) => [e.dedupeKey, idOf(e)]));
+
+  const rows = await prisma.walletActivity
+    .findMany({
+      where: { id: { in: [...ids.values()] } },
+      select: { id: true, ledgerState: true, appliedToLedger: true },
+    })
+    .catch(() => [] as Array<{ id: string; ledgerState: string; appliedToLedger: boolean }>);
+
+  const byId = new Map(rows.map((r: (typeof rows)[number]) => [r.id, r]));
+
+  return events.map((e) => {
+    const row = byId.get(ids.get(e.dedupeKey)!);
+
+    // Покупка: зафиксированного результата ещё нет и быть не может.
+    // Ноль здесь читался бы как «продал в ноль».
+    if (e.side === 'BUY') {
+      return { ...e, pnlState: 'open_position', pnlSource: null };
+    }
+
+    // Событие ещё не дошло до нашего учёта: история DEX обновляется
+    // позже ленты, и это не ошибка.
+    if (!row || !row.appliedToLedger) {
+      return {
+        ...e,
+        pnlState: row?.ledgerState === 'failed' ? 'incomplete_history' : 'pending',
+        pnlSource: null,
+      };
+    }
+
+    return { ...e, pnlState: 'available', pnlSource: 'okx' };
+  });
+}
+
+/** Ключ события, общий с приёмом из сокета и опроса. */
+function idOf(e: WalletTradeEvent): string {
+  return liveEventId({
+    chain: e.chain as ChainKey,
+    wallet: e.wallet,
+    tokenAddress: e.tokenAddress,
+    side: e.side,
+    txHash: e.txHash,
+    tradedAt: e.tradedAt,
+    quoteAmount: e.quoteAmount,
+  });
 }

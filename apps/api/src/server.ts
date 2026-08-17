@@ -20,6 +20,7 @@ import { tokenRoutes } from './modules/tokens.js';
 import { walletRoutes } from './modules/wallets.js';
 import { radarRoutes } from './modules/radar.js';
 import { walletIntelRoutes } from './modules/wallets-intel.js';
+import { walletFavoriteRoutes } from './modules/wallet-favorites.js';
 import { autoRuleRoutes } from './modules/auto-rule.js';
 import { ingestRoutes } from './modules/ingest.js';
 
@@ -140,6 +141,7 @@ export async function buildServer() {
   await app.register(walletRoutes, { prefix: '/api/v1' });
   await app.register(radarRoutes, { prefix: '/api/v1' });
   await app.register(walletIntelRoutes, { prefix: '/api/v1' });
+  await app.register(walletFavoriteRoutes, { prefix: '/api/v1' });
   await app.register(autoRuleRoutes, { prefix: '/api/v1' });
   await app.register(ingestRoutes, { prefix: '/api/v1' });
   await app.register(adminRoutes, { prefix: '/api/v1' });

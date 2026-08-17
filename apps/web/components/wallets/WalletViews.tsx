@@ -15,6 +15,7 @@ import {
 import { fmtUsd } from '@/lib/api';
 import { chainLabel, CHAINS } from '@/lib/chains';
 import { SmartScore, Identicon, tooltip, type WalletStats } from './SmartScore';
+import { FavoriteStar } from './FavoriteStar';
 
 /**
  * Два представления списка кошельков.
@@ -241,18 +242,21 @@ function TableRow({ wallet: w, onOpen }: { wallet: Wallet; onOpen: (w: Wallet) =
       </td>
 
       <td className="px-3 py-2.5 text-right">
-        {chain && (
-          <a
-            href={chain.explorerAddress?.(w.address) ?? chain.explorerToken(w.address)}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={(e) => e.stopPropagation()}
-            title="Открыть в обозревателе"
-            className="rounded px-2 py-1 text-accent transition-colors hover:bg-accent/15"
-          >
-            ↗
-          </a>
-        )}
+        <div className="flex items-center justify-end gap-1">
+          <FavoriteStar chain={w.chain} address={w.address} size="sm" />
+          {chain && (
+            <a
+              href={chain.explorerAddress?.(w.address) ?? chain.explorerToken(w.address)}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              title="Открыть в обозревателе"
+              className="rounded px-2 py-1 text-accent transition-colors hover:bg-accent/15"
+            >
+              ↗
+            </a>
+          )}
+        </div>
       </td>
     </tr>
   );
@@ -273,7 +277,14 @@ export function WalletCard({
 
   return (
     <article className="panel space-y-3 p-4">
-      <WalletIdentity wallet={w} size={36} />
+      <div className="flex items-start gap-2">
+        <div className="min-w-0 flex-1">
+          <WalletIdentity wallet={w} size={36} />
+        </div>
+        {/* Звезда в шапке карточки: то же состояние, что в ленте
+            и в таблице — источник один на всё приложение. */}
+        <FavoriteStar chain={w.chain} address={w.address} />
+      </div>
 
       <div className="rounded-lg bg-raised p-2.5">
         <SmartScore stats={s} />

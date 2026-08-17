@@ -19,6 +19,7 @@
 
 import {
   planConnections,
+  liveEventId,
   MAX_ADDRESSES_PER_CONNECTION,
   type LiveTradeEvent,
   type ChainKey,
@@ -301,7 +302,18 @@ export class ActivityIngestor {
         // Ключ события общий с сокетом, поэтому пересечение
         // источников безвредно.
         await this.ingest({
-          id: [t.chain, t.txHash, t.wallet, t.tokenAddress, t.side].join('|'),
+          // Тот же ключ, что строит разбор сообщения сокета.
+          // Собирать его здесь по-своему значило бы получать два
+          // ключа на одну сделку и записывать её дважды.
+          id: liveEventId({
+            chain: t.chain as ChainKey,
+            wallet: t.wallet,
+            tokenAddress: t.tokenAddress,
+            side: t.side,
+            txHash: t.txHash,
+            tradedAt: t.tradedAt,
+            quoteAmount: t.quoteAmount,
+          }),
           chain: t.chain as ChainKey,
           wallet: t.wallet,
           tokenAddress: t.tokenAddress,

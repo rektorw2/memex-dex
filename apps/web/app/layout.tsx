@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { AuthNav } from '@/components/AuthNav';
 import { MainNav } from '@/components/MainNav';
 import { MobileNav } from '@/components/MobileNav';
+import { FavoritesProvider } from '@/lib/favorites';
 
 export const metadata: Metadata = {
   title: 'Memex — торговля мем-коинами и копитрейдинг',
@@ -54,6 +55,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         />
       </head>
       <body className="font-sans">
+        {/* Избранные кошельки — общее состояние на всё приложение.
+            Звезда стоит в списке, в карточке и в ленте, и все три
+            обязаны показывать одно и то же: отдельные источники
+            расходятся ровно в момент нажатия. */}
+        <FavoritesProvider>
         {/*
           Шапка устроена по-разному на телефоне и на десктопе.
 
@@ -107,6 +113,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             удерживается при выходе из позиции.
           </p>
         </footer>
+        </FavoritesProvider>
       </body>
     </html>
   );
