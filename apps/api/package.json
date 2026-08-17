@@ -11,7 +11,8 @@
     "db:check": "tsx scripts/db-check.ts",
     "okx:smoke": "tsx scripts/okx-smoke.ts",
     "okx:ws-smoke": "tsx scripts/okx-ws-smoke.ts",
-    "okx:ledger-smoke": "tsx scripts/okx-ledger-smoke.ts"
+    "okx:ledger-smoke": "tsx scripts/okx-ledger-smoke.ts",
+    "db:preflight": "tsx scripts/db-preflight.ts"
   },
   "dependencies": {
     "@fastify/cors": "^10.0.1",
