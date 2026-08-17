@@ -3,6 +3,7 @@ import { scoreWallet, summarizeWalletSignal, type WalletTradeOutcome } from '@me
 import { prisma } from '../lib/prisma.js';
 import { logger } from '../lib/logger.js';
 import { fetchPoolTrades } from '../services/market-data.js';
+import { decimalFor, DECIMAL_COLUMN } from '../lib/decimal.js';
 
 /**
  * Наблюдение за кошельками: кто покупает наши находки и что из этого выходит.
@@ -150,7 +151,7 @@ export async function collectTrades(): Promise<{ pools: number; trades: number }
               const m = mcapAt(points, tradedTs);
               return m != null ? new P.Decimal(m) : null;
             })(),
-            poolAgeHours: poolAgeHours != null ? new P.Decimal(poolAgeHours) : null,
+            poolAgeHours: decimalFor(poolAgeHours, DECIMAL_COLUMN.percent),
             txHash: t.txHash,
             tradedAt: t.tradedAt,
           },
@@ -277,7 +278,7 @@ export async function settleOutcomes(): Promise<number> {
     await prisma.walletTrade.update({
       where: { id: t.id },
       data: {
-        outcomeMultiple: new P.Decimal(peak / base),
+        outcomeMultiple: decimalFor(peak / base, DECIMAL_COLUMN.percent),
         outcomeAt: new Date(),
       },
     });
@@ -329,9 +330,9 @@ export async function rescoreWallets(limit = 200): Promise<number> {
         wins5x: s.wins5x,
         rugs: s.rugs,
         volumeUsd: new P.Decimal(s.volumeUsd),
-        avgPeakMultiple: s.settled > 0 ? new P.Decimal(s.avgMultiple) : null,
+        avgPeakMultiple: s.settled > 0 ? decimalFor(s.avgMultiple, DECIMAL_COLUMN.percent) : null,
         medianEntryHours:
-          s.medianEntryHours != null ? new P.Decimal(s.medianEntryHours) : null,
+          decimalFor(s.medianEntryHours, DECIMAL_COLUMN.percent),
         score: s.score,
         label: s.label,
       },

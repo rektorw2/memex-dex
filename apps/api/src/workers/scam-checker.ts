@@ -30,6 +30,7 @@ import { fetchRwaRegistry, fetchPriceInfo, safeCall } from '../services/okx-mark
 import { fetchAdvancedInfo, readTags, readOkxRisk } from '../services/okx-security.js';
 import { checkHoneypot, isHoneypotSupported } from '../services/honeypot.js';
 import { checkRugcheck, isAbsoluteFinding } from '../services/rugcheck.js';
+import { sharePctOrNull } from '../lib/decimal.js';
 
 /**
  * Проверка токенов витрины на очевидные ловушки.
@@ -862,8 +863,11 @@ export async function checkBatch(
           // Данные, которых у GeckoTerminal нет или они хуже.
           ...(security?.isHoneypot != null ? { isHoneypot: security.isHoneypot } : {}),
           ...(security?.holderCount != null ? { holders: security.holderCount } : {}),
-          ...(security?.top10Pct != null
-            ? { topHolderPct: new P.Decimal(security.top10Pct) }
+          // Доля вне диапазона 0-100 отбрасывается: 10 000
+          // в колонке процентов было бы прочитано как достоверное
+          // число, а это ошибка единиц измерения у провайдера.
+          ...(sharePctOrNull(security?.top10Pct) != null
+            ? { topHolderPct: new P.Decimal(sharePctOrNull(security?.top10Pct)!) }
             : {}),
           // Логотип не перезаписываем, если он уже есть: админ мог
           // поставить свой.

@@ -180,6 +180,50 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     auto.startAutoPublisher();
     scam.startScamChecker();
 
+    /**
+     * Всё, что пишет в таблицы кошельков, запускается только после
+     * проверки схемы.
+     *
+     * Схема здесь наливается вручную, а код катится автоматически,
+     * поэтому новый воркер регулярно оказывается в бою раньше нужной
+     * колонки. Prisma перечисляет колонки в SELECT явно — запрос
+     * к отставшей таблице падает целиком, и вместе с ним падает
+     * ответ, к кошелькам отношения не имеющий.
+     *
+     * Проверка строго на чтение: `db push` на старте боевого процесса
+     * был бы молчаливой миграцией в момент наибольшей нагрузки.
+     */
+    const { guardSchemaOnStartup } = await import('./lib/schema-guard.js');
+    const schemaReady = await guardSchemaOnStartup();
+
+    let stopWalletWorkers: (() => void) | null = null;
+
+    if (schemaReady) {
+      const [pool, ledger, discovery, walletRisk] = await Promise.all([
+        import('./services/okx-ws-pool.js'),
+        import('./workers/wallet-ledger-sync.js'),
+        import('./workers/wallet-discovery.js'),
+        import('./workers/radar-risk.js'),
+      ]);
+
+      pool.startActivityIngest();
+      ledger.startLedgerSync();
+      discovery.startWalletDiscovery();
+      walletRisk.startRadarRisk();
+
+      stopWalletWorkers = () => {
+        pool.stopActivityIngest();
+        ledger.stopLedgerSync();
+        discovery.stopWalletDiscovery();
+        walletRisk.stopRadarRisk();
+      };
+    } else {
+      // Остальное API продолжает работать: недоступность одной
+      // подсистемы не повод гасить страницы, которые к ней
+      // не обращаются.
+      app.log.warn('воркеры кошельков не запущены: схема базы не готова');
+    }
+
     stopWorkers = () => {
       price.stopPriceUpdater();
       limit.stopLimitWatcher();
@@ -191,6 +235,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       wallets.stopWalletTracker();
       auto.stopAutoPublisher();
       scam.stopScamChecker();
+      stopWalletWorkers?.();
     };
 
     app.log.warn(

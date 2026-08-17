@@ -47,3 +47,4 @@ export * from './okx-ws-model.js';
 export * from './okx-dex-history.js';
 // Полнота истории и позиции с неизвестной себестоимостью.
 export * from './ledger-completeness.js';
+export * from './decimal-fit.js';

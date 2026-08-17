@@ -12,6 +12,7 @@ import {
 } from '../services/market-data.js';
 import { fetchOkxTokens, isOkxConfigured, isOkxSupported } from '../services/okx.js';
 import { sendTelegram, escapeHtml, isTelegramConfigured } from '../services/telegram.js';
+import { decimalFor, DECIMAL_COLUMN } from '../lib/decimal.js';
 
 /**
  * Радар новых токенов.
@@ -184,7 +185,7 @@ export async function scanRadar(): Promise<{ found: number; notified: number }> 
           liquidityUsd: c.liquidityUsd != null ? new P.Decimal(c.liquidityUsd) : null,
           volume24hUsd: c.volume24hUsd != null ? new P.Decimal(c.volume24hUsd) : null,
           fdvUsd: c.fdvUsd != null ? new P.Decimal(c.fdvUsd) : null,
-          poolAgeHours: c.poolAgeHours != null ? new P.Decimal(c.poolAgeHours) : null,
+          poolAgeHours: decimalFor(c.poolAgeHours, DECIMAL_COLUMN.percent),
           source: c.source,
           riskScore: risk.score,
           riskFlags: risk.flags as unknown as P.InputJsonValue,
@@ -419,7 +420,7 @@ export async function addWatched(text: string): Promise<WatchResult> {
           liquidityUsd: p.liquidityUsd != null ? new P.Decimal(p.liquidityUsd) : null,
           volume24hUsd: p.volume24hUsd != null ? new P.Decimal(p.volume24hUsd) : null,
           fdvUsd: p.fdvUsd != null ? new P.Decimal(p.fdvUsd) : null,
-          poolAgeHours: ageHours != null ? new P.Decimal(ageHours) : null,
+          poolAgeHours: decimalFor(ageHours, DECIMAL_COLUMN.percent),
           source: 'manual',
           riskScore: risk.score,
           riskFlags: risk.flags as unknown as P.InputJsonValue,

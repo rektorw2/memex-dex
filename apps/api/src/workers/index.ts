@@ -14,6 +14,7 @@ import { startActivityIngest, stopActivityIngest } from '../services/okx-ws-pool
 import { startLedgerSync, stopLedgerSync } from './wallet-ledger-sync.js';
 import { logger } from '../lib/logger.js';
 import { prisma } from '../lib/prisma.js';
+import { guardSchemaOnStartup } from '../lib/schema-guard.js';
 
 startPriceUpdater();
 startLimitWatcher();
@@ -26,9 +27,23 @@ startWalletTracker();
 startAutoPublisher();
 startScamChecker();
 startRadarRisk();
-startWalletDiscovery();
-startActivityIngest();
-startLedgerSync();
+
+/**
+ * Воркеры кошельков запускаются только после проверки схемы.
+ *
+ * Отставшая база и запущенный на неё воркер дают худший исход
+ * из возможных: часть событий записывается, часть падает, и в итоге
+ * позиция собирается из неполного набора сделок — то есть выглядит
+ * посчитанной, будучи неверной.
+ */
+const walletWorkersReady = guardSchemaOnStartup().then((ready) => {
+  if (!ready) return false;
+
+  startWalletDiscovery();
+  startActivityIngest();
+  startLedgerSync();
+  return true;
+});
 
 const shutdown = async () => {
   logger.info('останавливаем воркеры');
@@ -43,9 +58,16 @@ const shutdown = async () => {
   stopAutoPublisher();
   stopScamChecker();
   stopRadarRisk();
-  stopWalletDiscovery();
-  stopActivityIngest();
-  stopLedgerSync();
+
+  // Останавливаем только то, что действительно запустилось: иначе
+  // при отставшей схеме остановка обращалась бы к невыполненному
+  // запуску и завершение процесса зависало бы на ошибке.
+  if (await walletWorkersReady) {
+    stopWalletDiscovery();
+    stopActivityIngest();
+    stopLedgerSync();
+  }
+
   await prisma.$disconnect();
   process.exit(0);
 };

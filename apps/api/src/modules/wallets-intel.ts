@@ -46,6 +46,27 @@ export const walletIntelRoutes: FastifyPluginAsync = async (app) => {
     return { ...getIngestor().status(), ledger: await ledgerStatus() };
   });
 
+  /**
+   * Готовность схемы базы.
+   *
+   * Отдельный маршрут, потому что отвечает на другой вопрос: не «что
+   * с лентой», а «совпадает ли база с выкаченным кодом». Наружу идут
+   * только имена недостающих объектов — ни SQL, ни строки подключения.
+   */
+  app.get('/wallets/schema-status', async () => {
+    const { checkSchema } = await import('../lib/schema-guard.js');
+    const r = await checkSchema();
+
+    return {
+      status: r.status,
+      checkedAt: r.checkedAt,
+      missingObjects: r.missingObjects,
+      requiredAction:
+        r.status === 'outdated' ? 'DATABASE_SCHEMA_UPDATE_REQUIRED' : null,
+      errorCode: r.errorCode ?? null,
+    };
+  });
+
   app.get('/wallets/activity', async (req) => {
     const q = z
       .object({

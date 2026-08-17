@@ -3,6 +3,7 @@ import { checkPoolHealth } from '@memex/core';
 import { prisma } from '../lib/prisma.js';
 import { logger } from '../lib/logger.js';
 import { fetchPoolForToken, isMarketDataSupported } from '../services/market-data.js';
+import { fitDecimal, DECIMAL_COLUMN } from '../lib/decimal.js';
 
 /**
  * Отслеживание судьбы найденных токенов.
@@ -88,7 +89,11 @@ export async function trackBatch(): Promise<number> {
     // расходятся, и цена перестаёт отражать результат вложения.
     let currentMultiple: P.Decimal | null = null;
     if (baseMcap && baseMcap.gt(0) && currentMcap) {
-      currentMultiple = currentMcap.div(baseMcap);
+      // Проверка вместимости обязательна: у находки, замеченной
+      // с капитализацией в центы, отношение достигает миллиардов,
+      // и переполнение уронило бы обновление находки целиком —
+      // вместе с ценой, ликвидностью и точками графика.
+      currentMultiple = fitDecimal(currentMcap.div(baseMcap), DECIMAL_COLUMN.percent);
     }
 
     const prevPeakMcap = e.peakMcapUsd;
@@ -96,7 +101,9 @@ export async function trackBatch(): Promise<number> {
 
     const peakMcap = isNewPeak ? currentMcap : prevPeakMcap;
     const peakMultiple =
-      baseMcap && baseMcap.gt(0) && peakMcap ? peakMcap.div(baseMcap) : e.peakMultiple;
+      baseMcap && baseMcap.gt(0) && peakMcap
+        ? fitDecimal(peakMcap.div(baseMcap), DECIMAL_COLUMN.percent)
+        : e.peakMultiple;
 
     // Точки графика: добавляем новую, старые вытесняем.
     const points: PricePoint[] = Array.isArray(e.pricePoints)

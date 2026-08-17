@@ -38,6 +38,7 @@ import { logger } from '../lib/logger.js';
 import { env } from '../lib/env.js';
 import { okxCall, isOkxWalletConfigured, OkxProviderError } from '../services/okx-client.js';
 import { unwrapOkx } from '@memex/core';
+import { checkSchema } from '../lib/schema-guard.js';
 import { walletLedgerRepo, type SyncJob } from './wallet-ledger-repo.js';
 import { rebuildWallet, type HistorySource, type RebuildResult } from './wallet-ledger-core.js';
 
@@ -317,13 +318,89 @@ export function stopLedgerSync(): void {
   timer = null;
 }
 
+export interface LedgerStatus {
+  status: 'healthy' | 'syncing' | 'error' | 'degraded' | 'schema_outdated';
+  workerRunning: boolean;
+  requiredAction: string | null;
+  missingObjects: string[];
+  pendingActivities: number | null;
+  deferredActivities: number | null;
+  failedActivities: number | null;
+  queuedJobs: number | null;
+  runningJobs: number | null;
+  staleLeases: number | null;
+  /**
+   * Полнота истории по кошелькам.
+   *
+   * Пока null: честно измерить её можно только сохраняя вердикт
+   * выгрузки по каждому кошельку, а для этого нужны колонки, которых
+   * в схеме нет. Ноль здесь был бы хуже пустоты — он означает
+   * «измерено, покрытия нет», а это утверждение мы делать не вправе.
+   */
+  historyCoveragePercent: number | null;
+  incompletePositions: number | null;
+  /** Отличает «нет данных» от «данные есть и равны нулю». */
+  metricsAvailable: boolean;
+  lastSyncAt: string | null;
+  lastSuccessfulSyncAt: string | null;
+  lastErrorCode: string | null;
+  oldestPendingAt: string | null;
+}
+
+/**
+ * Состояние, в котором ни одно число не измерено.
+ *
+ * Именно null, а не ноль. Ноль — это результат измерения, и в ленте
+ * он читается как «задач в очереди нет, всё разобрано». Показать его
+ * там, где мы просто не смогли спросить базу, значит соврать
+ * в сторону благополучия.
+ */
+const EMPTY_LEDGER_STATUS: LedgerStatus = {
+  status: 'degraded',
+  workerRunning: false,
+  requiredAction: null,
+  missingObjects: [],
+  pendingActivities: null,
+  deferredActivities: null,
+  failedActivities: null,
+  queuedJobs: null,
+  runningJobs: null,
+  staleLeases: null,
+  historyCoveragePercent: null,
+  incompletePositions: null,
+  metricsAvailable: false,
+  lastSyncAt: null,
+  lastSuccessfulSyncAt: null,
+  lastErrorCode: null,
+  oldestPendingAt: null,
+};
+
 /**
  * Состояние переноса для статуса источника.
  *
  * Нужно, чтобы отличить спокойный рынок от замершего воркера: снаружи
  * они выглядят одинаково — лента не пополняется, — а означают разное.
  */
-export async function ledgerStatus() {
+export async function ledgerStatus(): Promise<LedgerStatus> {
+  // Схема отстала от кода — считать нечего и незачем. Запрос
+  // к таблице с недостающей колонкой падает целиком, и без этой
+  // ветки отставшая база превратила бы состояние источника
+  // в пятисотку.
+  const schema = await checkSchema();
+
+  if (schema.status === 'outdated') {
+    return {
+      ...EMPTY_LEDGER_STATUS,
+      status: 'schema_outdated',
+      requiredAction: 'DATABASE_SCHEMA_UPDATE_REQUIRED',
+      missingObjects: schema.missingObjects,
+    };
+  }
+
+  if (schema.status === 'unavailable') {
+    return { ...EMPTY_LEDGER_STATUS, status: 'degraded', lastErrorCode: schema.errorCode ?? null };
+  }
+
   const now = new Date();
 
   const [pending, deferred, failed, queued, leased, stale, oldest, last] = await Promise.all([
@@ -364,12 +441,22 @@ export async function ledgerStatus() {
 
   return {
     status,
+    workerRunning: timer !== null,
+    requiredAction: null,
+    missingObjects: [],
     pendingActivities: pending,
     deferredActivities: deferred,
     failedActivities: failed,
     queuedJobs: queued,
     runningJobs: leased,
     staleLeases: stale,
+    // Эти две метрики требуют хранения вердикта выгрузки по каждому
+    // кошельку — то есть новых колонок. Их добавление отложено
+    // до управляемого db:push, а до тех пор здесь null: подставить
+    // ноль значило бы объявить измеренным то, что не измерялось.
+    historyCoveragePercent: null,
+    incompletePositions: null,
+    metricsAvailable: false,
     lastSyncAt: last?.lastSyncAt?.toISOString() ?? null,
     lastSuccessfulSyncAt: last?.lastSuccessAt?.toISOString() ?? null,
     // Только код: объект ошибки провайдера содержит заголовки запроса.

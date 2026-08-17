@@ -9,6 +9,7 @@ import { getAdapter, supportedChains } from '../chains/index.js';
 import { fetchPoolForToken } from '../services/market-data.js';
 import { runResearch, serializeResearch } from '../services/research.js';
 import { isAiConfigured } from '../services/ai-research.js';
+import { decimalOf, priceChangeOrNull } from '../lib/decimal.js';
 
 export const adminRoutes: FastifyPluginAsync = async (app) => {
 
@@ -183,7 +184,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
         priceUsd: pool.priceUsd != null ? new P.Decimal(pool.priceUsd) : null,
         liquidityUsd: pool.liquidityUsd != null ? new P.Decimal(pool.liquidityUsd) : null,
         volume24hUsd: pool.volume24hUsd != null ? new P.Decimal(pool.volume24hUsd) : null,
-        priceChange24h: pool.priceChange24h != null ? new P.Decimal(pool.priceChange24h) : null,
+        priceChange24h: decimalOf(priceChangeOrNull(pool.priceChange24h)),
         fdvUsd: pool.fdvUsd != null ? new P.Decimal(pool.fdvUsd) : null,
         riskScore: risk.score,
         isVerified: body.verify,

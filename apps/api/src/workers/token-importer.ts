@@ -11,6 +11,7 @@ import {
   MARKET_DATA_SOURCE,
 } from '../services/okx-market.js';
 import { supportedChains } from '../chains/index.js';
+import { decimalOf, priceChangeOrNull, sharePctOrNull } from '../lib/decimal.js';
 
 /**
  * Автоматическое наполнение витрины токенами.
@@ -195,7 +196,7 @@ export async function importTokens(): Promise<ImportStats[]> {
         priceUsd: pool.priceUsd != null ? new P.Decimal(pool.priceUsd) : null,
         liquidityUsd: pool.liquidityUsd != null ? new P.Decimal(pool.liquidityUsd) : null,
         volume24hUsd: pool.volume24hUsd != null ? new P.Decimal(pool.volume24hUsd) : null,
-        priceChange24h: pool.priceChange24h != null ? new P.Decimal(pool.priceChange24h) : null,
+        priceChange24h: decimalOf(priceChangeOrNull(pool.priceChange24h)),
         fdvUsd: pool.fdvUsd != null ? new P.Decimal(pool.fdvUsd) : null,
         riskScore: risk.score,
         metricsUpdated: new Date(),
@@ -206,8 +207,11 @@ export async function importTokens(): Promise<ImportStats[]> {
         ...(pool.holders != null ? { holders: pool.holders } : {}),
         ...(pool.buys24h != null ? { buys24h: pool.buys24h } : {}),
         ...(pool.sells24h != null ? { sells24h: pool.sells24h } : {}),
-        ...(pool.topHolderPct != null
-          ? { topHolderPct: new P.Decimal(pool.topHolderPct) }
+        // Доля вне диапазона 0-100 — не «очень большая доля»,
+        // а признак того, что провайдер прислал базисные пункты.
+        // Записывать её нельзя ни в каком виде.
+        ...(sharePctOrNull(pool.topHolderPct) != null
+          ? { topHolderPct: new P.Decimal(sharePctOrNull(pool.topHolderPct)!) }
           : {}),
       };
 
