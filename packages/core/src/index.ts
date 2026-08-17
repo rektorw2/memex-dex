@@ -60,3 +60,9 @@ export * from './risk-completeness.js';
 
 // Перевод ответов провайдеров в обязательные проверки.
 export * from './risk-signal-adapter.js';
+
+// Типы кошельков OKX: у каждого эндпоинта свой словарь.
+export * from './okx-wallet-type.js';
+
+// Детерминированный допуск автоматической покупки.
+export * from './risk-gate-decision.js';
