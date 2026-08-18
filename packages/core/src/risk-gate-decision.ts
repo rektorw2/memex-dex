@@ -33,7 +33,7 @@ import {
   ABSOLUTE_FAILURES,
   type RiskSignal,
 } from './risk-completeness.js';
-import { isAdverse, type WalletCategory } from './okx-wallet-type.js';
+import { isAdverse, type OkxWalletCategory } from './okx-wallet-type.js';
 
 export type GateDecision = 'ALLOW' | 'SKIP' | 'REVIEW_REQUIRED';
 
@@ -66,6 +66,11 @@ export const GATE_REASON = {
   limitsNotConfigured: 'LIMITS_NOT_CONFIGURED',
   providerUnavailable: 'PROVIDER_UNAVAILABLE',
   killSwitchActive: 'KILL_SWITCH_ACTIVE',
+  missingRequiredLimits: 'MISSING_REQUIRED_LIMITS',
+  riskDataUnavailableOrStale: 'RISK_DATA_UNAVAILABLE_OR_STALE',
+  sourcesDisagree: 'SOURCES_DISAGREE',
+  mixedSourceQuality: 'MIXED_SOURCE_QUALITY',
+  nearThreshold: 'NEAR_THRESHOLD',
 } as const;
 
 export type GateReason = (typeof GATE_REASON)[keyof typeof GATE_REASON];
@@ -134,7 +139,7 @@ export interface GateInput {
   /** Возраст сигнала на момент решения. */
   signalAgeMs: number | null;
   /** Категории кошельков, породивших сигнал. */
-  sourceCategories: WalletCategory[];
+  sourceCategories: OkxWalletCategory[];
 
   /** Котировка получена и ещё жива. */
   quoteFresh: boolean | null;
@@ -147,6 +152,22 @@ export interface GateInput {
   providerUnavailable?: boolean;
   /** Общий стоп-кран пользователя. */
   killSwitchActive?: boolean;
+
+  /**
+   * Когда получены проверки контракта.
+   *
+   * Нужен отдельно от самих проверок: результат может быть полным
+   * и при этом старым. Старый результат не запрещает покупку, но
+   * и не позволяет назвать её проверенной — за минуту ликвидность
+   * успевает исчезнуть.
+   */
+  riskCheckedAt?: number | null;
+  now?: number;
+  /** После какого возраста проверка считается несвежей. */
+  riskStaleAfterMs?: number;
+
+  /** Источники разошлись в значении. Пары «что» и «насколько». */
+  sourceDisagreements?: Array<{ field: string; spreadPct: number }>;
 }
 
 export interface GateResult {
@@ -361,11 +382,117 @@ export function evaluateGate(input: GateInput): GateResult {
     );
   }
 
-  if (reasons.length === 0) {
-    return { decision: 'ALLOW', reasons: [], explanations: [] };
+  // ── Запреты кончились ───────────────────────────────────────────
+  //
+  // Всё, что накопилось выше, — это `SKIP`: детерминированный запрет
+  // или отсутствие данных, без которых вывод невозможен.
+  if (reasons.length > 0) {
+    return { decision: 'SKIP', reasons, explanations };
   }
 
-  return { decision: 'SKIP', reasons, explanations };
+  /*
+   * Неоднозначность.
+   *
+   * Данные полны, запретов нет — и всё же назвать это проверенным
+   * нельзя. Такие случаи не запрещают покупку человеку, но не
+   * допускаются к автоматике: машина не умеет сомневаться, а здесь
+   * сомнение и есть содержание вердикта.
+   *
+   * Отдельное состояние нужно потому, что иначе выбор был бы между
+   * двумя одинаково неверными решениями: `ALLOW` выдал бы сомнение
+   * за уверенность, `SKIP` — молча спрятал бы находку, о которой
+   * человеку стоило узнать.
+   */
+  const doubts: GateReason[] = [];
+  const doubtWhy: string[] = [];
+
+  const doubt = (code: GateReason, why: string) => {
+    doubts.push(code);
+    doubtWhy.push(why);
+  };
+
+  // Проверки полны, но получены давно. Не запрет: за минуту
+  // ликвидность успевает исчезнуть, но и не факт, что исчезла.
+  const now = input.now ?? Date.now();
+  const staleAfter = input.riskStaleAfterMs;
+
+  if (input.riskCheckedAt != null && staleAfter != null && now - input.riskCheckedAt > staleAfter) {
+    doubt(
+      GATE_REASON.riskDataUnavailableOrStale,
+      `Проверки получены ${Math.round((now - input.riskCheckedAt) / 1000)} с назад`,
+    );
+  }
+
+  // Источники разошлись. Расхождение в цене или ликвидности между
+  // двумя источниками означает, что как минимум один из них неверен,
+  // и мы не знаем какой.
+  for (const d of input.sourceDisagreements ?? []) {
+    doubt(
+      GATE_REASON.sourcesDisagree,
+      `Источники разошлись по «${d.field}» на ${d.spreadPct}%`,
+    );
+  }
+
+  // Среди источников сигнала есть неизвестные категории. Не запрет —
+  // запрет дают только заведомо вредные, — но и не подтверждение:
+  // за неизвестным кошельком повторять не следует.
+  const unknownSources = input.sourceCategories.filter((c) => c === 'unknown');
+  if (unknownSources.length > 0) {
+    doubt(
+      GATE_REASON.mixedSourceQuality,
+      `Категория ${unknownSources.length} кошельков неизвестна`,
+    );
+  }
+
+  // Значение вплотную к порогу. Формально порог не нарушен, но
+  // разница в пределах погрешности измерения, а решение по обе
+  // стороны противоположное.
+  const nearLimit = (v: number | null, limit: number | undefined, label: string) => {
+    if (v == null || limit == null || limit === 0) return;
+    if (Math.abs(v - limit) / limit <= NEAR_THRESHOLD_RATIO) {
+      doubt(GATE_REASON.nearThreshold, `${label} вплотную к пределу: ${v} при ${limit}`);
+    }
+  };
+
+  nearLimit(input.priceImpactPct, L.maxPriceImpactPct, 'Влияние на цену');
+  nearLimit(input.liquidityUsd, L.minLiquidityUsd, 'Ликвидность');
+  nearLimit(input.topHolderPct, L.maxTopHolderPct, 'Концентрация');
+
+  if (doubts.length > 0) {
+    return { decision: 'REVIEW_REQUIRED', reasons: doubts, explanations: doubtWhy };
+  }
+
+  return { decision: 'ALLOW', reasons: [], explanations: [] };
+}
+
+/**
+ * Насколько близко к порогу считается «вплотную».
+ *
+ * Пять процентов от самого порога. Число не про рынок, а про
+ * точность измерения: разница меньше погрешности источника
+ * не должна решать судьбу сделки в одну или другую сторону.
+ */
+const NEAR_THRESHOLD_RATIO = 0.05;
+
+/**
+ * Разрешено ли автоматическое исполнение.
+ *
+ * Единственная функция, которой следует спрашивать перед покупкой.
+ * Сравнение `decision !== 'SKIP'` рано или поздно кто-нибудь
+ * напишет, и `REVIEW_REQUIRED` окажется допущенным к торговле.
+ */
+export function isAutoExecutionAllowed(result: GateResult): boolean {
+  return result.decision === 'ALLOW';
+}
+
+/**
+ * Стоит ли показать находку человеку.
+ *
+ * `REVIEW_REQUIRED` показывается: в этом его смысл. `SKIP` —
+ * по запросу, но не в основной выдаче.
+ */
+export function isVisibleToUser(result: GateResult): boolean {
+  return result.decision !== 'SKIP';
 }
 
 // ──────────────────────────── Вспомогательное ───────────────────────────────

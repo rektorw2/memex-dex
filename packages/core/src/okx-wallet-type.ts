@@ -32,7 +32,7 @@
  * и терять эти различия при переводе нельзя — снайпер и умные
  * деньги ведут себя противоположно.
  */
-export type WalletCategory =
+export type OkxWalletCategory =
   | 'smart_money'
   | 'kol'
   | 'whale'
@@ -53,7 +53,7 @@ export type WalletCategory =
  * покупает то, что продаёт жертвам; сборщик пакетов создаёт видимость
  * спроса. Повторять за ними — покупать чужую приманку.
  */
-export const COPYABLE_CATEGORIES: ReadonlySet<WalletCategory> = new Set([
+export const COPYABLE_CATEGORIES: ReadonlySet<OkxWalletCategory> = new Set([
   'smart_money',
   'kol',
   'whale',
@@ -66,7 +66,7 @@ export const COPYABLE_CATEGORIES: ReadonlySet<WalletCategory> = new Set([
  * Отдельно от «не копировать»: эти адреса не просто бесполезны
  * как ориентир, их покупка ухудшает оценку токена.
  */
-export const ADVERSE_CATEGORIES: ReadonlySet<WalletCategory> = new Set([
+export const ADVERSE_CATEGORIES: ReadonlySet<OkxWalletCategory> = new Set([
   'phishing_suspect',
   'bundled_trader',
   'sniper',
@@ -82,19 +82,19 @@ export const ADVERSE_CATEGORIES: ReadonlySet<WalletCategory> = new Set([
  * OKX добавляет категории, и молчаливое отнесение новой цифры
  * к умным деньгам было бы худшим из возможных умолчаний.
  */
-const SIGNAL_LIST_WALLET_TYPES: Record<string, WalletCategory> = {
+const SIGNAL_LIST_WALLET_TYPES: Record<string, OkxWalletCategory> = {
   '1': 'smart_money',
   '2': 'kol',
   '3': 'whale',
 };
 
 /** Разбор `walletType` из ответа Latest Signal List. */
-export function walletCategoryFromSignalList(raw: unknown): WalletCategory {
+export function walletCategoryFromSignalList(raw: unknown): OkxWalletCategory {
   return SIGNAL_LIST_WALLET_TYPES[normalizeCode(raw)] ?? 'unknown';
 }
 
 /** Код для запроса к Latest Signal List. null — категории там нет. */
-export function signalListWalletType(category: WalletCategory): string | null {
+export function signalListWalletType(category: OkxWalletCategory): string | null {
   const found = Object.entries(SIGNAL_LIST_WALLET_TYPES).find(([, v]) => v === category);
   return found?.[0] ?? null;
 }
@@ -108,7 +108,7 @@ export function signalListWalletType(category: WalletCategory): string | null {
  * ни в одной позиции. Проверено по документации эндпоинта
  * `GET /api/v6/dex/market/leaderboard/list`.
  */
-const LEADERBOARD_WALLET_TYPES: Record<string, WalletCategory> = {
+const LEADERBOARD_WALLET_TYPES: Record<string, OkxWalletCategory> = {
   '1': 'kol',
   '2': 'developer',
   '3': 'smart_money',
@@ -122,12 +122,12 @@ const LEADERBOARD_WALLET_TYPES: Record<string, WalletCategory> = {
 };
 
 /** Разбор `walletType` из ответа лидерборда. */
-export function walletCategoryFromLeaderboard(raw: unknown): WalletCategory {
+export function walletCategoryFromLeaderboard(raw: unknown): OkxWalletCategory {
   return LEADERBOARD_WALLET_TYPES[normalizeCode(raw)] ?? 'unknown';
 }
 
 /** Код для запроса к лидерборду. null — категории там нет. */
-export function leaderboardWalletType(category: WalletCategory): string | null {
+export function leaderboardWalletType(category: OkxWalletCategory): string | null {
   const found = Object.entries(LEADERBOARD_WALLET_TYPES).find(([, v]) => v === category);
   return found?.[0] ?? null;
 }
@@ -148,7 +148,7 @@ function normalizeCode(raw: unknown): string {
 }
 
 /** Название категории для интерфейса. */
-export const WALLET_CATEGORY_LABEL: Record<WalletCategory, string> = {
+export const WALLET_CATEGORY_LABEL: Record<OkxWalletCategory, string> = {
   smart_money: 'Умные деньги',
   kol: 'Инфлюенсер',
   whale: 'Кит',
@@ -163,11 +163,11 @@ export const WALLET_CATEGORY_LABEL: Record<WalletCategory, string> = {
 };
 
 /** Стоит ли повторять покупки этой категории. */
-export function isCopyable(category: WalletCategory): boolean {
+export function isCopyable(category: OkxWalletCategory): boolean {
   return COPYABLE_CATEGORIES.has(category);
 }
 
 /** Ухудшает ли присутствие этой категории оценку токена. */
-export function isAdverse(category: WalletCategory): boolean {
+export function isAdverse(category: OkxWalletCategory): boolean {
   return ADVERSE_CATEGORIES.has(category);
 }

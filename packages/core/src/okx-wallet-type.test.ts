@@ -17,7 +17,7 @@ import {
   isCopyable,
   isAdverse,
   WALLET_CATEGORY_LABEL,
-  type WalletCategory,
+  type OkxWalletCategory,
 } from './okx-wallet-type.js';
 
 describe('словари не совпадают', () => {
@@ -86,7 +86,7 @@ describe('разбор кодов сигналов', () => {
 });
 
 describe('разбор кодов лидерборда', () => {
-  const cases: Array<[string, WalletCategory]> = [
+  const cases: Array<[string, OkxWalletCategory]> = [
     ['1', 'kol'],
     ['2', 'developer'],
     ['3', 'smart_money'],
@@ -183,7 +183,7 @@ describe('пригодность для копирования', () => {
 
 describe('названия', () => {
   it('у каждой категории есть подпись', () => {
-    const categories = Object.keys(WALLET_CATEGORY_LABEL) as WalletCategory[];
+    const categories = Object.keys(WALLET_CATEGORY_LABEL) as OkxWalletCategory[];
 
     for (const c of categories) {
       expect(WALLET_CATEGORY_LABEL[c].length).toBeGreaterThan(0);
