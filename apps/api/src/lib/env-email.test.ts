@@ -8,6 +8,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const KEYS = [
   'NODE_ENV',
+  'DATABASE_URL',
+  'JWT_SECRET',
   'EMAIL_PROVIDER',
   'EMAIL_FROM',
   'RESEND_API_KEY',
@@ -17,6 +19,11 @@ const KEYS = [
   'SMTP_USER',
   'SMTP_PASS',
 ] as const;
+
+const REQUIRED_TEST_ENV = {
+  DATABASE_URL: 'postgresql://test:test@localhost:5432/memex_test',
+  JWT_SECRET: 'test-only-jwt-secret-at-least-32-characters',
+};
 
 const COMPLETE_SMTP = {
   EMAIL_PROVIDER: 'smtp',
@@ -50,6 +57,7 @@ async function load(overrides: Record<string, string>): Promise<Error | null> {
   process.env.EMAIL_PROVIDER = 'disabled';
   process.env.SMTP_PORT = '465';
   process.env.SMTP_SECURE = 'true';
+  Object.assign(process.env, REQUIRED_TEST_ENV);
   Object.assign(process.env, overrides);
 
   vi.resetModules();
@@ -92,6 +100,7 @@ describe('SMTP при старте', () => {
     for (const key of KEYS) process.env[key] = '';
     process.env.NODE_ENV = 'test';
     Object.assign(process.env, {
+      ...REQUIRED_TEST_ENV,
       ...COMPLETE_SMTP,
       SMTP_PORT: '587',
       SMTP_SECURE: 'false',
