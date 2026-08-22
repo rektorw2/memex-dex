@@ -33,31 +33,6 @@ import { handleCoinbaseEvent } from '../services/payments/coinbase-checkout.js';
  * и его доставкой перевод мог измениться.
  */
 export const webhookRoutes: FastifyPluginAsync = async (app) => {
-  /**
-   * Разбор тела в исходных байтах.
-   *
-   * Fastify по умолчанию разбирает JSON и отдаёт объект. Для подписи
-   * нужны байты: `JSON.parse` с последующей пересборкой меняет
-   * порядок ключей, пробелы и запись чисел, и подпись перестаёт
-   * сходиться.
-   */
-  app.addContentTypeParser(
-    'application/json',
-    { parseAs: 'buffer' },
-    (req, body, done) => {
-      if (req.url.startsWith('/api/webhooks/')) {
-        done(null, body);
-        return;
-      }
-
-      try {
-        done(null, JSON.parse((body as Buffer).toString('utf8')));
-      } catch (e) {
-        done(e as Error, undefined);
-      }
-    },
-  );
-
   app.post(
     '/webhooks/bridge',
     { config: { rateLimit: { max: 300, timeWindow: '1m' } } },

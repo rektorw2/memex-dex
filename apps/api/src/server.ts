@@ -76,11 +76,17 @@ export async function buildServer() {
    */
   app.addContentTypeParser(
     'application/json',
-    { parseAs: 'string' },
-    (_req, body: string, done) => {
-      if (!body || body.trim() === '') return done(null, {});
+    { parseAs: 'buffer' },
+    (req, body: Buffer, done) => {
+      // Подпись платёжного webhook считается по исходным байтам.
+      // Разбор и повторная сериализация JSON изменили бы пробелы,
+      // порядок ключей или запись чисел и сломали проверку подписи.
+      if (req.url.startsWith('/api/webhooks/')) return done(null, body);
+
+      const text = body.toString('utf8');
+      if (!text || text.trim() === '') return done(null, {});
       try {
-        done(null, JSON.parse(body));
+        done(null, JSON.parse(text));
       } catch (err) {
         (err as { statusCode?: number }).statusCode = 400;
         done(err as Error, undefined);
