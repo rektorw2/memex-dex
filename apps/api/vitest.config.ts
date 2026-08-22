@@ -14,6 +14,9 @@ export default defineConfig({
       NODE_ENV: 'test',
       DATABASE_URL: 'postgresql://test:test@localhost:5432/memex_test',
       JWT_SECRET: 'test-only-jwt-secret-at-least-32-characters',
+      KMS_PROVIDER: 'local',
+      // 32 нулевых байта в base64: намеренно непригодный вне тестов ключ.
+      KMS_LOCAL_MASTER_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
       EMAIL_PROVIDER: 'disabled',
       SUBSCRIPTION_PAYMENT_PROVIDER: 'disabled',
       BRIDGE_PAYMENTS_ENABLED: 'false',
