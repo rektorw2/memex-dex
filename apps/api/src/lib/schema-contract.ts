@@ -54,18 +54,54 @@ export interface DbSnapshot {
 // ──────────────────────────── Что требуется ─────────────────────────────────
 
 /**
- * Требования воркера пересчёта.
+ * Минимальная схема, без которой выкаченный API не может работать.
  *
  * Имена — настоящие, из `prisma/schema.prisma`. В частности, срок
  * следующего запуска называется `dueAt`, а не `nextRunAt`: сверять
  * надо с тем, что есть, иначе проверка будет сообщать о поломке
  * там, где её нет.
  *
- * Список намеренно не полон по отношению к схеме: сюда входит только
- * то, без чего воркер не может работать. Проверять каждую колонку
- * значило бы выключать пересчёт из-за поля, которого он не касается.
+ * Список намеренно не полон по отношению к схеме: сюда входят поля,
+ * которые Prisma читает в критических сценариях регистрации, доступа,
+ * оплаты и пересчёта кошельков. Именно поэтому здесь есть и `User`, и
+ * таблицы подписок: прежняя проверка видела только кошельки, отвечала
+ * `ok`, а регистрация при этом падала на отсутствующей колонке кода
+ * подтверждения почты.
  */
 export const REQUIRED_TABLES: Record<string, string[]> = {
+  User: [
+    'id',
+    'email',
+    'passwordHash',
+    'emailVerifiedAt',
+    'emailCodeHash',
+    'emailCodeIssuedAt',
+    'emailCodeExpires',
+    'emailCodeAttempts',
+  ],
+  Subscription: ['id', 'userId', 'plan', 'status', 'startsAt', 'expiresAt', 'source'],
+  EntitlementAudit: [
+    'id',
+    'userId',
+    'subscriptionId',
+    'previousPlan',
+    'nextPlan',
+    'reason',
+    'source',
+    'occurredAt',
+  ],
+  PaymentCustomer: ['id', 'userId', 'provider', 'kycState', 'tosAccepted'],
+  SubscriptionPayment: [
+    'id',
+    'userId',
+    'plan',
+    'provider',
+    'clientReference',
+    'state',
+    'priceAmount',
+    'termDays',
+  ],
+  WebhookReceipt: ['id', 'provider', 'eventId', 'eventType', 'outcome', 'receivedAt'],
   WalletActivity: [
     'id',
     'chain',
@@ -124,6 +160,10 @@ export const REQUIRED_TABLES: Record<string, string[]> = {
  * при пересечении сокета и опроса.
  */
 export const REQUIRED_UNIQUES: Array<{ table: string; columns: string[] }> = [
+  { table: 'User', columns: ['email'] },
+  { table: 'PaymentCustomer', columns: ['userId', 'provider'] },
+  { table: 'SubscriptionPayment', columns: ['clientReference'] },
+  { table: 'WebhookReceipt', columns: ['provider', 'eventId'] },
   { table: 'WalletSyncQueue', columns: ['chain', 'walletAddress'] },
   { table: 'WalletEconomicTrade', columns: ['key'] },
   { table: 'WalletActivity', columns: ['id'] },
@@ -186,4 +226,3 @@ function sameColumns(a: string[], b: string[]): boolean {
   const sortedB = [...b].sort();
   return sortedA.every((v, i) => v === sortedB[i]);
 }
-

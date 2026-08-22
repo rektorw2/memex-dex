@@ -96,6 +96,20 @@ describe('неполная схема', () => {
     expect(compareSchema(snapshot)).toContain('WalletActivity.ledgerState');
   });
 
+  it('находит отсутствующее поле подтверждения почты', () => {
+    const snapshot = fullSnapshot();
+    snapshot.tables.User = snapshot.tables.User!.filter((c) => c !== 'emailCodeHash');
+
+    expect(compareSchema(snapshot)).toContain('User.emailCodeHash');
+  });
+
+  it('не считает схему готовой без таблицы подписок', () => {
+    const snapshot = fullSnapshot();
+    delete snapshot.tables.Subscription;
+
+    expect(compareSchema(snapshot)).toContain('Subscription (таблица отсутствует)');
+  });
+
   it('отсутствие уникальности очереди — поломка, а не мелочь', () => {
     // Без неё два процесса создадут две задачи на один кошелёк
     // и будут пересчитывать его одновременно, получая разные
@@ -141,6 +155,20 @@ describe('неполная схема', () => {
 });
 
 describe('состав требований', () => {
+  it('проверяет поля, от которых зависит регистрация и подтверждение почты', () => {
+    expect(REQUIRED_TABLES.User).toEqual(
+      expect.arrayContaining([
+        'email',
+        'passwordHash',
+        'emailVerifiedAt',
+        'emailCodeHash',
+        'emailCodeIssuedAt',
+        'emailCodeExpires',
+        'emailCodeAttempts',
+      ]),
+    );
+  });
+
   it('очередь проверяется по dueAt — так поле называется в схеме', () => {
     // Сверяться надо с тем, что есть. Проверка по выдуманному имени
     // сообщала бы о поломке там, где её нет, и выключала бы воркер
