@@ -83,6 +83,7 @@ COPY --from=build /app/packages/core/package.json ./packages/core/
 COPY --from=build /app/packages/shared ./packages/shared
 COPY --from=build /app/apps/api/dist ./apps/api/dist
 COPY --from=build /app/apps/api/package.json ./apps/api/
+COPY --from=build /app/apps/api/entrypoint.sh ./apps/api/entrypoint.sh
 COPY --from=build /app/prisma ./prisma
 COPY --from=build /app/package.json ./
 
@@ -93,4 +94,4 @@ EXPOSE 10000
 # по таймауту и обрывает транзакции на полпути.
 ENTRYPOINT ["/usr/bin/tini", "--"]
 
-CMD ["node", "apps/api/dist/server.js"]
+CMD ["sh", "apps/api/entrypoint.sh"]
