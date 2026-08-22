@@ -27,6 +27,14 @@ export interface AccessState {
   trialExpiresAt: string | null;
   trialRemainingSeconds: number;
   canStartTrial: boolean;
+  /**
+   * Подтверждён ли адрес почты.
+   *
+   * Нужен первому сценарию: без подтверждения пробный период
+   * не выдаётся, и шаг «подтвердите почту» должен появляться
+   * до нажатия, а не после отказа.
+   */
+  emailVerified: boolean;
   upgradeRequired: boolean;
   serverTime: string;
 }

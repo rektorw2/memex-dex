@@ -2,6 +2,7 @@
 
 import { usePathname } from 'next/navigation';
 import Link from 'next/link';
+import { useVisibleSections } from '@/lib/sections';
 
 /**
  * Навигация широкого экрана.
@@ -35,6 +36,10 @@ export const SECTIONS = [
 export function MainNav() {
   const pathname = usePathname();
 
+  // Показываются только те разделы, куда этого человека пустят.
+  // Пункт, ведущий на редирект, читается как поломка продукта.
+  const sections = useVisibleSections(SECTIONS);
+
   const isActive = (href: string) =>
     pathname === href || pathname.startsWith(`${href}/`);
 
@@ -49,7 +54,7 @@ export function MainNav() {
 
   return (
     <nav className="hidden min-w-0 gap-1 md:flex">
-      {SECTIONS.map((n) => (
+      {sections.map((n) => (
         <Link key={n.href} href={n.href} className={linkCls(n.href)}>
           {n.label}
         </Link>

@@ -1,16 +1,33 @@
 'use client';
 
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { Suspense, useState } from 'react';
+import Link from 'next/link';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { withNext, safeNextPath } from '@memex/core';
 import { api, setToken, ApiError, NetworkError } from '@/lib/api';
+import { useAccess } from '@/lib/access';
 
 /**
- * Вход в систему. В dev-режиме показывает готовые учётные записи из сида —
- * без этого локальный запуск упирается в невозможность получить токен.
+ * Вход и регистрация.
+ *
+ * Куда идти после входа, решает не эта страница. Она знает только
+ * одно: человек мог прийти сюда с закрытого адреса, и вернуть его
+ * надо туда же. Всё остальное — есть ли план, подтверждена ли
+ * почта — выясняет онбординг у сервера.
+ *
+ * В dev-режиме показывает готовые учётные записи из сида: без этого
+ * локальный запуск упирается в невозможность получить токен.
  */
-export default function LoginPage() {
+function LoginForm() {
   const router = useRouter();
-  const [mode, setMode] = useState<'login' | 'register'>('login');
+  const params = useSearchParams();
+  const { reload } = useAccess();
+
+  // Кнопка «Регистрация» на первом экране приводит сразу на нужную
+  // форму, а не на вход, где её ещё надо найти.
+  const [mode, setMode] = useState<'login' | 'register'>(
+    params.get('mode') === 'register' ? 'register' : 'login',
+  );
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [totp, setTotp] = useState('');
@@ -46,7 +63,23 @@ export default function LoginPage() {
       setToken(res.accessToken);
       localStorage.setItem('refreshToken', res.refreshToken);
       localStorage.setItem('role', res.role);
-      router.push(res.role === 'ADMIN' ? '/admin' : '/');
+
+      // Права перечитываются до перехода: иначе следующая страница
+      // отрисуется по состоянию гостя и мигнёт закрытым интерфейсом.
+      await reload();
+
+      // Адрес, с которого человека сюда отправили, идёт дальше —
+      // в онбординг, а тот вернёт человека туда, куда он шёл.
+      //
+      // Проверка «начинается с косой черты» одна недостаточна:
+      // `//evil.example/x` ей удовлетворяет, а браузер прочитает
+      // его как чужой хост. Это открытый редирект, и стоит он
+      // введённого у мошенника пароля.
+      const next = safeNextPath(params.get('next'));
+
+      // Онбординг сам решит, показывать выбор тарифа или пропустить:
+      // он спрашивает сервер, а не помнит о себе.
+      router.push(withNext('/onboarding', next));
     } catch (err) {
       // Сервер сигналит, что пароль верный, но нужен второй фактор.
       if (err instanceof ApiError && err.status === 401 && err.message.includes('2FA')) {
@@ -143,6 +176,12 @@ export default function LoginPage() {
         >
           {mode === 'login' ? 'Нет аккаунта? Зарегистрироваться' : 'Уже есть аккаунт? Войти'}
         </button>
+
+        <p className="text-center text-xs text-muted">
+          <Link href="/terminal" className="hover:text-white">
+            Посмотреть терминал без входа
+          </Link>
+        </p>
       </form>
 
       {isDev && (
@@ -167,5 +206,13 @@ export default function LoginPage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={<p className="mt-16 text-center text-muted">Загружаем…</p>}>
+      <LoginForm />
+    </Suspense>
   );
 }

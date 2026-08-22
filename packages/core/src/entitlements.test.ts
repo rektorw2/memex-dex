@@ -86,22 +86,32 @@ describe('пробный период', () => {
     expect(trialExpiresAt(NOW)).toBe(NOW + TRIAL_DURATION_MS);
   });
 
-  it('открывает радар, терминал и ручную покупку', () => {
+  it('открывает радар, терминал, ручную покупку и смарт-кошельки', () => {
     const e = entitlementFor('TRIAL');
 
     expect(can(e, 'RADAR_ACCESS')).toBe(true);
     expect(can(e, 'TERMINAL_ACCESS')).toBe(true);
     expect(can(e, 'MANUAL_TRADE')).toBe(true);
     expect(can(e, 'WALLET_DEPOSIT')).toBe(true);
+    expect(can(e, 'SMART_WALLETS_ACCESS')).toBe(true);
   });
 
-  it('не открывает смарт-кошельки, копирование и автоматику', () => {
+  it('даёт ровно то же, что PRO', () => {
+    // Пробный период продаётся как «Pro — Free trial». Дать под этим
+    // названием меньше, чем Pro, значит соврать в подписи кнопки,
+    // и человек узнает об этом, упёршись в закрытый раздел.
+    const trial = [...entitlementFor('TRIAL').capabilities].sort();
+    const pro = [...entitlementFor('PRO').capabilities].sort();
+
+    expect(trial).toEqual(pro);
+  });
+
+  it('не открывает копирование и автоматику', () => {
     // Показать автоматическую торговлю бесплатно значит дать машине
     // распоряжаться деньгами до того, как человек решил, доверяет ли он ей.
     const e = entitlementFor('TRIAL');
 
     for (const c of [
-      'SMART_WALLETS_ACCESS',
       'LEADER_COPY_BUY',
       'SEMI_AUTO_TRADE',
       'AUTO_BUY',
@@ -220,12 +230,14 @@ describe('лестница планов', () => {
     }
   });
 
-  it('PRO добавляет к пробному только смарт-кошельки', () => {
+  it('PRO не добавляет к пробному ничего', () => {
+    // Разница между ними не в возможностях, а в сроке и в том, что
+    // пробный период даётся один раз за всё время.
     const added = [...entitlementFor('PRO').capabilities].filter(
       (c) => !entitlementFor('TRIAL').capabilities.has(c),
     );
 
-    expect(added).toEqual(['SMART_WALLETS_ACCESS']);
+    expect(added).toEqual([]);
   });
 
   it('SEMI_AUTO добавляет копирование и полуавтомат', () => {
@@ -253,7 +265,9 @@ describe('лестница планов', () => {
 describe('какой план нужен', () => {
   it('отказ можно объяснить именем плана', () => {
     // «Нужен PRO» помогает, «доступ запрещён» — нет.
-    expect(requiredPlanFor('SMART_WALLETS_ACCESS')).toBe('PRO');
+    // Смарт-кошельки входят в пробный период, поэтому наименьший
+    // план, который их даёт, — TRIAL, а не PRO.
+    expect(requiredPlanFor('SMART_WALLETS_ACCESS')).toBe('TRIAL');
     expect(requiredPlanFor('LEADER_COPY_BUY')).toBe('SEMI_AUTO');
     expect(requiredPlanFor('AUTO_BUY')).toBe('FULL_AUTO');
     expect(requiredPlanFor('RADAR_ACCESS')).toBe('TRIAL');
@@ -280,10 +294,11 @@ describe('что останавливается при понижении', () =
     expect(stoppedByDowngrade('PRO', 'FULL_AUTO')).toEqual([]);
   });
 
-  it('с пробного периода на ничего теряются поиск и покупка', () => {
+  it('с пробного периода на ничего теряются поиск, покупка и смарт-кошельки', () => {
     expect(stoppedByDowngrade('TRIAL', 'EXPIRED').sort()).toEqual([
       'MANUAL_TRADE',
       'RADAR_ACCESS',
+      'SMART_WALLETS_ACCESS',
       'TERMINAL_ACCESS',
       'WALLET_DEPOSIT',
     ]);

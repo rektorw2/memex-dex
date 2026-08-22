@@ -4,7 +4,9 @@ import { Suspense, useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import useSWR from 'swr';
+import { shouldRequestPrivateData, loginHref, tradePanelState } from '@memex/core';
 import { fetcher, fmtPrice, fmtUsd, fmtPct } from '@/lib/api';
+import { useAccess } from '@/lib/access';
 import { CHAINS, chainLabel, geckoTerminalPool } from '@/lib/chains';
 import { PriceChart } from '@/components/PriceChart';
 import { TradePanel } from '@/components/TradePanel';
@@ -52,7 +54,23 @@ function TokenPage() {
     { refreshInterval: 15_000 },
   );
 
-  const { data: portfolio } = useSWR<any>('/portfolio', fetcher, { refreshInterval: 15_000 });
+  // Страница токена публична, как и терминал. Приватного у гостя
+  // быть не может, и спрашивать за него незачем: запрос вернёт 401,
+  // а в консоли останется ошибка.
+  const { anonymous, loading: accessLoading, access } = useAccess();
+
+  const panel = tradePanelState({
+    authenticated: !anonymous,
+    capabilities: access?.capabilities ?? [],
+  });
+
+  const canTrade = panel === 'trade';
+
+  const { data: portfolio } = useSWR<any>(
+    shouldRequestPrivateData({ authenticated: !anonymous, accessLoading }) ? '/portfolio' : null,
+    fetcher,
+    { refreshInterval: 15_000 },
+  );
   const { data: tokens } = useSWR<any[]>('/tokens?limit=200', fetcher);
   const usdc = tokens?.find((t) => t.symbol === 'USDC');
 
@@ -70,7 +88,7 @@ function TokenPage() {
 
   return (
     <div className="space-y-4">
-      <Link href="/" className="text-sm text-muted hover:text-white inline-block">
+      <Link href="/terminal" className="text-sm text-muted hover:text-white inline-block">
         ← К списку
       </Link>
 
@@ -308,7 +326,10 @@ function TokenPage() {
 
         {/* Правая колонка */}
         <div className="col-span-12 xl:col-span-4 space-y-4">
-          {usdc && !t.isQuote && (
+          {/* Форма показывается по серверной возможности, а не по факту
+              входа: заявка от человека без доступа всё равно вернётся
+              отказом, и увидеть он должен предложение, а не ошибку. */}
+          {usdc && !t.isQuote && canTrade && (
             <TradePanel
               tokenId={t.id}
               tokenSymbol={t.symbol}
@@ -319,6 +340,25 @@ function TokenPage() {
               availableQuote={Number(portfolio?.cashUsd ?? 0)}
               availableToken={Number(position?.quantity ?? 0)}
             />
+          )}
+
+          {usdc && !t.isQuote && !canTrade && (
+            <div className="panel p-4 text-center space-y-2">
+              <p className="text-sm text-muted">
+                {anonymous ? 'Торговля после регистрации' : 'Торговля на действующем плане'}
+              </p>
+              <p className="text-xs leading-relaxed text-muted/70">
+                {anonymous
+                  ? 'Котировки, график и оценка риска открыты без входа'
+                  : 'Свои позиции видны, продать и вывести можно всегда'}
+              </p>
+              <Link
+                href={anonymous ? loginHref(null, { register: true }) : '/onboarding'}
+                className="btn-primary inline-block text-sm"
+              >
+                {anonymous ? 'Начать бесплатно' : 'Включить доступ'}
+              </Link>
+            </div>
           )}
 
           {position && (
@@ -373,7 +413,7 @@ function Empty({ children }: { children: React.ReactNode }) {
   return (
     <div className="py-24 text-center text-muted">
       <p>{children}</p>
-      <Link href="/" className="text-accent text-sm mt-3 inline-block">← К списку токенов</Link>
+      <Link href="/terminal" className="text-accent text-sm mt-3 inline-block">← К списку токенов</Link>
     </div>
   );
 }

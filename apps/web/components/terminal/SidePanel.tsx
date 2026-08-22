@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { loginHref } from '@memex/core';
 import { TradePanel } from '@/components/TradePanel';
 import { fmtUsd } from '@/lib/api';
 import type { Token } from './types';
@@ -15,6 +16,24 @@ import type { Token } from './types';
  * Если торговать нечем, колонка не остаётся пустой: пустая треть
  * экрана выглядит как незагрузившийся интерфейс, а не как отсутствие
  * возможности.
+ *
+ * Три разных состояния, и путать их нельзя.
+ *
+ * Гость — терминал открыт без входа, ему предлагается регистрация.
+ *
+ * Вошедший без действующего доступа — ему предлагается онбординг.
+ * Раньше он получал рабочую форму покупки, потому что признаком
+ * считался факт входа. Форма отправляла заявку, сервер отвечал
+ * отказом, и человек видел ошибку там, где должен был увидеть
+ * предложение. Признак теперь другой: серверная возможность
+ * `MANUAL_TRADE`.
+ *
+ * Вошедший с доступом — форма.
+ *
+ * Портфель при этом показывается всем вошедшим независимо от плана:
+ * `PORTFOLIO_READ` не отбирается никогда, и человек с истёкшей
+ * подпиской обязан видеть свои позиции, чтобы иметь возможность
+ * их продать.
  */
 
 interface Props {
@@ -22,10 +41,33 @@ interface Props {
   quoteToken: Token | undefined;
   portfolio: any;
   isLoading?: boolean;
+  /**
+   * Вошёл ли человек. Приходит из ответа сервера о правах.
+   *
+   * Раньше это выводили из наличия портфеля, и вывод был неверным:
+   * у вошедшего человека портфель может не загрузиться, и тогда
+   * интерфейс объявлял бы его гостем и предлагал войти повторно.
+   */
+  anonymous: boolean;
+  /**
+   * Есть ли серверная возможность торговать.
+   *
+   * Не «вошёл ли»: вход и право покупать — разные вещи, и форма,
+   * показанная по первому признаку, отправляет заявку, которую
+   * сервер отклонит.
+   */
+  canTrade: boolean;
 }
 
-export function SidePanel({ token, quoteToken, portfolio, isLoading }: Props) {
-  const isAuthed = portfolio != null;
+export function SidePanel({
+  token,
+  quoteToken,
+  portfolio,
+  isLoading,
+  anonymous,
+  canTrade,
+}: Props) {
+  const isAuthed = !anonymous;
   const pnl = Number(portfolio?.unrealizedPnlUsd ?? 0);
 
   return (
@@ -43,11 +85,17 @@ export function SidePanel({ token, quoteToken, portfolio, isLoading }: Props) {
         ) : !isAuthed ? (
           <div className="space-y-3">
             <p className="text-xs leading-relaxed text-muted">
-              Войдите, чтобы видеть свои позиции и торговать. Котировки и графики
-              доступны без входа.
+              Котировки, графики и оценка риска открыты без входа. Позиции
+              и торговля — после регистрации.
             </p>
-            <Link href="/login" className="btn-primary w-full text-sm">
-              Войти
+            <Link href={loginHref(null, { register: true })} className="btn-primary block w-full text-center text-sm">
+              Создать аккаунт
+            </Link>
+            <Link
+              href={loginHref(null)}
+              className="block w-full text-center text-xs text-muted hover:text-white"
+            >
+              У меня уже есть аккаунт
             </Link>
           </div>
         ) : (
@@ -72,7 +120,7 @@ export function SidePanel({ token, quoteToken, portfolio, isLoading }: Props) {
       </div>
 
       {/* ─── Торговля ───────────────────────────────────────────────── */}
-      {isAuthed && token && quoteToken ? (
+      {isAuthed && canTrade && token && quoteToken ? (
         <TradePanel
           tokenId={token.id}
           tokenSymbol={token.symbol}
@@ -89,18 +137,35 @@ export function SidePanel({ token, quoteToken, portfolio, isLoading }: Props) {
         <div className="panel flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center">
           <p className="text-sm text-muted">
             {!isAuthed
-              ? 'Торговля после входа'
-              : !token
-                ? 'Выберите токен'
-                : 'Нет котировочной валюты'}
+              ? 'Торговля после регистрации'
+              : !canTrade
+                ? 'Торговля на действующем плане'
+                : !token
+                  ? 'Выберите токен'
+                  : 'Нет котировочной валюты'}
           </p>
+
           <p className="max-w-[220px] text-xs leading-relaxed text-muted/70">
             {!isAuthed
               ? 'Ордера исполняются по реальным котировкам в бумажном режиме — деньги не задействованы'
-              : !token
-                ? 'Форма покупки появится здесь'
-                : 'В этой сети не заведён USDC или другой котировочный токен — добавьте его в админке'}
+              : !canTrade
+                ? 'Свои позиции видны, продать и вывести можно всегда. Для покупки включите бесплатный период'
+                : !token
+                  ? 'Форма покупки появится здесь'
+                  : 'В этой сети не заведён USDC или другой котировочный токен — добавьте его в админке'}
           </p>
+
+          {!isAuthed && (
+            <Link href={loginHref(null, { register: true })} className="btn-primary mt-1 text-sm">
+              Начать бесплатно
+            </Link>
+          )}
+
+          {isAuthed && !canTrade && (
+            <Link href="/onboarding" className="btn-primary mt-1 text-sm">
+              Включить доступ
+            </Link>
+          )}
         </div>
       )}
 

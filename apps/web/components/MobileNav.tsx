@@ -4,6 +4,15 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { SECTIONS } from './MainNav';
+import { useVisibleSections, type Section } from '@/lib/sections';
+
+/**
+ * Второстепенные пункты нижнего блока.
+ *
+ * Отдельный список, но не отдельные правила: доступность считает
+ * тот же сторож, что и для основной навигации.
+ */
+const SECONDARY: readonly Section[] = [{ href: '/radar/alerts', label: 'Уведомления' }];
 
 /**
  * Мобильная навигация: панель во всю высоту слева.
@@ -78,6 +87,16 @@ export function MobileNav() {
   const [open, setOpen] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const pathname = usePathname();
+
+  // Только доступные разделы: пункт, ведущий на редирект, читается
+  // как поломка продукта, а не как закрытый раздел.
+  const sections = useVisibleSections(SECTIONS);
+
+  // Второстепенные пункты живут отдельным списком, но решает по ним
+  // тот же сторож. Отдельная проверка здесь разошлась бы с основной
+  // навигацией — и «Уведомления» остались бы видны гостю ровно
+  // потому, что о них забыли.
+  const secondary = useVisibleSections(SECONDARY);
 
   const buttonRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -222,8 +241,8 @@ export function MobileNav() {
         {/* Собственная прокрутка: список разделов длиннее экрана
             на невысоких телефонах, а страница под панелью заблокирована. */}
         <nav className="scroll-y min-h-0 flex-1 py-2">
-          <Item href="/" label="Терминал" icon={TERMINAL_ICON} active={pathname === '/'} />
-          {SECTIONS.map((s) => (
+          <Item href="/terminal" label="Терминал" icon={TERMINAL_ICON} active={pathname === '/terminal'} />
+          {sections.map((s) => (
             <Item
               key={s.href}
               href={s.href}
@@ -235,10 +254,14 @@ export function MobileNav() {
         </nav>
 
         {/* ── Второстепенное ──────────────────────────────────── */}
-        <div className="shrink-0 border-t border-border py-2">
-          <SecondaryItem href="/radar/alerts" label="Уведомления" />
-          {isAdmin && <SecondaryItem href="/admin" label="Админка" accent />}
-        </div>
+        {(secondary.length > 0 || isAdmin) && (
+          <div className="shrink-0 border-t border-border py-2">
+            {secondary.map((s) => (
+              <SecondaryItem key={s.href} href={s.href} label={s.label} />
+            ))}
+            {isAdmin && <SecondaryItem href="/admin" label="Админка" accent />}
+          </div>
+        )}
       </div>
     </>
   );

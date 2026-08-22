@@ -12,6 +12,7 @@ import {
   type PlanCode,
 } from '@memex/core';
 import { activeSubscription } from './subscriptions.js';
+import { isEmailVerified } from './email-verify.js';
 import { trialOf } from './trial.js';
 import { serverNow } from '../lib/clock.js';
 
@@ -43,6 +44,14 @@ export interface RequestEntitlement extends Entitlement {
   trialRemainingSeconds: number;
   /** Можно ли ещё начать пробный период. */
   canStartTrial: boolean;
+  /**
+   * Подтверждён ли адрес почты.
+   *
+   * Нужен первому сценарию: без подтверждения пробный период
+   * не выдаётся, и интерфейс обязан знать это заранее, а не узнавать
+   * отказом после того, как человек нажал кнопку.
+   */
+  emailVerified: boolean;
   serverTime: Date;
 }
 
@@ -92,13 +101,15 @@ export async function entitlementOfRequest(
       trialExpiresAt: null,
       trialRemainingSeconds: 0,
       canStartTrial: false,
+      emailVerified: false,
       serverTime: now,
     };
   }
 
-  const [sub, trial] = await Promise.all([
+  const [sub, trial, emailVerified] = await Promise.all([
     activeSubscription(userId, now),
     trialOf(userId),
+    isEmailVerified(userId),
   ]);
 
   const trialState = trial
@@ -130,6 +141,7 @@ export async function entitlementOfRequest(
     // одновременно. Наличие любой записи — даже давно истёкшей —
     // закрывает возможность начать заново.
     canStartTrial: trial == null,
+    emailVerified,
     serverTime: now,
   };
 }
@@ -204,6 +216,7 @@ export function accessView(e: RequestEntitlement) {
     trialExpiresAt: e.trialExpiresAt?.toISOString() ?? null,
     trialRemainingSeconds: e.trialRemainingSeconds,
     canStartTrial: e.canStartTrial,
+    emailVerified: e.emailVerified,
     upgradeRequired: e.plan === 'EXPIRED',
     serverTime: e.serverTime.toISOString(),
   };

@@ -156,14 +156,22 @@ export function winRateView(wins: number | null, settled: number | null): WinRat
 }
 
 /**
- * Кратность: «3.6×».
+ * Кратность: «3.6×», «4×», «12×».
  *
  * Отсутствие показывается прочерком, а не нулём: ноль означал бы,
  * что все сделки обнулились, а это другое утверждение.
+ *
+ * Ровная кратность пишется без дробной части. «4.0×» читается хуже
+ * «4×» и подсказывает точность, которой в этом числе нет: десятая
+ * доля икса не значит ничего ни при оценке кошелька, ни при оценке
+ * роста цены.
  */
 export function formatMultiple(v: number | null | undefined): string {
   if (v == null || !Number.isFinite(v) || v <= 0) return '—';
-  return `${v.toFixed(v >= 10 ? 0 : 1)}×`;
+
+  const text = v.toFixed(v >= 10 ? 0 : 1);
+
+  return `${text.endsWith('.0') ? text.slice(0, -2) : text}×`;
 }
 
 /**

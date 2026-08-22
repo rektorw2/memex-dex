@@ -7,6 +7,7 @@ import { MobileNav } from '@/components/MobileNav';
 import { FavoritesProvider } from '@/lib/favorites';
 import { AccessProvider } from '@/lib/access';
 import { AccessBanner } from '@/components/AccessBanner';
+import { RouteGuard } from '@/components/RouteGuard';
 
 export const metadata: Metadata = {
   title: 'Memex — торговля мем-коинами и копитрейдинг',
@@ -87,7 +88,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 пункта в навигации нет: он вёл бы в тот же адрес,
                 что и логотип рядом с ним. */}
             <Link
-              href="/"
+              href="/terminal"
               aria-label="Терминал"
               className="absolute left-1/2 -translate-x-1/2 rounded-md text-lg font-bold tracking-tight transition-opacity hover:opacity-80 md:static md:translate-x-0 md:shrink-0"
             >
@@ -106,7 +107,13 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         </header>
 
         <AccessBanner />
-        <main className="mx-auto min-w-0 max-w-[1800px] px-4 py-4 sm:px-5 sm:py-5">{children}</main>
+
+        {/* Сторож стоит один раз на всё приложение. Проверки
+            по страницам расходились между собой, и вопрос «что
+            видит гость» не имел одного ответа. */}
+        <main className="mx-auto min-w-0 max-w-[1800px] px-4 py-4 sm:px-5 sm:py-5">
+          <RouteGuard>{children}</RouteGuard>
+        </main>
 
         <footer className="max-w-[1600px] mx-auto px-4 py-8 text-xs text-muted border-t border-border mt-12">
           <p className="max-w-3xl leading-relaxed">

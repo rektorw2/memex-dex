@@ -294,13 +294,10 @@ describe('во время пробного периода', () => {
     expect((await post('/orders', { side: 'BUY' })).statusCode).toBe(200);
   });
 
-  it('смарт-кошельки закрыты с кодом апгрейда', async () => {
-    const r = await get('/smart-wallets');
-
-    expect(r.statusCode).toBe(403);
-    expect(r.json().code).toBe('UPGRADE_REQUIRED');
-    expect(r.json().requiredPlan).toBe('PRO');
-    expect(r.json().currentPlan).toBe('TRIAL');
+  it('смарт-кошельки открыты: пробный период — это бесплатный Pro', async () => {
+    // Экран продаёт «Pro — Free trial». Закрыть под этим названием
+    // раздел, который входит в Pro, значит соврать в подписи кнопки.
+    expect((await get('/smart-wallets')).statusCode).toBe(200);
   });
 
   it('копирование и полуавтомат закрыты', async () => {
@@ -672,9 +669,12 @@ describe('ответы о доступе', () => {
   });
 
   it('код нужного плана в отказе совпадает с таблицей', async () => {
+    // Берём возможность, которой у пробного периода нет: отказ
+    // должен называть план, а не просто запрещать.
     await post('/api/access/trial/activate');
-    const r = await get('/smart-wallets');
+    const r = await get('/copy');
 
-    expect(r.json().requiredPlan).toBe(requiredPlanFor('SMART_WALLETS_ACCESS'));
+    expect(r.statusCode).toBe(403);
+    expect(r.json().requiredPlan).toBe(requiredPlanFor('LEADER_COPY_BUY'));
   });
 });

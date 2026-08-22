@@ -1,98 +1,112 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect } from 'react';
 import Link from 'next/link';
-import { api, ApiError } from '../../lib/api';
-import { useAccess, trialRemainingLabel, formatUntil } from '../../lib/access';
-import { EmailVerification } from '../../components/EmailVerification';
+import { useRouter } from 'next/navigation';
+import { needsOnboarding } from '@memex/core';
+import { useAccess, trialRemainingLabel, formatUntil } from '@/lib/access';
 
 /**
- * Доступ: подтверждение адреса и бесплатный период.
+ * Состояние доступа. Только показывает.
  *
- * Два шага на одной странице, но не один шаг. Подтверждение адреса
- * не запускает период — оно только снимает препятствие. Запускает
- * человек, отдельной кнопкой, когда собирается пользоваться: пять
- * суток, начавшиеся сами собой, заканчиваются раньше, чем человек
- * успевает посмотреть продукт.
+ * Раньше здесь был второй, независимый путь включения бесплатного
+ * периода: своя форма подтверждения почты и своя кнопка активации.
+ * Два пути к одному действию — это не удобство, а два набора правил,
+ * которые расходятся при первой же правке одного из них. Здешний
+ * путь к тому же обходил явный выбор тарифа: человек включал период,
+ * ни разу не увидев, что именно он получает и что бывает дальше.
+ *
+ * Теперь включение живёт ровно в одном месте — в `/onboarding`,
+ * и тот, кому период ещё доступен, отправляется туда. Здесь остаётся
+ * то, для чего страница и нужна: посмотреть, что сейчас действует
+ * и до какого числа.
  */
 export default function AccessPage() {
-  const { access, loading, anonymous, reload } = useAccess();
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const router = useRouter();
+  const { access, loading, anonymous } = useAccess();
 
-  if (loading) return <p style={{ color: 'var(--muted)' }}>Загружаем…</p>;
+  const shouldOnboard =
+    !loading &&
+    !anonymous &&
+    access != null &&
+    needsOnboarding({
+      authenticated: true,
+      plan: access.effectivePlan,
+      emailVerified: access.emailVerified,
+      canStartTrial: access.canStartTrial,
+      // Намерения у страницы нет: она никого ни к чему не подталкивает,
+      // а только отправляет туда, где выбор делается явно.
+      choseTrial: false,
+    });
 
+  useEffect(() => {
+    if (shouldOnboard) router.replace('/onboarding');
+  }, [shouldOnboard, router]);
+
+  if (loading) {
+    return (
+      <p className="text-muted" role="status" aria-live="polite">
+        Загружаем…
+      </p>
+    );
+  }
+
+  // Сюда не должен доходить никто: маршрут закрыт сторожем.
+  // Но если дошёл — честный ответ вместо пустого экрана.
   if (anonymous || !access) {
     return (
-      <div>
-        <h1>Доступ</h1>
-        <p style={{ color: 'var(--muted)' }}>Войдите, чтобы продолжить.</p>
-        <Link href="/login">Войти</Link>
+      <div className="space-y-3">
+        <h1 className="text-xl font-bold">Доступ</h1>
+        <p className="text-muted">Войдите, чтобы продолжить.</p>
+        <Link href="/login" className="text-accent hover:underline">
+          Войти
+        </Link>
       </div>
     );
   }
 
-  async function startTrial() {
-    setBusy(true);
-    setError(null);
-
-    try {
-      await api('/access/trial/activate', { method: 'POST', base: 'root' });
-      await reload();
-    } catch (e) {
-      const body = e instanceof ApiError ? (e.body as { code?: string } | undefined) : undefined;
-
-      setError(
-        body?.code === 'EMAIL_NOT_VERIFIED'
-          ? 'Сначала подтвердите адрес почты выше.'
-          : e instanceof Error
-            ? e.message
-            : 'Не удалось включить период',
-      );
-    } finally {
-      setBusy(false);
-    }
+  if (shouldOnboard) {
+    return (
+      <p className="text-muted" role="status" aria-live="polite">
+        Переходим…
+      </p>
+    );
   }
 
+  const trialActive = access.effectivePlan === 'TRIAL';
+
   return (
-    <div style={{ display: 'grid', gap: '24px', maxWidth: '640px' }}>
-      <h1 style={{ margin: 0 }}>Доступ</h1>
+    <div className="grid max-w-[640px] gap-6">
+      <h1 className="text-xl font-bold">Доступ</h1>
 
-      {access.canStartTrial ? <EmailVerification /> : null}
+      <section className="rounded-xl border border-border p-4">
+        <h2 className="mt-0 text-lg font-medium">
+          {trialActive ? 'Бесплатный период' : 'Текущий план'}
+        </h2>
 
-      <section style={{ border: '1px solid var(--border)', borderRadius: '12px', padding: '16px' }}>
-        <h2 style={{ marginTop: 0, fontSize: '18px' }}>Бесплатный период</h2>
-
-        {access.effectivePlan === 'TRIAL' ? (
-          <p style={{ margin: 0 }}>
+        {trialActive ? (
+          <p className="m-0 text-sm">
             Активен до <strong>{formatUntil(access.trialExpiresAt)}</strong>, осталось{' '}
             {trialRemainingLabel(access.trialRemainingSeconds)}.
           </p>
-        ) : access.canStartTrial ? (
-          <>
-            <p style={{ color: 'var(--muted)', fontSize: '14px', margin: '0 0 12px' }}>
-              Пять суток полного доступа к радару и терминалу. Один раз на аккаунт.
-              Начнётся в момент нажатия, а не раньше.
-            </p>
-
-            <button onClick={startTrial} disabled={busy}>
-              {busy ? 'Включаем…' : 'Активировать бесплатный период'}
-            </button>
-
-            {error ? (
-              <p style={{ color: 'var(--danger)', fontSize: '14px', margin: '12px 0 0' }}>
-                {error}
-              </p>
-            ) : null}
-          </>
+        ) : access.effectivePlan !== 'EXPIRED' ? (
+          <p className="m-0 text-sm">
+            Действует <strong>{access.effectivePlan}</strong>.
+          </p>
         ) : (
-          <p style={{ color: 'var(--muted)', margin: 0 }}>
-            Бесплатный период уже использован. <Link href="/plans">Тарифы</Link>.
+          <p className="m-0 text-sm text-muted">
+            Действующего плана нет.{' '}
+            {/* Кнопки активации здесь нет намеренно: бесплатный период
+                уже использован, а платные тарифы живут на своей странице. */}
+            <Link href="/plans" className="text-accent hover:underline">
+              Тарифы
+            </Link>
+            .
           </p>
         )}
       </section>
 
-      <p style={{ color: 'var(--muted)', fontSize: '14px', margin: 0 }}>
+      <p className="m-0 text-sm text-muted">
         Продажа своих активов, вывод средств и просмотр портфеля доступны всегда —
         независимо от плана и от того, закончился ли период.
       </p>

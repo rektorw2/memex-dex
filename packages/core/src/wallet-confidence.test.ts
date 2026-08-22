@@ -77,6 +77,12 @@ describe('форматирование', () => {
     expect(formatMultiple(12.4)).toBe('12×');
     expect(formatMultiple(null)).toBe('—');
     expect(formatMultiple(0)).toBe('—');
+
+    // Ровная кратность — без дробной части: «4.0×» подсказывает
+    // точность, которой в этом числе нет.
+    expect(formatMultiple(4)).toBe('4×');
+    expect(formatMultiple(2)).toBe('2×');
+    expect(formatMultiple(1.5)).toBe('1.5×');
   });
 
   it('вход в первые минуты не превращается в «0.0 ч»', () => {

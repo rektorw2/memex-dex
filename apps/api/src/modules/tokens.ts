@@ -2,12 +2,37 @@ import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { assessToken, SAFE_LEVELS, TRADEABLE_LEVELS, looksLikeAddress } from '@memex/core';
 import { prisma } from '../lib/prisma.js';
-import { entitlementOfRequest, denyIfMissing } from '../services/entitlement.js';
 import { SUPPORTED_INTERVALS } from '../services/market-data.js';
 import { serializeResearch } from '../services/research.js';
 import { RULES_VERSION } from '../workers/scam-checker.js';
 import { MARKET_DATA_SOURCE } from '../services/okx-market.js';
+import { cached } from '../lib/cache.js';
 
+/**
+ * Рыночные данные публичны.
+ *
+ * Все маршруты этого модуля отдают то, что одинаково для всех: цену,
+ * ликвидность, оборот, свечи и разбор риска. Прятать это за входом
+ * значило бы требовать регистрацию за сведения, которые человек
+ * и так увидит на любом агрегаторе, — а первое, что он делает,
+ * попав на торговый терминал, это смотрит, что тут вообще есть.
+ *
+ * Приватного здесь нет ничего: ни портфеля, ни балансов, ни истории
+ * сделок. Они живут в других модулях и требуют входа.
+ *
+ * Платным остаётся действие, а не просмотр. Покупка, продажа,
+ * копирование и автоматика проверяются там, где выполняются.
+ */
+
+/**
+ * Порядок сортировки витрины.
+ *
+ * `gainers` — каноническое определение «лучшего токена» на всё
+ * приложение: наибольший рост цены за 24 часа среди тех, кто прошёл
+ * пороги ликвидности и оборота (см. `liquidityFloor` ниже). Второго
+ * определения быть не должно: карточка на первом экране и список
+ * в терминале обязаны называть лидером одно и то же.
+ */
 const SORTS = {
   volume: { volume24hUsd: 'desc' },
   liquidity: { liquidityUsd: 'desc' },
@@ -15,6 +40,45 @@ const SORTS = {
   losers: { priceChange24h: 'asc' },
   new: { createdAt: 'desc' },
 } as const;
+
+/**
+ * Как часто разрешено заводить в базу новые токены из внешнего списка.
+ *
+ * Раньше запись шла на каждом запросе. Маршрут стал публичным,
+ * и это превратилось в кнопку «записать в базу» для всякого, кто
+ * умеет обновлять страницу: двадцать строк на нажатие, без входа
+ * и без счёта.
+ *
+ * Теперь запись отделена от чтения и происходит не чаще раза
+ * в пять минут на весь процесс, независимо от того, сколько запросов
+ * пришло. Проверка витрины всё равно разбирает очередь медленнее,
+ * так что чаще и не нужно.
+ */
+export const INGEST_INTERVAL_MS = 5 * 60_000;
+
+/** Когда последний раз заводили новые токены. Общее на процесс. */
+let lastIngestAt = 0;
+
+/**
+ * Сброс троттла между тестами.
+ *
+ * Состояние живёт на модуле, и без сброса второй тест наследовал бы
+ * отметку от первого — то есть проверял бы не то, что написано
+ * в его названии.
+ */
+export function resetIngestThrottleForTests(): void {
+  lastIngestAt = 0;
+}
+
+/**
+ * Ответ внешнего списка, уже собранный.
+ *
+ * Кэшируется целиком: без этого каждое обновление страницы гостем
+ * давало запрос в базу с длинным OR по паре сеть-адрес. Внешний
+ * провайдер закэширован у себя (см. dexscreener.ts), а вот наша
+ * база — нет, и упиралось всё именно в неё.
+ */
+export const DEXSCREENER_TTL_MS = 30_000;
 
 export const tokenRoutes: FastifyPluginAsync = async (app) => {
   /**
@@ -109,9 +173,6 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
      * платят, — разложенная по причинам оценка риска, история цены
      * и сводка для решения о покупке.
      */
-    const ent = await entitlementOfRequest(req);
-    if (denyIfMissing(ent, 'TERMINAL_ACCESS', reply)) return reply;
-
     const q = z
       .object({ level: z.enum(['blocked', 'high', 'medium', 'all']).default('blocked') })
       .parse(req.query ?? {});
@@ -165,11 +226,20 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
    * почти пустой, и человек решил бы, что она сломана, хотя на самом
    * деле проверка просто ещё не дошла.
    */
-  app.get('/tokens/dexscreener', async (req, reply) => {
+  app.get(
+    '/tokens/dexscreener',
+    {
+      /*
+       * Свой лимит, строже общего.
+       *
+       * Маршрут дороже остальных публичных: за ним внешний провайдер
+       * и запрос в базу. Общего лимита в триста запросов в минуту
+       * здесь мало — он рассчитан на дешёвое чтение.
+       */
+      config: { rateLimit: { max: 30, timeWindow: '1m' } },
+    },
+    async (req, reply) => {
     // Внешний разбор — та же платная часть терминала, что и обзор.
-    const ent = await entitlementOfRequest(req);
-    if (denyIfMissing(ent, 'TERMINAL_ACCESS', reply)) return reply;
-
     const q = z
       .object({
         chain: z.string().optional(),
@@ -179,9 +249,40 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
       })
       .parse(req.query);
 
-    const { fetchBoostedTokens } = await import('../services/dexscreener.js');
-    const boosted = await fetchBoostedTokens();
+    // Ответ целиком берётся из кэша: обновление страницы не должно
+    // доходить ни до провайдера, ни до базы.
+    const key = `dexscreener:${q.chain ?? 'all'}:${q.safeOnly}:${q.limit}`;
 
+    const hit = await cached(
+      key,
+      async () => {
+        const { fetchBoostedTokens } = await import('../services/dexscreener.js');
+        const boosted = await fetchBoostedTokens();
+
+        return buildDexscreenerView(boosted, q);
+      },
+      { ttlMs: DEXSCREENER_TTL_MS, staleMs: 5 * 60_000 },
+    );
+
+    // Браузеру и посреднику тоже сообщаем срок: часть обновлений
+    // не дойдёт до нас вовсе.
+    reply.header('Cache-Control', `public, max-age=${Math.floor(DEXSCREENER_TTL_MS / 1000)}`);
+
+    return hit.value;
+  },
+  );
+
+  /**
+   * Сборка ответа по внешнему списку.
+   *
+   * Только чтение. Заведение новых токенов в базу здесь намеренно
+   * отсутствует: оно вынесено отдельно и не зависит от того, кто
+   * и как часто открывает страницу.
+   */
+  async function buildDexscreenerView(
+    boosted: Awaited<ReturnType<typeof import('../services/dexscreener.js')['fetchBoostedTokens']>>,
+    q: { chain?: string; safeOnly: boolean; limit: number },
+  ) {
     const filtered = q.chain ? boosted.filter((b) => b.chain === q.chain) : boosted;
     if (filtered.length === 0) {
       return { tokens: [], source: 'DexScreener', unchecked: 0, total: 0 };
@@ -201,30 +302,12 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
 
     const byKey = new Map(known.map((t) => [`${t.chain}:${t.address.toLowerCase()}`, t]));
 
-    // Незнакомые заводим в базу — очередь проверки подхватит их сама.
-    // Уровень риска им не выставляется: непроверенное непроверено.
+    // Незнакомые заводим в базу — но не здесь и не сейчас. Запись
+    // отделена от ответа: она не задерживает человека и, главное,
+    // не запускается его обновлением страницы.
     const missing = filtered.filter((b) => !byKey.has(`${b.chain}:${b.address.toLowerCase()}`));
 
-    if (missing.length > 0) {
-      await prisma.token
-        .createMany({
-          data: missing.slice(0, 20).map((b) => ({
-            chain: b.chain as never,
-            address: b.address,
-            symbol: '???',
-            name: b.description?.slice(0, 60) ?? 'Неизвестный токен',
-            decimals: b.chain === 'SOLANA' ? 9 : 18,
-            logoUrl: b.iconUrl,
-            source: 'dexscreener',
-            // Скрыт из общей витрины до проверки: попасть туда
-            // он должен на общих основаниях, а не потому, что
-            // за него заплатили.
-            isHidden: true,
-          })),
-          skipDuplicates: true,
-        })
-        .catch(() => undefined);
-    }
+    void ingestUnknownTokens(missing);
 
     const rows = filtered
       .map((b) => {
@@ -279,7 +362,44 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
       unchecked: filtered.length - known.filter((t) => t.riskLevel != null).length,
       tokens: rows.slice(0, q.limit),
     };
-  });
+  }
+
+  /**
+   * Заведение незнакомых токенов в базу.
+   *
+   * Не чаще раза в пять минут на весь процесс и всегда в фоне.
+   * Ошибка проглатывается: это наполнение витрины, а не ответ
+   * человеку, и падать из-за него ответ не должен.
+   *
+   * Уровень риска не выставляется: непроверенное непроверено,
+   * и попасть в общую витрину токен должен на общих основаниях,
+   * а не потому, что за него заплатили.
+   */
+  async function ingestUnknownTokens(
+    missing: { chain: string; address: string; description?: string | null; iconUrl?: string | null }[],
+  ): Promise<void> {
+    if (missing.length === 0) return;
+
+    const now = Date.now();
+    if (now - lastIngestAt < INGEST_INTERVAL_MS) return;
+    lastIngestAt = now;
+
+    await prisma.token
+      .createMany({
+        data: missing.slice(0, 20).map((b) => ({
+          chain: b.chain as never,
+          address: b.address,
+          symbol: '???',
+          name: b.description?.slice(0, 60) ?? 'Неизвестный токен',
+          decimals: b.chain === 'SOLANA' ? 9 : 18,
+          logoUrl: b.iconUrl,
+          source: 'dexscreener',
+          isHidden: true,
+        })),
+        skipDuplicates: true,
+      })
+      .catch(() => undefined);
+  }
 
   app.get('/tokens', async (req) => {
     const q = z
@@ -444,9 +564,6 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
      * платят, — разложенная по причинам оценка риска, история цены
      * и сводка для решения о покупке.
      */
-    const ent = await entitlementOfRequest(req);
-    if (denyIfMissing(ent, 'TERMINAL_ACCESS', reply)) return reply;
-
     const { id } = z.object({ id: z.string() }).parse(req.params);
 
     const token = await prisma.token.findUnique({ where: { id }, include: { research: true } });
@@ -562,9 +679,6 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
      * платят, — разложенная по причинам оценка риска, история цены
      * и сводка для решения о покупке.
      */
-    const ent = await entitlementOfRequest(req);
-    if (denyIfMissing(ent, 'TERMINAL_ACCESS', reply)) return reply;
-
     const { id } = z.object({ id: z.string() }).parse(req.params);
     const q = z
       .object({
