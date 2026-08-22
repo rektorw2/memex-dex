@@ -9,8 +9,20 @@ import { verificationEmail } from '@memex/core';
  * тайминги, коды ошибок, ключ повтора — существует ради него.
  */
 
-let provider: 'disabled' | 'console' | 'resend' = 'disabled';
+let provider: 'disabled' | 'console' | 'resend' | 'smtp' = 'disabled';
 let logs: unknown[] = [];
+
+const smtp = vi.hoisted(() => {
+  const sendMail = vi.fn();
+  return {
+    sendMail,
+    createTransport: vi.fn(() => ({ sendMail })),
+  };
+});
+
+vi.mock('nodemailer', () => ({
+  default: { createTransport: smtp.createTransport },
+}));
 
 vi.mock('../lib/env.js', () => ({
   env: {
@@ -19,6 +31,11 @@ vi.mock('../lib/env.js', () => ({
     },
     RESEND_API_KEY: 're_тестовый_ключ_не_настоящий',
     EMAIL_FROM: 'Memex DEX <no-reply@example.test>',
+    SMTP_HOST: 'smtp.gmail.com',
+    SMTP_PORT: 465,
+    SMTP_SECURE: true,
+    SMTP_USER: 'sender@example.test',
+    SMTP_PASS: 'пароль-приложения-не-настоящий',
     PUBLIC_APP_NAME: 'Memex DEX',
     NODE_ENV: 'test',
   },
@@ -40,6 +57,13 @@ const letter = { to: 'myron@example.com', message };
 
 beforeEach(() => {
   logs = [];
+  smtp.createTransport.mockClear();
+  smtp.sendMail.mockReset();
+  smtp.sendMail.mockResolvedValue({
+    messageId: '<smtp-1@example.test>',
+    accepted: ['myron@example.com'],
+    rejected: [],
+  });
   setMailerForTests(null);
 });
 
@@ -106,6 +130,7 @@ describe('Resend через HTTPS API', () => {
 
     const headers = init.headers as Record<string, string>;
     expect(headers.authorization).toMatch(/^Bearer re_/);
+    expect(headers['user-agent']).toBe('memex-api/1.0');
     expect(headers['Idempotency-Key']).toBe('k-1');
 
     const body = JSON.parse(init.body as string);
@@ -184,5 +209,85 @@ describe('Resend через HTTPS API', () => {
     const res = await getMailer().send(letter);
 
     expect(res.ok === false && (res.detail?.length ?? 0)).toBeLessThan(200);
+  });
+});
+
+describe('SMTP', () => {
+  beforeEach(() => {
+    provider = 'smtp';
+    setMailerForTests(null);
+  });
+
+  it('создаёт защищённый транспорт и отправляет всё письмо', async () => {
+    const res = await getMailer().send({ ...letter, idempotencyKey: 'verify-user-hash' });
+
+    expect(res).toEqual({ ok: true, id: '<smtp-1@example.test>' });
+    expect(smtp.createTransport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        host: 'smtp.gmail.com',
+        port: 465,
+        secure: true,
+        requireTLS: false,
+        auth: {
+          user: 'sender@example.test',
+          pass: 'пароль-приложения-не-настоящий',
+        },
+        tls: expect.objectContaining({ minVersion: 'TLSv1.2', rejectUnauthorized: true }),
+      }),
+    );
+
+    expect(smtp.sendMail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        from: 'Memex DEX <no-reply@example.test>',
+        to: 'myron@example.com',
+        subject: expect.stringContaining('482913'),
+        text: expect.stringContaining('482913'),
+        html: expect.stringContaining('482913'),
+        messageId: expect.stringMatching(/^<[a-f0-9]{64}@memex\.invalid>$/),
+      }),
+    );
+  });
+
+  it('отказ получателю — не успех', async () => {
+    smtp.sendMail.mockResolvedValue({
+      messageId: '<smtp-2@example.test>',
+      accepted: [],
+      rejected: ['myron@example.com'],
+    });
+
+    const res = await getMailer().send(letter);
+
+    expect(res).toEqual({ ok: false, failure: 'REJECTED', detail: 'SMTP_RECIPIENT_REJECTED' });
+  });
+
+  it('ошибка авторизации не раскрывает пароль или текст ответа', async () => {
+    smtp.sendMail.mockRejectedValue(
+      Object.assign(new Error('пароль-приложения-не-настоящий отклонён'), {
+        code: 'EAUTH',
+        responseCode: 535,
+      }),
+    );
+
+    const res = await getMailer().send(letter);
+
+    expect(res).toEqual({ ok: false, failure: 'REJECTED', detail: 'EAUTH HTTP 535' });
+    expect(JSON.stringify(res)).not.toContain('пароль-приложения');
+  });
+
+  it('таймаут отличается от сетевого сбоя', async () => {
+    smtp.sendMail.mockRejectedValue(Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' }));
+    expect(await getMailer().send(letter)).toEqual({
+      ok: false,
+      failure: 'TIMEOUT',
+      detail: 'ETIMEDOUT',
+    });
+
+    setMailerForTests(null);
+    smtp.sendMail.mockRejectedValue(Object.assign(new Error('socket'), { code: 'ECONNRESET' }));
+    expect(await getMailer().send(letter)).toEqual({
+      ok: false,
+      failure: 'NETWORK',
+      detail: 'ECONNRESET',
+    });
   });
 });

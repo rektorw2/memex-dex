@@ -90,6 +90,13 @@ loadDotenv();
 const optional = <T extends z.ZodTypeAny>(inner: T) =>
   z.preprocess((v) => (v === '' || v === undefined ? undefined : v), inner.optional());
 
+/** `Boolean('false') === true`, поэтому z.coerce.boolean для .env непригоден. */
+const booleanFromEnv = z.preprocess((value) => {
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  return value;
+}, z.boolean());
+
 const schema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
 
@@ -279,12 +286,18 @@ const schema = z.object({
   // настроек, честно отвечает «доставка не настроена», а не делает
   // вид, что письма уходят.
 
-  /** disabled | console | resend. */
-  EMAIL_PROVIDER: z.enum(['disabled', 'console', 'resend']).default('disabled'),
+  /** disabled | console | resend | smtp. */
+  EMAIL_PROVIDER: z.enum(['disabled', 'console', 'resend', 'smtp']).default('disabled'),
   /** Отправитель: «Имя <адрес@домен>» либо просто адрес. */
   EMAIL_FROM: z.string().optional(),
   /** Ключ Resend. В журнал и в ответы не попадает никогда. */
   RESEND_API_KEY: z.string().optional(),
+  /** SMTP, в том числе Gmail с отдельным паролем приложения. */
+  SMTP_HOST: z.string().optional(),
+  SMTP_PORT: z.coerce.number().int().min(1).max(65_535).default(465),
+  SMTP_SECURE: booleanFromEnv.default(true),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
   /** Публичное имя продукта. Уходит в тему письма. */
   PUBLIC_APP_NAME: z.string().default('Memex DEX'),
   /** Публичный адрес приложения. Нужен ссылкам в письмах, если появятся. */
@@ -429,6 +442,22 @@ if (env.EMAIL_PROVIDER === 'resend') {
     throw new Error(
       `EMAIL_PROVIDER=resend требует ${missing.join(' и ')}. ` +
         'Без них приложение сообщало бы об отправленных письмах, которых нет.',
+    );
+  }
+}
+
+if (env.EMAIL_PROVIDER === 'smtp') {
+  const missing = [
+    !env.SMTP_HOST ? 'SMTP_HOST' : null,
+    !env.SMTP_USER ? 'SMTP_USER' : null,
+    !env.SMTP_PASS ? 'SMTP_PASS' : null,
+    !env.EMAIL_FROM ? 'EMAIL_FROM' : null,
+  ].filter(Boolean);
+
+  if (missing.length > 0) {
+    throw new Error(
+      `EMAIL_PROVIDER=smtp требует ${missing.join(', ')}. ` +
+        'Основной пароль почты использовать нельзя: нужен отдельный пароль приложения.',
     );
   }
 }

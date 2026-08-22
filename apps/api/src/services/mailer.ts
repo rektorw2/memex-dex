@@ -1,4 +1,6 @@
 import { maskEmail, type EmailMessage } from '@memex/core';
+import crypto from 'node:crypto';
+import nodemailer from 'nodemailer';
 import { env } from '../lib/env.js';
 import { logger } from '../lib/logger.js';
 
@@ -122,6 +124,7 @@ function resendMailer(apiKey: string, from: string): Mailer {
           headers: {
             authorization: `Bearer ${apiKey}`,
             'content-type': 'application/json',
+            'user-agent': 'memex-api/1.0',
             ...(email.idempotencyKey ? { 'Idempotency-Key': email.idempotencyKey } : {}),
           },
           body: JSON.stringify({
@@ -161,6 +164,107 @@ function resendMailer(apiKey: string, from: string): Mailer {
   };
 }
 
+interface SmtpConfig {
+  host: string;
+  port: number;
+  secure: boolean;
+  user: string;
+  pass: string;
+  from: string;
+}
+
+/**
+ * Безопасная деталь SMTP-ошибки.
+ *
+ * Текст ошибки намеренно не возвращается: SMTP-библиотеки иногда
+ * включают туда команду целиком, а команда AUTH содержит материал,
+ * из которого нельзя делать ни ответ API, ни запись в журнале.
+ */
+function smtpFailure(error: unknown): { failure: Exclude<SendFailure, 'DISABLED'>; detail: string } {
+  const e = error as { code?: string; responseCode?: number };
+  const code = typeof e?.code === 'string' ? e.code : 'SMTP_ERROR';
+  const responseCode = typeof e?.responseCode === 'number' ? e.responseCode : null;
+
+  if (code === 'ETIMEDOUT') {
+    return { failure: 'TIMEOUT', detail: code };
+  }
+
+  if (
+    code === 'EAUTH' ||
+    code === 'EENVELOPE' ||
+    code === 'EMESSAGE' ||
+    (responseCode ?? 0) >= 400
+  ) {
+    return {
+      failure: 'REJECTED',
+      detail: responseCode ? `${code} HTTP ${responseCode}` : code,
+    };
+  }
+
+  return { failure: 'NETWORK', detail: code };
+}
+
+/** Детерминированный, но не раскрывающий userId и хеш кода Message-ID. */
+function smtpMessageId(key: string | undefined): string | undefined {
+  if (!key) return undefined;
+  const digest = crypto.createHash('sha256').update(key).digest('hex');
+  return `<${digest}@memex.invalid>`;
+}
+
+/**
+ * Обычный SMTP-транспорт, в том числе для Gmail.
+ *
+ * Gmail используется с отдельным паролем приложения, никогда с основным
+ * паролем аккаунта. Соединение либо сразу защищено TLS (обычно порт 465),
+ * либо обязано перейти на STARTTLS (обычно порт 587). Сертификат
+ * провайдера проверяется всегда.
+ */
+function smtpMailer(config: SmtpConfig): Mailer {
+  const transport = nodemailer.createTransport({
+    host: config.host,
+    port: config.port,
+    secure: config.secure,
+    requireTLS: !config.secure,
+    auth: { user: config.user, pass: config.pass },
+    connectionTimeout: SEND_TIMEOUT_MS,
+    greetingTimeout: SEND_TIMEOUT_MS,
+    socketTimeout: SEND_TIMEOUT_MS,
+    tls: {
+      minVersion: 'TLSv1.2',
+      rejectUnauthorized: true,
+    },
+  });
+
+  return {
+    name: 'smtp',
+    enabled: true,
+
+    async send(email) {
+      try {
+        const info = await transport.sendMail({
+          from: config.from,
+          to: email.to,
+          subject: email.message.subject,
+          text: email.message.text,
+          html: email.message.html,
+          // SMTP не обещает идемпотентность, но стабильный Message-ID
+          // не раскрывает исходный ключ и помогает принимающей стороне
+          // распознать повтор одной и той же попытки.
+          messageId: smtpMessageId(email.idempotencyKey),
+        });
+
+        if ((info.rejected?.length ?? 0) > 0 || (info.accepted?.length ?? 0) === 0) {
+          return { ok: false, failure: 'REJECTED', detail: 'SMTP_RECIPIENT_REJECTED' };
+        }
+
+        return { ok: true, id: info.messageId || null };
+      } catch (e) {
+        return { ok: false, ...smtpFailure(e) };
+      }
+    },
+  };
+}
+
 /**
  * Транспорт по настройкам окружения.
  *
@@ -176,6 +280,16 @@ export function getMailer(): Mailer {
   switch (env.EMAIL_PROVIDER) {
     case 'resend':
       cached = resendMailer(env.RESEND_API_KEY!, env.EMAIL_FROM!);
+      break;
+    case 'smtp':
+      cached = smtpMailer({
+        host: env.SMTP_HOST!,
+        port: env.SMTP_PORT,
+        secure: env.SMTP_SECURE,
+        user: env.SMTP_USER!,
+        pass: env.SMTP_PASS!,
+        from: env.EMAIL_FROM!,
+      });
       break;
     case 'console':
       cached = consoleMailer;
