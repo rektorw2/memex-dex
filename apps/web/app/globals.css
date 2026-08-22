@@ -133,3 +133,137 @@ body {
 .pb-nav {
   padding-bottom: calc(56px + env(safe-area-inset-bottom, 0px));
 }
+
+/* ══════════════════════ Страница тарифов ═══════════════════════════════
+
+   Отдельный блок, потому что здесь единственное место в продукте, где
+   уместна глубина: остальной интерфейс — рабочий инструмент, и всякое
+   украшение в нём мешает читать числа.
+
+   Чего здесь нет намеренно: неона, постоянного свечения, движущихся
+   элементов. Торговый продукт, оформленный как игровой автомат,
+   сообщает о себе ровно то, что подумает человек.                        */
+
+/* ─── Поверхности с глубиной ──────────────────────────────────────── */
+
+/* Тонкая градиентная граница. Даёт объём без свечения: цвет живёт
+   в самой рамке, а не разливается вокруг карточки. */
+.surface-1 {
+  @apply relative rounded-xl border border-border bg-panel;
+}
+
+.surface-2 {
+  @apply relative rounded-xl border border-border/70 bg-raised;
+}
+
+/* Главное предложение. Градиент по рамке рисуется псевдоэлементом:
+   так он не влияет на размеры и не двигает содержимое. */
+.surface-featured {
+  @apply relative rounded-xl border border-accent/40 bg-panel;
+  box-shadow: 0 0 0 1px rgb(139 92 246 / 0.08), 0 8px 32px -12px rgb(139 92 246 / 0.35);
+}
+
+.surface-featured::before {
+  content: '';
+  @apply pointer-events-none absolute inset-0 rounded-xl;
+  background: linear-gradient(160deg, rgb(139 92 246 / 0.1), transparent 55%);
+}
+
+/* ─── Появление карточек ──────────────────────────────────────────── */
+
+/* Только прозрачность и сдвиг: оба свойства не вызывают пересчёта
+   разметки, поэтому появление не двигает соседние блоки. */
+@keyframes plan-enter {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.plan-enter {
+  opacity: 0;
+  animation: plan-enter 420ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+/* Последовательность — три шага по 70 мс. Больше выглядит как
+   задержка загрузки, а не как оформление. */
+.plan-enter-1 { animation-delay: 0ms; }
+.plan-enter-2 { animation-delay: 70ms; }
+.plan-enter-3 { animation-delay: 140ms; }
+
+/* ─── Отклик на указатель ─────────────────────────────────────────── */
+
+/* Подъём только там, где есть настоящий указатель. На телефоне
+   hover «залипает» после касания, и карточка остаётся приподнятой
+   до следующего касания в другом месте. */
+@media (hover: hover) and (pointer: fine) {
+  .plan-card {
+    transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+  }
+
+  .plan-card:hover {
+    transform: translateY(-3px);
+    @apply border-accent/50;
+  }
+}
+
+/* ─── Раскрывающиеся блоки ────────────────────────────────────────── */
+
+/* Стрелка поворачивается, содержимое проявляется. Высоту не
+   анимируем: анимация высоты — это layout shift по определению,
+   и на длинном списке она заметно дёргает страницу. */
+.disclosure > summary {
+  @apply cursor-pointer list-none;
+}
+
+.disclosure > summary::-webkit-details-marker { display: none; }
+
+.disclosure > summary .disclosure-chevron {
+  transition: transform 180ms ease;
+}
+
+.disclosure[open] > summary .disclosure-chevron {
+  transform: rotate(90deg);
+}
+
+.disclosure[open] > .disclosure-body {
+  animation: plan-enter 240ms ease forwards;
+}
+
+/* ─── Скелетоны ───────────────────────────────────────────────────── */
+
+/* Пульсация вместо текста «загружаем»: она показывает будущую форму
+   страницы, поэтому появление содержимого не сдвигает вёрстку. */
+.skeleton {
+  @apply rounded bg-raised;
+  animation: skeleton-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 0.45; }
+  50%      { opacity: 0.8; }
+}
+
+/* ─── Уважение к настройке системы ────────────────────────────────── */
+
+/*
+ * Человек, попросивший меньше движения, просил об этом всерьёз:
+ * для части людей анимация интерфейса вызывает тошноту и головную
+ * боль. Содержимое остаётся на месте и видимым — отключается
+ * только движение.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .plan-enter,
+  .disclosure[open] > .disclosure-body {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+
+  .skeleton { animation: none; opacity: 0.6; }
+
+  .plan-card,
+  .disclosure > summary .disclosure-chevron {
+    transition: none;
+  }
+
+  .plan-card:hover { transform: none; }
+}

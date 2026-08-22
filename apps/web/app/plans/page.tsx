@@ -1,31 +1,36 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import useSWR from 'swr';
 import Link from 'next/link';
-import { api } from '../../lib/api';
-import { useAccess } from '../../lib/access';
+import {
+  SELLABLE_PLANS,
+  planCta,
+  trialDaysLabel,
+  type SellablePlan,
+} from '@memex/core';
+import { rootFetcher } from '@/lib/api';
+import { useAccess, trialRemainingLabel, formatUntil } from '@/lib/access';
+import { PlanCard } from '@/components/plans/PlanCard';
+import { PnlBlock } from '@/components/plans/PnlBlock';
+import { Comparison } from '@/components/plans/Comparison';
 
 /**
- * Сравнение тарифов.
+ * Тарифы.
  *
- * Цены, срок, валюты и сеть приходят с сервера — из того же каталога,
- * по которому считают деньги. Записать их здесь руками было бы
- * быстрее ровно один раз: при первом же изменении страница начала бы
- * обещать не то, что списывается, и заметить это можно было бы только
- * по жалобе.
+ * Страница отвечает на один вопрос: сколько контроля человек хочет
+ * отдать машине. Ручной, полуавтоматический, автоматический — это
+ * не три уровня щедрости, а три разных ответа, и цена лишь следствие.
  *
- * Два обещания, которых страница не даёт.
+ * Три источника, и ни один не дублируется в интерфейсе.
  *
- * Не «в месяц». Период ровно тридцать суток; месяц бывает 28, 29, 30
- * и 31 день, и разница однажды превратилась бы в спор.
+ * Цены, срок и валюта — из `/payments/catalog`, того же каталога,
+ * по которому считают деньги. Возможности — из `/access/plans`,
+ * той же матрицы, по которой проверяют доступ. Состояние человека —
+ * из `/access/me`. Записанное здесь руками разошлось бы с каждым
+ * из трёх, и заметил бы это первым тот, кто заплатил.
  *
- * Не «доллар равен USDC». Платят долларами, получают USDC —
- * конвертирует провайдер, и комиссии видны только в его ответе.
- * Обещать равенство значит обещать курс, которым мы не управляем.
- *
- * И не «оплатите картой». Способ оплаты зависит от действующего
- * провайдера, а он выбирается настройкой сервера. Названный здесь
- * руками, он разойдётся с действительностью в день переключения.
+ * PnL живёт отдельным необязательным блоком: его ошибка не должна
+ * мешать посмотреть цены.
  */
 
 interface CatalogResponse {
@@ -41,29 +46,6 @@ interface CatalogResponse {
   }>;
 }
 
-const PLAN_TITLE: Record<string, string> = {
-  PRO: 'PRO',
-  SEMI_AUTO: 'Полуавтомат',
-  FULL_AUTO: 'Автомат',
-};
-
-const CAPABILITY_TITLE: Record<string, string> = {
-  RADAR_ACCESS: 'Радар находок',
-  TERMINAL_ACCESS: 'Разбор токена в терминале',
-  MANUAL_TRADE: 'Ручная покупка',
-  PORTFOLIO_READ: 'Свой портфель',
-  WALLET_DEPOSIT: 'Пополнение кошелька',
-  WALLET_WITHDRAW: 'Вывод средств',
-  SELL_OWN_ASSET: 'Продажа своих активов',
-  PROTECTIVE_EXIT: 'Защитные выходы',
-  SMART_WALLETS_ACCESS: 'Смарт-кошельки',
-  LEADER_COPY_BUY: 'Копирование покупок лидера',
-  SEMI_AUTO_TRADE: 'Вход по сигналу',
-  AUTO_BUY: 'Автоматическая покупка',
-  AUTO_EXIT: 'Автоматический выход',
-  STRATEGY_AUTOMATION: 'Настройка стратегий',
-};
-
 interface PlansResponse {
   plans: Array<{ plan: string; capabilities: string[] }>;
 }
@@ -76,133 +58,243 @@ interface PaymentsStatus {
 }
 
 export default function PlansPage() {
-  const { access } = useAccess();
-  const [catalog, setCatalog] = useState<CatalogResponse | null>(null);
-  const [caps, setCaps] = useState<Record<string, string[]>>({});
-  const [status, setStatus] = useState<PaymentsStatus | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const { access, anonymous, loading: accessLoading } = useAccess();
 
-  useEffect(() => {
-    Promise.all([
-      api<CatalogResponse>('/payments/catalog', { base: 'root' }),
-      api<PlansResponse>('/access/plans', { base: 'root' }),
-      api<PaymentsStatus>('/payments/status', { base: 'root' }),
-    ])
-      .then(([c, p, s]) => {
-        setCatalog(c);
-        setCaps(Object.fromEntries(p.plans.map((x) => [x.plan, x.capabilities])));
-        setStatus(s);
-      })
-      .catch((e) => setError(e instanceof Error ? e.message : 'Не удалось загрузить тарифы'));
-  }, []);
+  // Три независимых запроса вместо одного Promise.all: ошибка одного
+  // не должна оставлять страницу пустой. Каталог важнее остальных —
+  // без него нет цен, — и только он показывает ошибку.
+  //
+  // Загрузчик именно `rootFetcher`: эти три маршрута живут под `/api`,
+  // а не под `/api/v1`. С обычным `fetcher` страница получала 404
+  // по всем трём — и получала молча, потому что ошибку каждого
+  // необязательного запроса здесь гасят.
+  const catalog = useSWR<CatalogResponse>('/payments/catalog', rootFetcher, {
+    shouldRetryOnError: false,
+  });
 
-  if (error) return <p style={{ color: 'var(--danger)' }}>{error}</p>;
-  if (!catalog) return <p style={{ color: 'var(--muted)' }}>Загружаем тарифы…</p>;
+  const caps = useSWR<PlansResponse>('/access/plans', rootFetcher, { shouldRetryOnError: false });
 
-  // Текст строится по возможностям провайдера, а не по его имени:
-  // проверка `provider === 'bridge'` в пяти местах разъезжается
-  // при появлении третьего.
-  const bankTransfer = status?.capabilities.includes('bankInstructions') ?? false;
-  const hostedCheckout = status?.capabilities.includes('hostedCheckout') ?? false;
+  const status = useSWR<PaymentsStatus>('/payments/status', rootFetcher, {
+    shouldRetryOnError: false,
+  });
+
+  const capabilitiesByPlan: Record<string, string[]> = Object.fromEntries(
+    (caps.data?.plans ?? []).map((p) => [p.plan, p.capabilities]),
+  );
+
+  const priceOf = (plan: SellablePlan) => catalog.data?.plans.find((p) => p.plan === plan) ?? null;
+
+  const paymentsEnabled = status.data?.enabled ?? catalog.data?.paymentsEnabled ?? false;
+  const sandbox = status.data?.sandbox ?? false;
+
+  const trialActive = access?.effectivePlan === 'TRIAL';
+  const serviceAccess = access?.serviceAccess ?? false;
 
   return (
-    <div>
-      <h1>Тарифы</h1>
+    <div className="mx-auto max-w-6xl pb-16">
+      {/* ══════════════════ Первый экран ══════════════════════════ */}
+      <header className="pt-8 sm:pt-12">
+        <span className="inline-flex items-center rounded-full border border-accent/30 bg-accent/10 px-3 py-1 text-xs font-medium text-accent">
+          {catalog.data ? trialDaysLabel(catalog.data.trialHours) : '5 суток'} Pro бесплатно
+        </span>
 
-      <p style={{ color: 'var(--muted)', maxWidth: '62ch' }}>
-        Каждый оплаченный период — {catalog.plans[0]?.termDays ?? 30} суток. Первые{' '}
-        {catalog.trialHours} часов бесплатны, один раз на аккаунт. Продажа своих активов,
-        вывод средств и просмотр портфеля доступны при любом плане и после его окончания.
+        <h1 className="mt-4 max-w-[20ch] text-3xl font-bold leading-tight tracking-tight sm:text-4xl">
+          Выберите, сколько решений принимаете вы
+        </h1>
+
+        <p className="mt-4 max-w-[58ch] text-base leading-relaxed text-muted">
+          Ручной разбор, вход по сигналу или автоматическая стратегия — три уровня
+          контроля над одним и тем же терминалом. Начать можно с бесплатного периода
+          и передумать в любой момент.
+        </p>
+
+        {/* ─── Доверие ───────────────────────────────────────────── */}
+        <ul className="mt-6 flex flex-wrap gap-x-6 gap-y-2 text-sm text-muted">
+          <Trust>Карта для бесплатного периода не нужна</Trust>
+          <Trust>Автоматического продления нет</Trust>
+          <Trust>Продажа своих активов и вывод средств доступны всегда</Trust>
+        </ul>
+
+        {/* ─── Текущее состояние ─────────────────────────────────── */}
+        {!accessLoading && serviceAccess && (
+          <div className="surface-2 mt-6 flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3 text-sm">
+            <span className="font-medium">Служебный доступ</span>
+            <span className="text-muted">
+              Все возможности открыты ролью, без подписки и срока
+            </span>
+          </div>
+        )}
+
+        {!accessLoading && !serviceAccess && trialActive && access && (
+          <div className="surface-2 mt-6 flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3 text-sm">
+            <span className="font-medium">Бесплатный период активен</span>
+            <span className="text-muted">
+              осталось {trialRemainingLabel(access.trialRemainingSeconds)} · до{' '}
+              {formatUntil(access.trialExpiresAt)}
+            </span>
+          </div>
+        )}
+
+        {sandbox && (
+          <p className="mt-6 rounded-lg border border-down/40 bg-down/5 px-4 py-3 text-sm">
+            <strong>Тестовый режим оплаты.</strong> Настоящие деньги не принимаются
+            и не списываются — не вводите реальную карту.
+          </p>
+        )}
+      </header>
+
+      {/* ══════════════════ Карточки ═════════════════════════════ */}
+      <div className="mt-10 grid items-stretch gap-4 lg:grid-cols-3">
+        {catalog.isLoading ? (
+          <>
+            <CardSkeleton />
+            <CardSkeleton />
+            <CardSkeleton />
+          </>
+        ) : (
+          SELLABLE_PLANS.map((plan, i) => {
+            const entry = priceOf(plan);
+
+            return (
+              <PlanCard
+                key={plan}
+                plan={plan}
+                price={entry?.price ?? null}
+                termDays={entry?.termDays ?? null}
+                index={(i + 1) as 1 | 2 | 3}
+                cta={planCta({
+                  plan,
+                  authenticated: !anonymous,
+                  currentPlan: access?.effectivePlan ?? 'EXPIRED',
+                  serviceAccess,
+                  // Гость ещё не имеет состояния на сервере, но период
+                  // ему доступен — иначе первый экран предлагал бы
+                  // купить то, что даётся бесплатно.
+                  canStartTrial: anonymous ? true : (access?.canStartTrial ?? false),
+                  paymentsEnabled,
+                })}
+              />
+            );
+          })
+        )}
+      </div>
+
+      {catalog.error && (
+        <p className="mt-4 text-sm text-down" role="alert">
+          Не удалось загрузить тарифы. Обновите страницу.
+        </p>
+      )}
+
+      {/* ══════════════════ PnL ══════════════════════════════════ */}
+      <PnlBlock />
+
+      {/* ══════════════════ Сравнение ════════════════════════════ */}
+      <Comparison capabilitiesByPlan={capabilitiesByPlan} />
+
+      {/* ══════════════════ Оплата ═══════════════════════════════ */}
+      <details className="disclosure surface-1 mt-14 overflow-hidden">
+        <summary className="flex items-center gap-2 px-5 py-4 text-sm font-medium">
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 14 14"
+            fill="none"
+            aria-hidden
+            className="disclosure-chevron shrink-0 text-muted"
+          >
+            <path d="M5 3l4 4-4 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+          </svg>
+          Как проходит оплата
+        </summary>
+
+        <div className="disclosure-body space-y-3 border-t border-border px-5 py-4 text-sm leading-relaxed text-muted">
+          <p>
+            Оплаченный период — ровно{' '}
+            <strong className="text-white">
+              {catalog.data?.plans[0]?.termDays ?? 30} суток
+            </strong>
+            , не «месяц»: месяц бывает 28, 29, 30 и 31 день, и разница однажды
+            превратилась бы в спор.
+          </p>
+
+          <p>
+            Автоматического продления нет. Когда период заканчивается, доступ просто
+            закрывается — списания не происходит, и следующий период покупается отдельно.
+          </p>
+
+          <p>
+            Оплата принимается в{' '}
+            {catalog.data?.plans[0]?.sourceCurrency ?? 'USD'} и конвертируется
+            в {catalog.data?.plans[0]?.price.currency ?? 'USDC'}. Расчёт проходит в сети{' '}
+            {catalog.data?.plans[0]?.settlementChain === 'SOLANA'
+              ? 'Solana'
+              : (catalog.data?.plans[0]?.settlementChain ?? 'Solana')}
+            . Комиссии конвертации и окончательную сумму показывает платёжный провайдер —
+            мы их не назначаем и заранее не знаем.
+          </p>
+
+          {!paymentsEnabled && (
+            <p className="text-white">
+              Сейчас оплата не подключена. Кнопок покупки на странице нет намеренно:
+              кнопка, за которой ничего нет, хуже её отсутствия.
+            </p>
+          )}
+
+          <p>
+            Продажа своих активов, вывод средств и просмотр портфеля не зависят от плана
+            и остаются доступными после его окончания. <Link href="/terminal" className="text-accent hover:underline">Терминал</Link>{' '}
+            открыт и без регистрации.
+          </p>
+        </div>
+      </details>
+
+      <p className="mt-10 max-w-[68ch] text-xs leading-relaxed text-muted/60">
+        Торговля криптоактивами сопряжена с высоким риском полной потери средств.
+        Мем-коины крайне волатильны и могут обесцениться до нуля. Оценка риска, находки
+        и статистика не являются инвестиционной рекомендацией.
       </p>
+    </div>
+  );
+}
 
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))',
-          gap: '16px',
-          marginTop: '24px',
-        }}
-      >
-        {catalog.plans.map((p) => {
-          const current = access?.effectivePlan === p.plan;
+function Trust({ children }: { children: React.ReactNode }) {
+  return (
+    <li className="flex items-center gap-2">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden className="shrink-0 text-accent">
+        <path
+          d="M3.5 8.5l3 3 6-7"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+      {children}
+    </li>
+  );
+}
 
-          return (
-            <section
-              key={p.plan}
-              style={{
-                border: current ? '2px solid var(--accent)' : '1px solid var(--border)',
-                borderRadius: '12px',
-                padding: '16px',
-              }}
-            >
-              <h2 style={{ marginTop: 0, fontSize: '18px' }}>
-                {PLAN_TITLE[p.plan] ?? p.plan}
-                {current ? <span style={{ color: 'var(--muted)' }}> · текущий</span> : null}
-              </h2>
+/**
+ * Скелетон карточки.
+ *
+ * Повторяет её форму, а не сообщает «загружаем»: когда содержимое
+ * приезжает, разметка не прыгает, потому что место уже занято.
+ */
+function CardSkeleton() {
+  return (
+    <div className="surface-1 flex h-full flex-col p-5 sm:p-6" aria-hidden>
+      <div className="skeleton h-5 w-24" />
+      <div className="skeleton mt-6 h-9 w-32" />
+      <div className="skeleton mt-2 h-3 w-40" />
+      <div className="skeleton mt-5 h-4 w-full" />
 
-              <p style={{ fontSize: '22px', fontWeight: 700, margin: '0 0 4px' }}>
-                {p.price.amount} {p.price.currency}
-              </p>
-
-              <p style={{ fontSize: '13px', color: 'var(--muted)', margin: '0 0 12px' }}>
-                за {p.termDays} суток · оплата {p.sourceAmount} {p.sourceCurrency}
-              </p>
-
-              <ul style={{ paddingLeft: '18px', margin: '0 0 16px' }}>
-                {(caps[p.plan] ?? []).map((c) => (
-                  <li key={c} style={{ fontSize: '14px', lineHeight: 1.7 }}>
-                    {CAPABILITY_TITLE[c] ?? c}
-                  </li>
-                ))}
-              </ul>
-
-              {catalog.paymentsEnabled ? (
-                <Link href={`/checkout?plan=${p.plan}`}>Оплатить</Link>
-              ) : (
-                // Кнопки нет вовсе. Нерабочая кнопка оплаты хуже её
-                // отсутствия: человек нажмёт и решит, что сломался он.
-                <span style={{ fontSize: '13px', color: 'var(--muted)' }}>
-                  Оплата пока не подключена
-                </span>
-              )}
-            </section>
-          );
-        })}
+      <div className="mt-6 flex-1 space-y-3">
+        {Array.from({ length: 5 }).map((_, i) => (
+          <div key={i} className="skeleton h-3.5 w-full" />
+        ))}
       </div>
 
-      <div style={{ marginTop: '24px', fontSize: '14px', color: 'var(--muted)', maxWidth: '62ch' }}>
-        {status?.sandbox ? (
-          <p style={{ margin: '0 0 8px', color: 'var(--danger)' }}>
-            Оплата работает в тестовом режиме: настоящие деньги не принимаются.
-          </p>
-        ) : null}
-
-        <p style={{ margin: '0 0 8px' }}>
-          Оплата принимается в {catalog.plans[0]?.sourceCurrency ?? 'USD'}
-          {bankTransfer ? ' банковским переводом' : ''}. Провайдер конвертирует сумму
-          в {catalog.plans[0]?.price.currency ?? 'USDC'} и отправляет в сети{' '}
-          {catalog.plans[0]?.settlementChain === 'SOLANA' ? 'Solana' : catalog.plans[0]?.settlementChain}.
-          Комиссии конвертации и итоговая доставленная сумма показываются после завершения.
-        </p>
-
-        <p style={{ margin: '0 0 8px' }}>
-          {/* Сроки называются те, что бывают на самом деле. «Мгновенно»
-              на банковском переводе — обещание, которое нарушится
-              в первый же раз. */}
-          {bankTransfer
-            ? 'Доступ открывается не мгновенно: банковский перевод идёт от нескольких часов до нескольких рабочих дней.'
-            : 'Доступ открывается после того, как оплата подтвердится в сети. Обычно это минуты, иногда дольше.'}{' '}
-          Автоматического продления нет — следующий период покупается отдельно.
-        </p>
-
-        {hostedCheckout ? (
-          <p style={{ margin: 0 }}>
-            Оплата проходит на странице платёжного провайдера. Он же проверяет личность
-            и может отказать в обслуживании по стране проживания — это его решение,
-            и повлиять на него мы не можем.
-          </p>
-        ) : null}
-      </div>
+      <div className="skeleton mt-6 h-10 w-full" />
     </div>
   );
 }

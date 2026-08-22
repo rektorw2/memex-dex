@@ -62,6 +62,7 @@ function OnboardingInner() {
     plan: access?.effectivePlan ?? 'EXPIRED',
     emailVerified: access?.emailVerified ?? false,
     canStartTrial: access?.canStartTrial ?? false,
+    serviceAccess: access?.serviceAccess ?? false,
     choseTrial,
   });
 

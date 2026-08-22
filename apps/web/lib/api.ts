@@ -1,3 +1,4 @@
+import { apiBaseFor } from '@memex/core';
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api/v1';
 
 export class ApiError extends Error {
@@ -82,7 +83,18 @@ export async function api<T = unknown>(
   if (token) headers.authorization = `Bearer ${token}`;
   if (init.idempotencyKey) headers['idempotency-key'] = init.idempotencyKey;
 
-  const url = `${baseFor(init.base ?? 'v1')}${path}`;
+  /*
+   * База выбирается по таблице, если её не задали явно.
+   *
+   * Раньше умолчанием было `v1`, и всякий вызов к маршрутам доступа
+   * или оплаты требовал помнить про `base: 'root'`. Один раз
+   * не вспомнили — страница тарифов получила три ответа 404 и молча
+   * показала пустой каталог.
+   *
+   * Явно указанный `base` сохраняет приоритет: таблица описывает
+   * обычный случай, а не запрещает исключения.
+   */
+  const url = `${baseFor(init.base ?? apiBaseFor(path))}${path}`;
 
   let res: Response;
   try {
@@ -119,7 +131,28 @@ export async function api<T = unknown>(
   return data as T;
 }
 
+/**
+ * Загрузчик для SWR.
+ *
+ * Базу выбирает `api`, по той же таблице. Здесь не повторяется:
+ * два места, где выбирают базу, — это два места, где её однажды
+ * выберут по-разному.
+ */
 export const fetcher = <T>(path: string) => api<T>(path);
+
+/**
+ * Явный загрузчик для маршрутов под `/api`.
+ *
+ * Делает то же самое, что `fetcher`, — таблица даёт для этих путей
+ * ту же базу, — но говорит об этом на месте вызова. На странице,
+ * где рядом стоят запросы к обеим базам, читать намерение полезнее,
+ * чем догадываться о нём.
+ *
+ * Отдельная стабильная ссылка, а не стрелка на месте вызова: SWR
+ * сравнивает загрузчик по ссылке, и новая функция на каждый рендер
+ * заставляла бы его перезапрашивать.
+ */
+export const rootFetcher = <T>(path: string) => api<T>(path, { base: 'root' });
 
 /**
  * Единая расшифровка ошибки для интерфейса.

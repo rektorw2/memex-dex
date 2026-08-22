@@ -58,10 +58,20 @@ export const ROUTE_RULES: readonly RouteRule[] = [
   { prefix: '/token', audience: 'public' },
   { prefix: '/login', audience: 'public' },
 
+  // Витрина тарифов. Цены и то, что входит в план, — не приватные
+  // данные, а первое, что человек хочет узнать о платном продукте.
+  // Страница, которую нельзя посмотреть без аккаунта, требует
+  // регистрацию за право узнать стоимость; на этом закрывают вкладку.
+  //
+  // Приватного здесь нет: блок PnL гостю не показывается и даже
+  // не запрашивается, а кнопка ведёт на регистрацию.
+  { prefix: '/plans', audience: 'public' },
+
   // ─── Нужен вход ──────────────────────────────────────────────────
   { prefix: '/onboarding', audience: 'authenticated' },
   { prefix: '/access', audience: 'authenticated' },
-  { prefix: '/plans', audience: 'authenticated' },
+
+  // Оплата — уже не витрина: платить без аккаунта некому и незачем.
   { prefix: '/checkout', audience: 'authenticated' },
 
   // ─── Нужна возможность ───────────────────────────────────────────
@@ -287,6 +297,14 @@ export interface OnboardingState {
   canStartTrial: boolean;
   /** Нажал ли человек «Pro — бесплатный период». Намерение, не состояние. */
   choseTrial: boolean;
+  /**
+   * Доступ выдан ролью, а не тарифом.
+   *
+   * Администратору первый сценарий не нужен: возможности у него
+   * полные, и вести его выбирать тариф значит показывать, что мы
+   * не знаем собственного состояния.
+   */
+  serviceAccess?: boolean;
 }
 
 /**
@@ -302,6 +320,10 @@ export interface OnboardingState {
  */
 export function onboardingStep(state: OnboardingState): OnboardingStep {
   if (!state.authenticated) return 'login';
+
+  // Служебный доступ раньше плана: у администратора план может быть
+  // каким угодно, включая EXPIRED, а доступ при этом полный.
+  if (state.serviceAccess) return 'done';
 
   // Действующий план важнее всего остального: у человека уже есть
   // доступ, и показывать ему выбор тарифа значит намекать, что

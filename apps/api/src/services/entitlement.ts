@@ -7,12 +7,14 @@ import {
   requiredPlanFor,
   isTrialActive,
   trialRemainingSeconds,
+  ALL_CAPABILITIES,
   type Entitlement,
   type Capability,
   type PlanCode,
 } from '@memex/core';
 import { activeSubscription } from './subscriptions.js';
 import { isEmailVerified } from './email-verify.js';
+import { hasServiceAccess } from './service-access.js';
 import { trialOf } from './trial.js';
 import { serverNow } from '../lib/clock.js';
 
@@ -50,8 +52,19 @@ export interface RequestEntitlement extends Entitlement {
    * Нужен первому сценарию: без подтверждения пробный период
    * не выдаётся, и интерфейс обязан знать это заранее, а не узнавать
    * отказом после того, как человек нажал кнопку.
+   *
+   * У администратора остаётся честным: служебный доступ обходит
+   * этот шаг, а не притворяется, что он пройден.
    */
   emailVerified: boolean;
+  /**
+   * Доступ выдан ролью, а не тарифом.
+   *
+   * Нужен интерфейсу, чтобы не предлагать администратору купить
+   * то, что у него и так есть, и не показывать ему `EXPIRED`
+   * при полном наборе возможностей.
+   */
+  serviceAccess: boolean;
   serverTime: Date;
 }
 
@@ -81,10 +94,21 @@ export async function resolveUserId(req: FastifyRequest): Promise<string | null>
  * ни оплаты, ни пробного периода, и умолчание выбрано в сторону
  * меньших прав.
  *
- * Роль пользователя здесь сознательно не читается. Администратор
- * не получает автоторговлю за должность: если однажды понадобится
- * служебный доступ, он появится как отдельная явная политика
- * с собственной записью в журнале, а не как побочный эффект роли.
+ * Роль читается, и это изменение относительно прежнего порядка.
+ * Раньше здесь было написано, что администратор не получает прав
+ * за должность; теперь получает — но не побочным эффектом роли,
+ * а именованной политикой в `service-access.ts`, у которой есть
+ * своё описание, свои границы и свои тесты.
+ *
+ * Границы такие. Обходятся тарифные правила: подписка, пробный
+ * период, подтверждение почты. Не обходится ничего из защиты —
+ * вход, подпись токена, ограничение частоты, подпись вебхуков,
+ * идемпотентность, KMS, аудит и торговые risk-guards работают
+ * как для всех.
+ *
+ * Роль берётся из базы, а не из токена: токен подписан нами,
+ * но это снимок на момент входа, и снятая роль осталась бы в нём
+ * до истечения срока. Из тела запроса роль не читается никогда.
  */
 export async function entitlementOfRequest(
   req: FastifyRequest,
@@ -102,14 +126,16 @@ export async function entitlementOfRequest(
       trialRemainingSeconds: 0,
       canStartTrial: false,
       emailVerified: false,
+      serviceAccess: false,
       serverTime: now,
     };
   }
 
-  const [sub, trial, emailVerified] = await Promise.all([
+  const [sub, trial, emailVerified, serviceAccess] = await Promise.all([
     activeSubscription(userId, now),
     trialOf(userId),
     isEmailVerified(userId),
+    hasServiceAccess(userId),
   ]);
 
   const trialState = trial
@@ -130,8 +156,23 @@ export async function entitlementOfRequest(
     now.getTime(),
   );
 
+  /*
+   * Служебный доступ подменяет только набор возможностей.
+   *
+   * План остаётся тем, какой есть на самом деле: у администратора
+   * с оплаченным PRO так и написано PRO, а у администратора без
+   * подписки — EXPIRED. Выдуманная подписка была бы записью
+   * о деньгах, которых не было, и однажды попала бы в отчёт.
+   *
+   * Пробный период администратору не предлагается: он ему незачем,
+   * и потратить единственную попытку на человека, у которого доступ
+   * и так полный, значит отобрать её у него же после снятия роли.
+   */
+  const capabilities = serviceAccess ? ALL_CAPABILITIES : entitlementFor(plan).capabilities;
+
   return {
-    ...entitlementFor(plan),
+    plan,
+    capabilities,
     userId,
     trialActive: isTrialActive(trialState, now.getTime()),
     trialStartedAt: trial?.startsAt ?? null,
@@ -140,8 +181,9 @@ export async function entitlementOfRequest(
     // Пробный период даётся один раз за всё время, а не один раз
     // одновременно. Наличие любой записи — даже давно истёкшей —
     // закрывает возможность начать заново.
-    canStartTrial: trial == null,
+    canStartTrial: serviceAccess ? false : trial == null,
     emailVerified,
+    serviceAccess,
     serverTime: now,
   };
 }
@@ -210,14 +252,23 @@ export function denyIfMissing(
 export function accessView(e: RequestEntitlement) {
   return {
     effectivePlan: e.plan,
-    status: e.plan === 'EXPIRED' ? 'expired' : e.trialActive && e.plan === 'TRIAL' ? 'trial' : 'active',
+    status: e.serviceAccess
+      ? 'service'
+      : e.plan === 'EXPIRED'
+        ? 'expired'
+        : e.trialActive && e.plan === 'TRIAL'
+          ? 'trial'
+          : 'active',
     capabilities: capabilityList(e),
     trialStartedAt: e.trialStartedAt?.toISOString() ?? null,
     trialExpiresAt: e.trialExpiresAt?.toISOString() ?? null,
     trialRemainingSeconds: e.trialRemainingSeconds,
     canStartTrial: e.canStartTrial,
     emailVerified: e.emailVerified,
-    upgradeRequired: e.plan === 'EXPIRED',
+    serviceAccess: e.serviceAccess,
+    // Администратору покупать нечего: возможности у него полные
+    // независимо от того, что написано в плане.
+    upgradeRequired: e.plan === 'EXPIRED' && !e.serviceAccess,
     serverTime: e.serverTime.toISOString(),
   };
 }

@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
+  CAPABILITIES,
+  ALL_CAPABILITIES,
   entitlementFor,
   entitlementOf,
   effectivePlan,
@@ -323,5 +325,37 @@ describe('права по договорам целиком', () => {
     expect(e.plan).toBe('EXPIRED');
     expect(can(e, 'RADAR_ACCESS')).toBe(false);
     expect(can(e, 'SELL_OWN_ASSET')).toBe(true);
+  });
+});
+
+describe('полный набор возможностей', () => {
+  it('собирается из единственного списка', () => {
+    // Массив и тип выведены друг из друга, поэтому добавить одно
+    // без другого нельзя. Служебному доступу это и нужно: новая
+    // возможность достаётся ему в день добавления, без правки
+    // второго списка где-то ещё.
+    expect(ALL_CAPABILITIES.size).toBe(CAPABILITIES.length);
+
+    for (const c of CAPABILITIES) {
+      expect(ALL_CAPABILITIES.has(c), c).toBe(true);
+    }
+  });
+
+  it('в списке нет повторов', () => {
+    expect(new Set(CAPABILITIES).size).toBe(CAPABILITIES.length);
+  });
+
+  it('содержит всё, что даёт самый полный план, и не меньше', () => {
+    for (const c of entitlementFor('FULL_AUTO').capabilities) {
+      expect(ALL_CAPABILITIES.has(c), c).toBe(true);
+    }
+  });
+
+  it('ни один тарифный план не ссылается на полный набор', () => {
+    // Иначе новая платная возможность досталась бы бесплатному
+    // периоду в день добавления.
+    for (const plan of ALL_PLANS) {
+      expect(entitlementFor(plan).capabilities, plan).not.toBe(ALL_CAPABILITIES);
+    }
   });
 });

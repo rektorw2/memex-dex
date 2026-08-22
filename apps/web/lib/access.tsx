@@ -21,7 +21,7 @@ export type PlanCode = 'EXPIRED' | 'TRIAL' | 'PRO' | 'SEMI_AUTO' | 'FULL_AUTO';
 
 export interface AccessState {
   effectivePlan: PlanCode;
-  status: 'expired' | 'trial' | 'active';
+  status: 'expired' | 'trial' | 'active' | 'service';
   capabilities: string[];
   trialStartedAt: string | null;
   trialExpiresAt: string | null;
@@ -35,6 +35,14 @@ export interface AccessState {
    * до нажатия, а не после отказа.
    */
   emailVerified: boolean;
+  /**
+   * Доступ выдан ролью, а не тарифом.
+   *
+   * Решает сервер. Интерфейс по нему только выбирает, что показать:
+   * предлагать администратору купить то, что у него и так есть,
+   * значит показывать, что мы не знаем собственного состояния.
+   */
+  serviceAccess: boolean;
   upgradeRequired: boolean;
   serverTime: string;
 }

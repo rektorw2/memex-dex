@@ -73,6 +73,8 @@ export * from './payment-state.js';
 export * from './payment-provider.js';
 export * from './entitlements.js';
 export * from './route-access.js';
+export * from './api-base.js';
+export * from './plans-presentation.js';
 export * from './deposit.js';
 export * from './email-verification.js';
 export * from './email-message.js';

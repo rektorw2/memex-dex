@@ -34,6 +34,7 @@ export default function AccessPage() {
       plan: access.effectivePlan,
       emailVerified: access.emailVerified,
       canStartTrial: access.canStartTrial,
+      serviceAccess: access.serviceAccess,
       // Намерения у страницы нет: она никого ни к чему не подталкивает,
       // а только отправляет туда, где выбор делается явно.
       choseTrial: false,
@@ -81,10 +82,34 @@ export default function AccessPage() {
 
       <section className="rounded-xl border border-border p-4">
         <h2 className="mt-0 text-lg font-medium">
-          {trialActive ? 'Бесплатный период' : 'Текущий план'}
+          {access.serviceAccess
+            ? 'Служебный доступ'
+            : trialActive
+              ? 'Бесплатный период'
+              : 'Текущий план'}
         </h2>
 
-        {trialActive ? (
+        {access.serviceAccess ? (
+          <div className="space-y-2 text-sm">
+            <p className="m-0">
+              Все возможности открыты ролью администратора: без подписки,
+              без бесплатного периода и без срока.
+            </p>
+
+            {/* План показывается настоящий. Выдуманная подписка была бы
+                записью о деньгах, которых не было. */}
+            {access.effectivePlan !== 'EXPIRED' && (
+              <p className="m-0 text-muted">
+                Собственный план аккаунта: <strong>{access.effectivePlan}</strong>.
+              </p>
+            )}
+
+            <p className="m-0 text-muted">
+              Доступ исчезнет вместе с ролью — данные аккаунта при этом
+              не меняются.
+            </p>
+          </div>
+        ) : trialActive ? (
           <p className="m-0 text-sm">
             Активен до <strong>{formatUntil(access.trialExpiresAt)}</strong>, осталось{' '}
             {trialRemainingLabel(access.trialRemainingSeconds)}.

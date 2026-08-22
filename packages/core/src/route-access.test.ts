@@ -58,7 +58,7 @@ const full: VisitorState = {
 const admin: VisitorState = { ...full, isAdmin: true };
 
 describe('что открыто гостю', () => {
-  it.each(['/', '/terminal', '/token', '/login'])('%s публичен', (path) => {
+  it.each(['/', '/terminal', '/token', '/login', '/plans'])('%s публичен', (path) => {
     expect(isPublicRoute(path)).toBe(true);
     expect(guard(path, guest)).toEqual({ kind: 'allow' });
   });
@@ -72,6 +72,14 @@ describe('что открыто гостю', () => {
     expect(guard('/terminal?token=abc', guest).kind).toBe('allow');
   });
 
+  it('витрина тарифов открыта гостю, а оплата нет', () => {
+    // Узнать стоимость можно без аккаунта: страница, требующая
+    // регистрацию за право увидеть цену, закрывается не глядя.
+    // Платить без аккаунта, наоборот, некому и незачем.
+    expect(guard('/plans', guest)).toEqual({ kind: 'allow' });
+    expect(guard('/checkout', guest).kind).toBe('redirect');
+  });
+
   it.each([
     '/radar',
     '/radar/alerts',
@@ -80,7 +88,6 @@ describe('что открыто гостю', () => {
     '/wallets',
     '/copy',
     '/calls',
-    '/plans',
     '/checkout',
     '/access',
     '/admin',
@@ -135,7 +142,7 @@ describe('вошедший без плана', () => {
     expect(guard('/wallet', expired)).toEqual({ kind: 'allow' });
   });
 
-  it('видит тарифы и онбординг', () => {
+  it('видит тарифы, онбординг и оплату', () => {
     expect(guard('/onboarding', expired)).toEqual({ kind: 'allow' });
     expect(guard('/plans', expired)).toEqual({ kind: 'allow' });
     expect(guard('/checkout', expired)).toEqual({ kind: 'allow' });
@@ -167,8 +174,14 @@ describe('администратор', () => {
     expect(guard('/admin/auto', admin)).toEqual({ kind: 'allow' });
   });
 
-  it('роль сама по себе торговых прав не даёт', () => {
-    // Роль администратора — обязанности по поддержке, а не деньги.
+  it('сторож не выводит возможности из роли', () => {
+    // Служебный доступ существует, но выдаёт его сервер: он присылает
+    // полный набор возможностей. Сторож в браузере роль для этого
+    // не использует — иначе достаточно было бы поправить localStorage.
+    //
+    // Состояние ниже в жизни не встречается: у настоящего
+    // администратора возможности будут полными. Проверяется именно
+    // то, что интерфейс не додумывает их сам.
     const support: VisitorState = {
       authenticated: true,
       isAdmin: true,
@@ -270,6 +283,19 @@ describe('шаги первого сценария', () => {
     expect(onboardingStep(used)).toBe('plans-only');
     // Ни ожиданием, ни повторным нажатием, ни новым входом.
     expect(onboardingStep({ ...used, choseTrial: false })).toBe('plans-only');
+  });
+
+  it('администратора онбординг не касается', () => {
+    // Возможности у него полные независимо от плана; вести его
+    // выбирать тариф значит показывать, что мы не знаем состояния.
+    expect(onboardingStep({ ...base, serviceAccess: true })).toBe('done');
+    expect(onboardingStep({ ...base, serviceAccess: true, choseTrial: true })).toBe('done');
+    expect(needsOnboarding({ ...base, serviceAccess: true })).toBe(false);
+  });
+
+  it('без служебного доступа поведение прежнее', () => {
+    expect(onboardingStep({ ...base, serviceAccess: false })).toBe('choose-plan');
+    expect(onboardingStep(base)).toBe('choose-plan');
   });
 
   it('онбординг нужен только тем, кто его не прошёл', () => {

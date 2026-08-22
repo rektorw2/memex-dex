@@ -53,6 +53,9 @@ const token = {
 
 vi.mock('../lib/prisma.js', () => ({
   prisma: {
+    // Роль читается политикой служебного доступа. Обычный
+    // пользователь — значит, тарифные правила работают как обычно.
+    user: { findUnique: async () => ({ role: 'USER' }) },
     token: {
       findMany: async () => [token],
       findUnique: async () => token,

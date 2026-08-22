@@ -10,6 +10,7 @@ import {
   entitlementFor,
   capabilityList,
   requiredPlanFor,
+  CAPABILITIES,
   type PlanCode,
 } from '@memex/core';
 
@@ -39,6 +40,8 @@ interface FakeState {
   paidPlan: Exclude<PlanCode, 'TRIAL' | 'EXPIRED'> | null;
   paidExpiresAt: Date | null;
   emailVerified: boolean;
+  /** Роль в базе. Меняется между тестами, как в жизни. */
+  role: 'USER' | 'ADMIN';
 }
 
 const state: FakeState = {
@@ -46,6 +49,7 @@ const state: FakeState = {
   paidPlan: null,
   paidExpiresAt: null,
   emailVerified: true,
+  role: 'USER',
 };
 
 let now = T0;
@@ -91,6 +95,17 @@ vi.mock('../services/email-verify.js', () => ({
     return { result: 'OK', verifiedAt: new Date(now) };
   },
   isEmailVerified: async () => state.emailVerified,
+}));
+
+/*
+ * Роль читается сервисом из базы, а не из токена.
+ *
+ * Подделка повторяет это: меняем `state.role`, а токен оставляем
+ * прежним — так проверяется, что снятие роли действует немедленно,
+ * а не после истечения выданного токена.
+ */
+vi.mock('../services/service-access.js', () => ({
+  hasServiceAccess: async (userId: string | null) => userId != null && state.role === 'ADMIN',
 }));
 
 vi.mock('../services/subscriptions.js', () => ({
@@ -172,6 +187,7 @@ beforeEach(async () => {
   state.paidPlan = null;
   state.paidExpiresAt = null;
   state.emailVerified = true;
+  state.role = 'USER';
   delivery = 'ok';
 
   app = await buildApp();
@@ -676,5 +692,158 @@ describe('ответы о доступе', () => {
 
     expect(r.statusCode).toBe(403);
     expect(r.json().requiredPlan).toBe(requiredPlanFor('LEADER_COPY_BUY'));
+  });
+});
+
+// ══════════════════════ Служебный доступ администратора ═════════════════════
+
+/**
+ * Роль даёт полный набор возможностей и ничего больше.
+ *
+ * «Ничего больше» — не оговорка. Вход, подпись токена, ограничение
+ * частоты и аудит работают так же: обходятся тарифные правила,
+ * а не защита.
+ */
+describe('служебный доступ администратора', () => {
+  beforeEach(() => {
+    state.role = 'ADMIN';
+    state.emailVerified = false;
+    state.trial = null;
+    state.paidPlan = null;
+  });
+
+  it('даёт все возможности без подписки, периода и подтверждённой почты', async () => {
+    const r = await get('/api/access/me');
+
+    expect(r.statusCode).toBe(200);
+    expect(r.json().capabilities.sort()).toEqual([...CAPABILITIES].sort());
+  });
+
+  it('почта остаётся неподтверждённой честно', async () => {
+    // Записать фиктивное подтверждение было бы проще и было бы
+    // ложью: администратор обходит этот шаг, а не проходит его.
+    expect((await get('/api/access/me')).json().emailVerified).toBe(false);
+  });
+
+  it('открывает все защищённые продуктовые маршруты', async () => {
+    for (const path of [
+      '/radar',
+      '/terminal',
+      '/smart-wallets',
+      '/copy',
+      '/semi-auto',
+      '/auto-exit',
+      '/portfolio',
+      '/withdraw',
+    ]) {
+      expect((await get(path)).statusCode, path).toBe(200);
+    }
+
+    expect((await post('/orders', { side: 'BUY' })).statusCode).toBe(200);
+  });
+
+  it('не предлагает купить подписку и не считается истёкшим', async () => {
+    const body = (await get('/api/access/me')).json();
+
+    expect(body.serviceAccess).toBe(true);
+    expect(body.status).toBe('service');
+    expect(body.upgradeRequired).toBe(false);
+  });
+
+  it('не предлагает пробный период', async () => {
+    // Единственная попытка не должна тратиться на человека,
+    // у которого доступ и так полный: после снятия роли она ему
+    // ещё понадобится.
+    expect((await get('/api/access/me')).json().canStartTrial).toBe(false);
+  });
+
+  it('не создаёт фиктивной подписки: план остаётся настоящим', async () => {
+    // Выдуманная запись о плане — это запись о деньгах, которых
+    // не было, и однажды она попала бы в отчёт.
+    expect((await get('/api/access/me')).json().effectivePlan).toBe('EXPIRED');
+  });
+
+  it('не даёт запустить пробный период', async () => {
+    const r = await post('/api/access/trial/activate');
+
+    // Почта не подтверждена, и обход тарифа этого не меняет:
+    // активация идёт обычным путём и обычным путём отказывает.
+    expect(r.statusCode).toBe(403);
+    expect(r.json().code).toBe('EMAIL_NOT_VERIFIED');
+  });
+
+  it('оплаченный план администратора остаётся видимым', async () => {
+    // Реальную подписку служебный доступ не прячет и не удаляет.
+    state.paidPlan = 'PRO';
+    state.paidExpiresAt = new Date(T0 + TRIAL_DURATION_MS);
+
+    const body = (await get('/api/access/me')).json();
+
+    expect(body.effectivePlan).toBe('PRO');
+    expect(body.serviceAccess).toBe(true);
+  });
+});
+
+describe('роль определяет только сервер', () => {
+  it('обычный неподтверждённый пользователь по-прежнему закрыт', async () => {
+    state.role = 'USER';
+    state.emailVerified = false;
+
+    expect((await get('/radar')).statusCode).toBe(403);
+    expect((await get('/smart-wallets')).statusCode).toBe(403);
+    expect((await post('/api/access/trial/activate')).statusCode).toBe(403);
+  });
+
+  it('роль из тела запроса игнорируется', async () => {
+    state.role = 'USER';
+
+    const r = await post('/orders', { side: 'BUY', role: 'ADMIN', isAdmin: true });
+
+    expect(r.statusCode).toBe(403);
+    expect(r.json().code).toBe('UPGRADE_REQUIRED');
+  });
+
+  it('роль из строки запроса и заголовка игнорируется', async () => {
+    state.role = 'USER';
+
+    expect((await get('/radar?role=ADMIN&serviceAccess=true')).statusCode).toBe(403);
+    expect((await get('/radar', { 'x-role': 'ADMIN' })).statusCode).toBe(403);
+  });
+
+  it('роль в токене без роли в базе доступа не даёт', async () => {
+    // Токен подписан нами, но это снимок на момент входа. Источник
+    // истины — база, иначе отзыв роли не действовал бы до истечения
+    // срока токена.
+    state.role = 'USER';
+    token = app.jwt.sign({ sub: 'user-1', role: 'ADMIN' });
+
+    expect((await get('/radar')).statusCode).toBe(403);
+    expect((await get('/api/access/me')).json().serviceAccess).toBe(false);
+  });
+
+  it('после снятия роли доступ пересчитывается по подписке', async () => {
+    state.role = 'ADMIN';
+    expect((await get('/copy')).statusCode).toBe(200);
+
+    // Роль сняли. Токен тот же, данные пользователя не тронуты.
+    state.role = 'USER';
+
+    expect((await get('/copy')).statusCode).toBe(403);
+    expect((await get('/api/access/me')).json().serviceAccess).toBe(false);
+
+    // Обычная подписка продолжает работать как обычно.
+    state.paidPlan = 'SEMI_AUTO';
+    expect((await get('/copy')).statusCode).toBe(200);
+  });
+
+  it('снятие роли не удаляет данные пользователя', async () => {
+    state.role = 'ADMIN';
+    state.paidPlan = 'PRO';
+    await get('/api/access/me');
+
+    state.role = 'USER';
+
+    const body = (await get('/api/access/me')).json();
+    expect(body.effectivePlan).toBe('PRO');
   });
 });
