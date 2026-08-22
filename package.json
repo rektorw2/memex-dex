@@ -16,6 +16,10 @@
     "dev:worker": "npm run build -w @memex/core && npm run worker -w @memex/api",
     "db:generate": "prisma generate --schema=prisma/schema.prisma",
     "db:push": "prisma db push --schema=prisma/schema.prisma",
+    "db:drift": "bash scripts/migrations-drift.sh",
+    "db:migrations": "bash scripts/migrations-prepare.sh",
+    "db:verify": "node scripts/migrations-verify.mjs",
+    "db:backfill-snapshots": "tsx apps/api/scripts/snapshots-backfill.ts",
     "db:studio": "prisma studio --schema=prisma/schema.prisma",
     "db:seed": "tsx prisma/seed.ts",
     "admin:create": "tsx prisma/create-admin.ts"
@@ -24,6 +28,7 @@
     "seed": "tsx prisma/seed.ts"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.5",
     "prisma": "^6.2.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",

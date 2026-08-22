@@ -1,0 +1,2 @@
+# Файл создаётся Prisma. Менять вручную нечего.
+provider = "postgresql"

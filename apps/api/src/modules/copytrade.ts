@@ -1,3 +1,4 @@
+import { entitlementOfRequest, denyIfMissing } from '../services/entitlement.js';
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { Prisma as P } from '@prisma/client';
@@ -73,6 +74,12 @@ export const copyRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.post('/copy/subscribe', { preHandler: [app.authenticate] }, async (req, reply) => {
+    // Копирование покупок — платная возможность. Отдельно от продажи:
+    // подписка на лидера может закончиться, а уже открытые позиции
+    // человек продолжает вести сам.
+    const ent = await entitlementOfRequest(req);
+    if (denyIfMissing(ent, 'LEADER_COPY_BUY', reply)) return reply;
+
     const body = subscribeSchema.parse(req.body);
     const followerId = req.user.sub;
 
@@ -135,6 +142,12 @@ export const copyRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.patch('/copy/subscriptions/:id', { preHandler: [app.authenticate] }, async (req, reply) => {
+    // Включение копирования — та же платная возможность, что и первая
+    // подписка. Без проверки здесь достаточно было бы отключить
+    // подписку до окончания оплаты и включить обратно после.
+    const ent = await entitlementOfRequest(req);
+    if (denyIfMissing(ent, 'LEADER_COPY_BUY', reply)) return reply;
+
     const { id } = z.object({ id: z.string() }).parse(req.params);
     const { status } = z.object({ status: z.enum(['ACTIVE', 'PAUSED', 'CANCELLED']) }).parse(req.body);
 

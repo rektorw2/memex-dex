@@ -67,6 +67,11 @@ export * from './okx-wallet-type.js';
 // Детерминированный допуск автоматической покупки.
 export * from './risk-gate-decision.js';
 
-// Права по плану подписки и задержка данных.
+// Права по плану подписки и пробному периоду.
+export * from './subscription-catalog.js';
+export * from './payment-state.js';
+export * from './payment-provider.js';
 export * from './entitlements.js';
-export * from './data-delay.js';
+export * from './deposit.js';
+export * from './email-verification.js';
+export * from './email-message.js';

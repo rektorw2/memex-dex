@@ -67,9 +67,10 @@ export const GATE_REASON = {
   providerUnavailable: 'PROVIDER_UNAVAILABLE',
   killSwitchActive: 'KILL_SWITCH_ACTIVE',
   missingRequiredLimits: 'MISSING_REQUIRED_LIMITS',
+  riskDataStale: 'RISK_DATA_STALE',
+  unsupportedWalletCategory: 'UNSUPPORTED_WALLET_CATEGORY',
   riskDataUnavailableOrStale: 'RISK_DATA_UNAVAILABLE_OR_STALE',
   sourcesDisagree: 'SOURCES_DISAGREE',
-  mixedSourceQuality: 'MIXED_SOURCE_QUALITY',
   nearThreshold: 'NEAR_THRESHOLD',
 } as const;
 
@@ -92,6 +93,32 @@ export interface GateLimits {
   maxOpenPositions: number;
   maxPositionsPerToken: number;
   dailyLossLimitUsd: number;
+  /**
+   * Предельный возраст проверок контракта.
+   *
+   * Обязателен: без него «устарело» не имеет определения, и решать
+   * пришлось бы на глаз. Старше этого — запрет, а не сомнение.
+   */
+  maxRiskAgeMs: number;
+}
+
+/**
+ * Полоса пересмотра.
+ *
+ * Необязательная и без значения по умолчанию. Её отсутствие означает,
+ * что полосы нет вовсе, а не что она равна какому-то числу: скрытый
+ * порог опаснее отсутствующего, потому что о нём никто не знает.
+ *
+ * Каждое поле — доля от основного порога. `0.05` означает «считать
+ * неоднозначным всё, что отстоит от предела меньше чем на пять
+ * процентов».
+ */
+export interface ReviewBand {
+  priceImpactRatio?: number;
+  liquidityRatio?: number;
+  topHolderRatio?: number;
+  /** Возраст проверок, после которого стоит присмотреться. */
+  riskAgeMs?: number;
 }
 
 /** Какие обязательные пороги ещё не заданы. */
@@ -106,6 +133,7 @@ export function missingLimits(limits: Partial<GateLimits> | null | undefined): s
     'maxOpenPositions',
     'maxPositionsPerToken',
     'dailyLossLimitUsd',
+    'maxRiskAgeMs',
   ];
 
   if (!limits) return required as string[];
@@ -168,6 +196,14 @@ export interface GateInput {
 
   /** Источники разошлись в значении. Пары «что» и «насколько». */
   sourceDisagreements?: Array<{ field: string; spreadPct: number }>;
+
+  /**
+   * Полоса пересмотра, если настроена.
+   *
+   * Без неё значение ровно на пороге проходит по оператору правила
+   * и никакого дополнительного сомнения не порождает.
+   */
+  reviewBand?: ReviewBand | null;
 }
 
 export interface GateResult {
@@ -373,12 +409,54 @@ export function evaluateGate(input: GateInput): GateResult {
     );
   }
 
-  // ── Источник сигнала ────────────────────────────────────────────
+  // ── Пригодность источника ───────────────────────────────────────
+  //
+  // Отдельно от оценки риска токена. Это разные вопросы: «безопасен
+  // ли контракт» и «стоит ли повторять за этим кошельком». Смешивать
+  // их значит объяснять отказ не тем.
   const adverse = input.sourceCategories.filter(isAdverse);
   if (adverse.length > 0) {
     deny(
       GATE_REASON.adverseSourceWallet,
       `Сигнал породили кошельки, за которыми не повторяют: ${adverse.join(', ')}`,
+    );
+  }
+
+  // Неизвестная категория — не повод для сомнения, а отсутствие
+  // пригодного источника. Показать такой сигнал человеку можно,
+  // копировать автоматически — нет: мы не знаем, за кем повторяем.
+  const unknownCount = input.sourceCategories.filter((c) => c === 'unknown').length;
+  if (unknownCount > 0) {
+    deny(
+      GATE_REASON.unsupportedWalletCategory,
+      `Категория ${unknownCount} кошельков неизвестна — источник не пригоден для копирования`,
+    );
+  }
+
+  // Проверки старше предельного возраста. Не сомнение: устаревшую
+  // критическую проверку нельзя рассматривать как, возможно,
+  // ещё годную — за это время ликвидность успевает исчезнуть,
+  // а владелец успевает всё.
+  const gateNow = input.now ?? Date.now();
+
+  // Проверки без отметки времени. Полный набор ответов без даты
+  // их получения не отличим от набора недельной давности, и «свежо»
+  // здесь было бы предположением, а не фактом.
+  if (completeness.isComplete && input.riskCheckedAt == null) {
+    deny(
+      GATE_REASON.riskDataUnavailableOrStale,
+      'Проверки есть, но время их получения неизвестно',
+    );
+  }
+
+  if (
+    input.riskCheckedAt != null &&
+    L.maxRiskAgeMs != null &&
+    gateNow - input.riskCheckedAt > L.maxRiskAgeMs
+  ) {
+    deny(
+      GATE_REASON.riskDataStale,
+      `Проверки старше предела: ${Math.round((gateNow - input.riskCheckedAt) / 1000)} с`,
     );
   }
 
@@ -411,52 +489,61 @@ export function evaluateGate(input: GateInput): GateResult {
     doubtWhy.push(why);
   };
 
-  // Проверки полны, но получены давно. Не запрет: за минуту
-  // ликвидность успевает исчезнуть, но и не факт, что исчезла.
-  const now = input.now ?? Date.now();
-  const staleAfter = input.riskStaleAfterMs;
+  const band = input.reviewBand;
 
-  if (input.riskCheckedAt != null && staleAfter != null && now - input.riskCheckedAt > staleAfter) {
-    doubt(
-      GATE_REASON.riskDataUnavailableOrStale,
-      `Проверки получены ${Math.round((now - input.riskCheckedAt) / 1000)} с назад`,
-    );
-  }
+  /*
+   * Полоса пересмотра.
+   *
+   * Работает, только если её задали. Отсутствие полосы означает,
+   * что её нет, а не что она равна какому-то разумному числу:
+   * скрытый порог опаснее отсутствующего, потому что о нём никто
+   * не знает и никто его не пересматривает.
+   *
+   * Значение ровно на пороге при этом проходит — так определён
+   * оператор правила, и менять его смысл полоса не должна.
+   */
+  if (band) {
+    const nearMax = (v: number | null, limit: number | undefined, ratio: number | undefined, label: string) => {
+      if (v == null || limit == null || ratio == null || limit === 0) return;
+      // Правило «не больше»: сомнение в полосе под пределом.
+      if (v <= limit && v > limit * (1 - ratio)) {
+        doubt(GATE_REASON.nearThreshold, `${label}: ${v} в полосе пересмотра у предела ${limit}`);
+      }
+    };
 
-  // Источники разошлись. Расхождение в цене или ликвидности между
-  // двумя источниками означает, что как минимум один из них неверен,
-  // и мы не знаем какой.
-  for (const d of input.sourceDisagreements ?? []) {
-    doubt(
-      GATE_REASON.sourcesDisagree,
-      `Источники разошлись по «${d.field}» на ${d.spreadPct}%`,
-    );
-  }
+    const nearMin = (v: number | null, limit: number | undefined, ratio: number | undefined, label: string) => {
+      if (v == null || limit == null || ratio == null || limit === 0) return;
+      // Правило «не меньше»: сомнение в полосе над пределом.
+      if (v >= limit && v < limit * (1 + ratio)) {
+        doubt(GATE_REASON.nearThreshold, `${label}: ${v} в полосе пересмотра у предела ${limit}`);
+      }
+    };
 
-  // Среди источников сигнала есть неизвестные категории. Не запрет —
-  // запрет дают только заведомо вредные, — но и не подтверждение:
-  // за неизвестным кошельком повторять не следует.
-  const unknownSources = input.sourceCategories.filter((c) => c === 'unknown');
-  if (unknownSources.length > 0) {
-    doubt(
-      GATE_REASON.mixedSourceQuality,
-      `Категория ${unknownSources.length} кошельков неизвестна`,
-    );
-  }
+    nearMax(input.priceImpactPct, L.maxPriceImpactPct, band.priceImpactRatio, 'Влияние на цену');
+    nearMax(input.topHolderPct, L.maxTopHolderPct, band.topHolderRatio, 'Концентрация');
+    nearMin(input.liquidityUsd, L.minLiquidityUsd, band.liquidityRatio, 'Ликвидность');
 
-  // Значение вплотную к порогу. Формально порог не нарушен, но
-  // разница в пределах погрешности измерения, а решение по обе
-  // стороны противоположное.
-  const nearLimit = (v: number | null, limit: number | undefined, label: string) => {
-    if (v == null || limit == null || limit === 0) return;
-    if (Math.abs(v - limit) / limit <= NEAR_THRESHOLD_RATIO) {
-      doubt(GATE_REASON.nearThreshold, `${label} вплотную к пределу: ${v} при ${limit}`);
+    // Проверки ещё в пределах допустимого возраста, но уже в полосе.
+    if (input.riskCheckedAt != null && band.riskAgeMs != null) {
+      const age = gateNow - input.riskCheckedAt;
+      if (age > band.riskAgeMs) {
+        doubt(GATE_REASON.nearThreshold, `Проверки получены ${Math.round(age / 1000)} с назад`);
+      }
     }
-  };
+  }
 
-  nearLimit(input.priceImpactPct, L.maxPriceImpactPct, 'Влияние на цену');
-  nearLimit(input.liquidityUsd, L.minLiquidityUsd, 'Ликвидность');
-  nearLimit(input.topHolderPct, L.maxTopHolderPct, 'Концентрация');
+  /*
+   * Расхождение источников.
+   *
+   * Единственный повод для сомнения, не требующий настройки:
+   * если два источника дают разные числа, как минимум один неверен,
+   * и определить какой мы не можем. Сюда попадают только случаи,
+   * где оба источника валидны и актуальны, — иначе запрет сработал
+   * бы выше.
+   */
+  for (const d of input.sourceDisagreements ?? []) {
+    doubt(GATE_REASON.sourcesDisagree, `Источники разошлись по «${d.field}» на ${d.spreadPct}%`);
+  }
 
   if (doubts.length > 0) {
     return { decision: 'REVIEW_REQUIRED', reasons: doubts, explanations: doubtWhy };
@@ -464,15 +551,6 @@ export function evaluateGate(input: GateInput): GateResult {
 
   return { decision: 'ALLOW', reasons: [], explanations: [] };
 }
-
-/**
- * Насколько близко к порогу считается «вплотную».
- *
- * Пять процентов от самого порога. Число не про рынок, а про
- * точность измерения: разница меньше погрешности источника
- * не должна решать судьбу сделки в одну или другую сторону.
- */
-const NEAR_THRESHOLD_RATIO = 0.05;
 
 /**
  * Разрешено ли автоматическое исполнение.

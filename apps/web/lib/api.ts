@@ -1,7 +1,21 @@
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api/v1';
 
 export class ApiError extends Error {
-  constructor(message: string, public status: number, public details?: unknown) {
+  constructor(
+    message: string,
+    public status: number,
+    public details?: unknown,
+    /**
+     * Тело ответа целиком.
+     *
+     * `details` исторически несёт разбор полей от zod, и класть туда
+     * же машинный код причины значило бы получить поле, смысл
+     * которого зависит от того, кто ошибку бросил. Коды вроде
+     * `TOO_SOON` или `EMAIL_DELIVERY_FAILED` живут здесь — интерфейсу
+     * они нужны, чтобы отличить паузу от поломки.
+     */
+    public body?: Record<string, unknown>,
+  ) {
     super(message);
   }
 }
@@ -36,9 +50,24 @@ function getToken(): string | null {
   return sessionStorage.getItem('accessToken');
 }
 
+/**
+ * Основание пути.
+ *
+ * Почти всё живёт под `/api/v1`, но маршруты доступа — под `/api`:
+ * они не про версию торгового интерфейса, а про то, кто пользователь
+ * и что ему разрешено. Держать их в одной версии с торговыми
+ * маршрутами значило бы менять адрес прав при каждой смене версии
+ * торгового API.
+ */
+export type ApiBase = 'v1' | 'root';
+
+function baseFor(kind: ApiBase): string {
+  return kind === 'root' ? BASE.replace(/\/v1$/, '') : BASE;
+}
+
 export async function api<T = unknown>(
   path: string,
-  init: RequestInit & { idempotencyKey?: string } = {},
+  init: RequestInit & { idempotencyKey?: string; base?: ApiBase } = {},
 ): Promise<T> {
   const token = getToken();
 
@@ -53,7 +82,7 @@ export async function api<T = unknown>(
   if (token) headers.authorization = `Bearer ${token}`;
   if (init.idempotencyKey) headers['idempotency-key'] = init.idempotencyKey;
 
-  const url = `${BASE}${path}`;
+  const url = `${baseFor(init.base ?? 'v1')}${path}`;
 
   let res: Response;
   try {
@@ -80,7 +109,12 @@ export async function api<T = unknown>(
   }
 
   if (!res.ok) {
-    throw new ApiError(data?.error ?? `Ошибка ${res.status}`, res.status, data?.details);
+    throw new ApiError(
+      data?.error ?? `Ошибка ${res.status}`,
+      res.status,
+      data?.details,
+      data ?? undefined,
+    );
   }
   return data as T;
 }

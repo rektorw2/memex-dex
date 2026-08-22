@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useMemo } from 'react';
 import Link from 'next/link';
+import { Requires } from '@/components/Paywall';
 import useSWR from 'swr';
 import { fetcher, api, fmtUsd, errorMessage } from '@/lib/api';
 import { chainLabel } from '@/lib/chains';
@@ -43,7 +44,7 @@ import { RiskMeter } from '@/components/radar/RiskMeter';
 type Tab = 'radar' | 'gems';
 type View = 'cards' | 'table';
 
-export default function RadarPage() {
+function RadarPageContent() {
   const [tab, setTab] = useState<Tab>('radar');
   const [isAdmin, setIsAdmin] = useState(false);
 
@@ -625,5 +626,23 @@ function Chip({
     >
       {children}
     </button>
+  );
+}
+
+/**
+ * Обёртка доступа.
+ *
+ * Содержимое страницы не меняется: закрывается она целиком, снаружи.
+ * Так проверка стоит в одном месте, а не растекается по каждому
+ * запросу внутри, и её нельзя случайно потерять при правке разметки.
+ *
+ * Решение принимает сервер: даже если обёртка ошибётся и пропустит,
+ * запросы внутри вернут 403.
+ */
+export default function RadarPage() {
+  return (
+    <Requires capability="RADAR_ACCESS" title="Радар находок">
+      <RadarPageContent />
+    </Requires>
   );
 }

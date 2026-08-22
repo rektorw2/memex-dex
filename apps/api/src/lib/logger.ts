@@ -21,6 +21,15 @@ export const logger = pino({
     paths: [
       'password', 'passwordHash', 'totpSecret', 'privateKey', 'encryptedKey',
       'wrappedDek', 'req.headers.authorization', 'req.headers.cookie', 'secret',
+      // Почта: код подтверждения и ключ провайдера. Оба здесь
+      // не должны появляться вовсе, но список — последняя преграда
+      // на случай, если кто-то передаст объект целиком.
+      'code', 'devCode', 'emailCodeHash', 'apiKey', 'RESEND_API_KEY',
+      // Платёжные секреты. Ключ CDP, секрет вебхука и одноразовый
+      // токен сессии: последний — это чужая страница оплаты,
+      // привязанная к нашему адресу казначейства.
+      'sessionToken', 'token', 'COINBASE_CDP_API_KEY_SECRET',
+      'COINBASE_WEBHOOK_SECRET', 'BRIDGE_API_KEY', 'keySecret', 'secret',
     ],
     censor: '[REDACTED]',
   },

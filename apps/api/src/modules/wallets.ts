@@ -7,6 +7,7 @@ import { env } from '../lib/env.js';
 import { logger } from '../lib/logger.js';
 import * as balances from '../services/balances.js';
 import { createWallet, importWallet, listWallets } from '../services/wallet.js';
+import { entitlementOfRequest, denyIfMissing } from '../services/entitlement.js';
 
 const chainSchema = z.enum(['SOLANA', 'BNB', 'ROBINHOOD', 'ETHEREUM', 'BASE']);
 
@@ -115,7 +116,10 @@ export const walletRoutes: FastifyPluginAsync = async (app) => {
    * что пришло депозитом. Показывать в кошельке позиции значило бы
    * скрывать часть средств.
    */
-  app.get('/wallets/assets', { preHandler: [app.authenticate] }, async (req) => {
+  app.get('/wallets/assets', { preHandler: [app.authenticate] }, async (req, reply) => {
+    const ent = await entitlementOfRequest(req);
+    if (denyIfMissing(ent, 'PORTFOLIO_READ', reply)) return reply;
+
     const userId = req.user.sub;
 
     const [balances, deposits, pending] = await Promise.all([
@@ -200,6 +204,17 @@ export const walletRoutes: FastifyPluginAsync = async (app) => {
    * показать одно, а списать другое.
    */
   app.post('/wallets/withdraw/quote', { preHandler: [app.authenticate] }, async (req, reply) => {
+    /*
+     * Вывод средств не закрывается никогда.
+     *
+     * Проверка стоит не ради запрета, а ради записи намерения:
+     * `WALLET_WITHDRAW` входит в список неотбираемых прав, и если
+     * однажды кто-то уберёт его оттуда, этот вызов начнёт отказывать
+     * — заметно, с кодом причины, а не молча.
+     */
+    const ent = await entitlementOfRequest(req);
+    if (denyIfMissing(ent, 'WALLET_WITHDRAW', reply)) return reply;
+
     const body = z
       .object({
         tokenId: z.string(),
@@ -235,6 +250,17 @@ export const walletRoutes: FastifyPluginAsync = async (app) => {
    * означал бы риск потери средств пользователей.
    */
   app.post('/wallets/withdraw', { preHandler: [app.authenticate] }, async (req, reply) => {
+    /*
+     * Вывод средств не закрывается никогда.
+     *
+     * Проверка стоит не ради запрета, а ради записи намерения:
+     * `WALLET_WITHDRAW` входит в список неотбираемых прав, и если
+     * однажды кто-то уберёт его оттуда, этот вызов начнёт отказывать
+     * — заметно, с кодом причины, а не молча.
+     */
+    const ent = await entitlementOfRequest(req);
+    if (denyIfMissing(ent, 'WALLET_WITHDRAW', reply)) return reply;
+
     const body = z
       .object({
         tokenId: z.string(),

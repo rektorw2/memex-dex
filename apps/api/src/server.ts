@@ -19,6 +19,11 @@ import { adminRoutes } from './modules/admin.js';
 import { tokenRoutes } from './modules/tokens.js';
 import { walletRoutes } from './modules/wallets.js';
 import { radarRoutes } from './modules/radar.js';
+import { accessRoutes } from './modules/access.js';
+import { automationRoutes } from './modules/automation.js';
+import { fundingRoutes } from './modules/funding.js';
+import { paymentRoutes } from './modules/payments.js';
+import { webhookRoutes } from './modules/webhooks.js';
 import { walletIntelRoutes } from './modules/wallets-intel.js';
 import { walletFavoriteRoutes } from './modules/wallet-favorites.js';
 import { autoRuleRoutes } from './modules/auto-rule.js';
@@ -133,6 +138,11 @@ export async function buildServer() {
   });
 
   await app.register(authRoutes, { prefix: '/api/v1' });
+  await app.register(accessRoutes, { prefix: '/api' });
+  await app.register(automationRoutes, { prefix: '/api/v1' });
+  await app.register(fundingRoutes, { prefix: '/api/v1' });
+  await app.register(paymentRoutes, { prefix: '/api' });
+  await app.register(webhookRoutes, { prefix: '/api' });
   await app.register(tokenRoutes, { prefix: '/api/v1' });
   await app.register(orderRoutes, { prefix: '/api/v1' });
   await app.register(callRoutes, { prefix: '/api/v1' });

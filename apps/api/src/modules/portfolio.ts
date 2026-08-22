@@ -3,9 +3,23 @@ import { z } from 'zod';
 import { Prisma as P } from '@prisma/client';
 import { EXIT_PRESETS } from '@memex/core';
 import { prisma } from '../lib/prisma.js';
+import { entitlementOfRequest, denyIfMissing } from '../services/entitlement.js';
 
+/**
+ * Свои деньги.
+ *
+ * Каждый маршрут этого модуля закрыт правом, которое не отбирается
+ * никогда: `PORTFOLIO_READ` для просмотра, `PROTECTIVE_EXIT` для планов
+ * выхода. Проверки стоят не для того, чтобы что-то запретить, — они
+ * стоят для того, чтобы намерение было записано в коде. Право,
+ * которое просто «всегда есть», однажды окажется в списке отбираемых,
+ * и заметить это будет нечем.
+ */
 export const portfolioRoutes: FastifyPluginAsync = async (app) => {
-  app.get('/portfolio', { preHandler: [app.authenticate] }, async (req) => {
+  app.get('/portfolio', { preHandler: [app.authenticate] }, async (req, reply) => {
+    const ent = await entitlementOfRequest(req);
+    if (denyIfMissing(ent, 'PORTFOLIO_READ', reply)) return reply;
+
     const userId = req.user.sub;
 
     const [balances, positions, feeAgg] = await Promise.all([
@@ -69,7 +83,10 @@ export const portfolioRoutes: FastifyPluginAsync = async (app) => {
     };
   });
 
-  app.get('/portfolio/history', { preHandler: [app.authenticate] }, async (req) => {
+  app.get('/portfolio/history', { preHandler: [app.authenticate] }, async (req, reply) => {
+    const ent = await entitlementOfRequest(req);
+    if (denyIfMissing(ent, 'PORTFOLIO_READ', reply)) return reply;
+
     const trades = await prisma.trade.findMany({
       where: { userId: req.user.sub, status: 'CONFIRMED' },
       include: { order: { include: { tokenIn: true, tokenOut: true } } },
@@ -100,7 +117,18 @@ export const portfolioRoutes: FastifyPluginAsync = async (app) => {
    * кто не может им воспользоваться, значит обещать возможность,
    * которой нет.
    */
-  app.get('/exit-presets', { preHandler: [app.requireLeader] }, async () => ({
+  /*
+   * Планы выхода принадлежат владельцу позиции, а не лидеру.
+   *
+   * Раньше здесь стояло требование быть лидером копитрейдинга. Для
+   * новой модели это ошибка: защитный выход — это страховка уже
+   * вложенных денег, и она обязана быть доступна при любом плане
+   * и любой роли. Человек с истёкшей подпиской, у которого открыта
+   * позиция, должен иметь возможность поставить стоп-лосс — иначе
+   * окончание оплаты оставляет его без защиты ровно тогда, когда
+   * защита нужнее всего.
+   */
+  app.get('/exit-presets', { preHandler: [app.authenticate] }, async () => ({
     presets: EXIT_PRESETS.map((p) => ({
       key: p.key,
       label: p.label,
@@ -109,7 +137,10 @@ export const portfolioRoutes: FastifyPluginAsync = async (app) => {
   }));
 
   /** Доступные планы и текущий по конкретной позиции. */
-  app.get('/positions/:tokenId/exit-plan', { preHandler: [app.requireLeader] }, async (req) => {
+  app.get('/positions/:tokenId/exit-plan', { preHandler: [app.authenticate] }, async (req, reply) => {
+    const ent = await entitlementOfRequest(req);
+    if (denyIfMissing(ent, 'PROTECTIVE_EXIT', reply)) return reply;
+
     const { tokenId } = z.object({ tokenId: z.string() }).parse(req.params);
     const { getExitPlan } = await import('../services/exit-plan.js');
 
@@ -130,7 +161,10 @@ export const portfolioRoutes: FastifyPluginAsync = async (app) => {
    * запросами позиция осталась бы без плана вовсе, и цена не спрашивает,
    * успел ли человек нажать вторую кнопку.
    */
-  app.put('/positions/:tokenId/exit-plan', { preHandler: [app.requireLeader] }, async (req) => {
+  app.put('/positions/:tokenId/exit-plan', { preHandler: [app.authenticate] }, async (req, reply) => {
+    const ent = await entitlementOfRequest(req);
+    if (denyIfMissing(ent, 'PROTECTIVE_EXIT', reply)) return reply;
+
     const { tokenId } = z.object({ tokenId: z.string() }).parse(req.params);
     const body = z.object({ preset: z.string().min(1).max(20) }).parse(req.body);
 

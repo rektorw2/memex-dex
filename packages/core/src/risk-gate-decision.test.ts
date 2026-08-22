@@ -33,6 +33,7 @@ const limits: GateLimits = {
   maxOpenPositions: 5,
   maxPositionsPerToken: 1,
   dailyLossLimitUsd: 100,
+  maxRiskAgeMs: 120_000,
 };
 
 function passedSignals(chain: 'ETHEREUM' | 'SOLANA'): RiskSignal[] {
@@ -48,6 +49,8 @@ function passedSignals(chain: 'ETHEREUM' | 'SOLANA'): RiskSignal[] {
 /** Вход, при котором всё в порядке. Каждый тест портит одно поле. */
 function goodInput(over: Partial<GateInput> = {}): GateInput {
   return {
+    now: NOW,
+    riskCheckedAt: NOW - 1_000,
     chain: 'ETHEREUM',
     signals: passedSignals('ETHEREUM'),
     limits,
@@ -247,16 +250,10 @@ describe('пороги', () => {
     );
   });
 
-  it('ровно на пороге — не нарушение, но и не уверенность', () => {
-    /*
-     * Утверждение теста прежнее: значение ровно на границе порога
-     * не считается нарушением. Изменился вердикт, а не смысл.
-     *
-     * С двумя состояниями выбора не было: не запрет — значит
-     * разрешение. С тремя появилось честное третье: ровно на границе
-     * решение неоднозначно, и выдавать его за проверенное нельзя.
-     * Покупку человеку это не запрещает, к автоматике не допускает.
-     */
+  it('ровно на пороге — не нарушение', () => {
+    // Оператор правила определён детерминированно: «не меньше»
+    // и «не больше» включают саму границу. Полоса пересмотра —
+    // отдельная настройка и смысла порога не меняет.
     const r = evaluateGate(
       goodInput({
         signalAgeMs: limits.maxSignalAgeMs,
@@ -265,9 +262,7 @@ describe('пороги', () => {
       }),
     );
 
-    expect(r.decision).not.toBe('SKIP');
-    expect(r.decision).toBe('REVIEW_REQUIRED');
-    expect(isAutoExecutionAllowed(r)).toBe(false);
+    expect(r.decision).toBe('ALLOW');
   });
 });
 
@@ -374,77 +369,135 @@ describe('накопление причин', () => {
 
 // ──────────────────────── Три состояния вердикта ────────────────────────────
 
-describe('REVIEW_REQUIRED', () => {
-  const NEAR = 1_800_000_000_000;
+describe('устаревание проверок — запрет, а не сомнение', () => {
+  const T = NOW;
 
-  it('несвежие проверки дают сомнение, а не запрет', () => {
-    // Данные полны, запретов нет — но получены давно. За минуту
-    // ликвидность успевает исчезнуть, хотя могла и не исчезнуть.
+  it('проверки старше предела дают SKIP', () => {
+    // Устаревшую критическую проверку нельзя рассматривать как,
+    // возможно, ещё годную: за это время ликвидность успевает
+    // исчезнуть, а владелец успевает всё.
+    const r = evaluateGate(
+      goodInput({ riskCheckedAt: T - limits.maxRiskAgeMs - 1, now: T }),
+    );
+
+    expect(r.decision).toBe('SKIP');
+    expect(r.reasons).toContain(GATE_REASON.riskDataStale);
+  });
+
+  it('проверки ровно на пределе возраста ещё годны', () => {
+    const r = evaluateGate(goodInput({ riskCheckedAt: T - limits.maxRiskAgeMs, now: T }));
+
+    expect(r.decision).toBe('ALLOW');
+  });
+
+  it('в пределах возраста, но в заданной полосе — REVIEW_REQUIRED', () => {
     const r = evaluateGate(
       goodInput({
-        riskCheckedAt: NEAR - 10 * 60_000,
-        now: NEAR,
-        riskStaleAfterMs: 60_000,
+        riskCheckedAt: T - 60_000,
+        now: T,
+        reviewBand: { riskAgeMs: 30_000 },
       }),
     );
 
     expect(r.decision).toBe('REVIEW_REQUIRED');
+    expect(r.reasons).toContain(GATE_REASON.nearThreshold);
+  });
+
+  it('полный набор проверок без отметки времени — SKIP', () => {
+    // «Свежо» без даты получения — предположение, а не факт.
+    const r = evaluateGate(goodInput({ riskCheckedAt: null, now: T }));
+
+    expect(r.decision).toBe('SKIP');
     expect(r.reasons).toContain(GATE_REASON.riskDataUnavailableOrStale);
   });
 
-  it('свежие проверки сомнения не вызывают', () => {
+  it('без заданной полосы возраст сомнения не создаёт', () => {
+    // Скрытого порога нет. Отсутствие полосы означает её отсутствие,
+    // а не какое-то разумное число.
+    const r = evaluateGate(goodInput({ riskCheckedAt: T - 60_000, now: T }));
+
+    expect(r.decision).toBe('ALLOW');
+  });
+});
+
+describe('неизвестная категория кошелька', () => {
+  it('источник непригоден — SKIP, а не сомнение', () => {
+    // Это вопрос пригодности источника, а не риска токена.
+    // Показать человеку можно, копировать автоматически — нет:
+    // мы не знаем, за кем повторяем.
+    const r = evaluateGate(goodInput({ sourceCategories: ['smart_money', 'unknown'] }));
+
+    expect(r.decision).toBe('SKIP');
+    expect(r.reasons).toContain(GATE_REASON.unsupportedWalletCategory);
+  });
+
+  it('код причины отделён от оценки риска токена', () => {
+    const r = evaluateGate(goodInput({ sourceCategories: ['unknown'] }));
+
+    expect(r.reasons).toContain(GATE_REASON.unsupportedWalletCategory);
+    expect(r.reasons).not.toContain(GATE_REASON.riskDataMissing);
+  });
+});
+
+describe('пороги детерминированы', () => {
+  it('значение ровно на минимуме проходит по правилу «не меньше»', () => {
+    const r = evaluateGate(goodInput({ liquidityUsd: limits.minLiquidityUsd }));
+
+    expect(r.decision).toBe('ALLOW');
+  });
+
+  it('значение ровно на максимуме проходит по правилу «не больше»', () => {
+    const r = evaluateGate(goodInput({ priceImpactPct: limits.maxPriceImpactPct }));
+
+    expect(r.decision).toBe('ALLOW');
+  });
+
+  it('без полосы пересмотра значение у порога не создаёт сомнения', () => {
     const r = evaluateGate(
-      goodInput({ riskCheckedAt: NEAR - 1_000, now: NEAR, riskStaleAfterMs: 60_000 }),
+      goodInput({ priceImpactPct: limits.maxPriceImpactPct * 0.99 }),
     );
 
     expect(r.decision).toBe('ALLOW');
   });
 
-  it('расхождение источников — сомнение', () => {
-    // Если два источника дают разную ликвидность, как минимум один
-    // неверен, и мы не знаем какой.
+  it('с заданной полосой значение у порога даёт REVIEW_REQUIRED', () => {
+    const r = evaluateGate(
+      goodInput({
+        priceImpactPct: limits.maxPriceImpactPct * 0.99,
+        reviewBand: { priceImpactRatio: 0.05 },
+      }),
+    );
+
+    expect(r.decision).toBe('REVIEW_REQUIRED');
+    expect(r.reasons).toContain(GATE_REASON.nearThreshold);
+  });
+
+  it('полоса не меняет смысл основного порога', () => {
+    // За пределом — по-прежнему запрет, а не сомнение.
+    const r = evaluateGate(
+      goodInput({
+        priceImpactPct: limits.maxPriceImpactPct + 1,
+        reviewBand: { priceImpactRatio: 0.05 },
+      }),
+    );
+
+    expect(r.decision).toBe('SKIP');
+    expect(r.reasons).toContain(GATE_REASON.priceImpactTooHigh);
+  });
+});
+
+describe('расхождение источников', () => {
+  it('при полных и актуальных данных — REVIEW_REQUIRED', () => {
     const r = evaluateGate(
       goodInput({ sourceDisagreements: [{ field: 'liquidity', spreadPct: 40 }] }),
     );
 
     expect(r.decision).toBe('REVIEW_REQUIRED');
     expect(r.reasons).toContain(GATE_REASON.sourcesDisagree);
-    expect(r.explanations.join(' ')).toContain('liquidity');
   });
 
-  it('неизвестная категория кошелька — сомнение, а не запрет', () => {
-    // Запрет дают только заведомо вредные категории. Неизвестная
-    // не подтверждает ничего — ни хорошего, ни плохого.
-    const r = evaluateGate(goodInput({ sourceCategories: ['smart_money', 'unknown'] }));
-
-    expect(r.decision).toBe('REVIEW_REQUIRED');
-    expect(r.reasons).toContain(GATE_REASON.mixedSourceQuality);
-  });
-
-  it('вредная категория остаётся запретом, а не сомнением', () => {
-    const r = evaluateGate(goodInput({ sourceCategories: ['sniper'] }));
-
-    expect(r.decision).toBe('SKIP');
-  });
-
-  it('значение вплотную к порогу — сомнение', () => {
-    // Формально порог не нарушен, но разница в пределах погрешности,
-    // а решение по обе стороны противоположное.
-    const r = evaluateGate(goodInput({ priceImpactPct: limits.maxPriceImpactPct * 0.98 }));
-
-    expect(r.decision).toBe('REVIEW_REQUIRED');
-    expect(r.reasons).toContain(GATE_REASON.nearThreshold);
-  });
-
-  it('значение далеко от порога сомнения не вызывает', () => {
-    const r = evaluateGate(goodInput({ priceImpactPct: limits.maxPriceImpactPct * 0.3 }));
-
-    expect(r.decision).toBe('ALLOW');
-  });
-
-  it('запрет важнее сомнения', () => {
-    // Если есть и то и другое, вердикт — запрет: сомневаться
-    // в том, что уже запрещено, не о чем.
+  it('запрет важнее расхождения', () => {
+    // Сомневаться в том, что уже запрещено, не о чем.
     const r = evaluateGate(
       goodInput({
         liquidityUsd: 1,
@@ -453,6 +506,18 @@ describe('REVIEW_REQUIRED', () => {
     );
 
     expect(r.decision).toBe('SKIP');
+  });
+
+  it('порядок вердиктов: запрет, затем сомнение, затем разрешение', () => {
+    const skip = evaluateGate(goodInput({ signals: [] }));
+    const review = evaluateGate(
+      goodInput({ sourceDisagreements: [{ field: 'price', spreadPct: 10 }] }),
+    );
+    const allow = evaluateGate(goodInput());
+
+    expect(skip.decision).toBe('SKIP');
+    expect(review.decision).toBe('REVIEW_REQUIRED');
+    expect(allow.decision).toBe('ALLOW');
   });
 });
 

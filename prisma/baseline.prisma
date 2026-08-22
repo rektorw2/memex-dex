@@ -1,0 +1,1396 @@
+// СНИМОК СХЕМЫ НА МОМЕНТ BASELINE. НЕ РЕДАКТИРОВАТЬ.
+//
+// Этот файл существует ради одной команды: из него генерируется
+// 0_baseline/migration.sql — SQL, описывающий базу такой, какой она
+// уже развёрнута. На production этот SQL никогда не выполняется;
+// он нужен, чтобы новые окружения получали ту же самую базу,
+// а не приблизительно похожую.
+//
+// Правки вносятся в schema.prisma. Любое изменение здесь тихо
+// разойдётся с боевой базой, и разойдётся незаметно: ошибка
+// проявится не при записи, а через недели, на первом развёртывании
+// с нуля.
+//
+// Скрипт scripts/migrations-prepare.sh удаляет файл сразу после
+// генерации — снимок нужен один раз.
+
+// Memex DEX — схема данных кастодиальной торговой платформы
+// Денежные величины: Decimal(38, 18) для количеств токенов, Decimal(24, 8) для USD.
+// Никогда не использовать Float для денег.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// О подключении к облачной базе (Neon и подобные).
+//
+// Рабочие запросы приложения должны идти через пул соединений — у Neon
+// это хост с -pooler. Без пула бесплатный тариф упирается в лимит прямых
+// подключений и API начинает получать «too many connections».
+//
+// Миграции, наоборот, нужно выполнять в обход пула: pgbouncer
+// в transaction-режиме не поддерживает advisory locks и prepared
+// statements, на которых держится механизм миграций Prisma.
+//
+// Директива directUrl здесь сознательно не используется: Prisma требует
+// её переменную окружения безусловно, и локальный запуск без облачной
+// базы падал бы с ошибкой P1012. Вместо этого нужная строка передаётся
+// самой команде:
+//
+//   DATABASE_URL="<строка без -pooler>" npm run db:push
+//
+// На Render то же самое сделано в preDeployCommand (см. render.yaml).
+
+// ─────────────────────────────── Пользователи ───────────────────────────────
+
+enum UserRole {
+  USER
+  TRADER // лидер копитрейдинга
+  ADMIN
+}
+
+enum KycStatus {
+  NONE
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  passwordHash String
+  totpSecret   String? // 2FA, обязателен для вывода средств
+  role         UserRole  @default(USER)
+
+  /** Чат Telegram для уведомлений радара. Привязывается кодом из бота. */
+  telegramChatId String?
+  telegramLinkCode String? @unique
+  kycStatus    KycStatus @default(NONE)
+  kycRef       String? // id провайдера (Sumsub/Persona)
+  isFrozen     Boolean   @default(false)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  wallets       Wallet[]
+  balances      Balance[]
+  orders        Order[]
+  trades        Trade[]
+  positions     Position[]
+  withdrawals   Withdrawal[]
+  feeEntries    FeeLedger[]
+  subscriptions CopySubscription[] @relation("follower")
+  followers     CopySubscription[] @relation("leader")
+  calls         Call[]
+  sessions      Session[]
+  auditLogs     AuditLog[]
+  radarSubs     RadarSubscription[]
+  apiKeys       ApiKey[]
+  walletFavorites WalletFavorite[]
+
+  @@index([role])
+}
+
+/**
+ * Кошелёк в избранном у пользователя.
+ *
+ * Отдельно от CopySubscription намеренно. Та связывает пользователя
+ * с пользователем ради повторения сделок — это отношение с деньгами
+ * и рисками. Здесь другое: наблюдение за чужим адресом в сети,
+ * никакой связи с аккаунтом владельца адреса нет и быть не может.
+ * Слить их в одну таблицу значило бы получить сущность, у которой
+ * половина полей всегда пуста, и обе стороны отношения означают
+ * разное в зависимости от строки.
+ *
+ * Ключ — сеть плюс нормализованный адрес. Один и тот же набор
+ * символов в Ethereum и в BNB Chain принадлежит разным владельцам;
+ * считать их одним кошельком значит показывать человеку чужую
+ * историю сделок под видом его наблюдения.
+ */
+model WalletFavorite {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  chain Chain
+  /**
+   * Адрес в нормальной форме.
+   *
+   * Для EVM — в нижнем регистре, для Solana — как есть: там регистр
+   * значим, и приведение сделало бы адрес другим. Нормализация
+   * выполняется до записи, потому что уникальность проверяет база,
+   * а она сравнивает строки побайтово.
+   */
+  walletAddress String
+
+  /** Заметка пользователя. Не показывается никому, кроме него. */
+  note String?
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, chain, walletAddress])
+  @@index([userId, createdAt])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshHash  String   @unique
+  userAgent    String?
+  ip           String?
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  createdAt    DateTime @default(now())
+
+  @@index([userId])
+}
+
+// ─────────────────────────────── Сети и токены ──────────────────────────────
+
+enum Chain {
+  SOLANA
+  BNB
+  ROBINHOOD // Robinhood Chain — Arbitrum Orbit L2, EVM-совместим
+  ETHEREUM
+  BASE
+}
+
+model Token {
+  id         String  @id @default(cuid())
+  chain      Chain
+  address    String // mint для Solana, contract для EVM
+  symbol     String
+  name       String
+  decimals   Int
+  logoUrl    String?
+  isQuote    Boolean @default(false) // USDC/SOL/BNB — валюты котировки
+  isVerified Boolean @default(false)
+
+  // Адрес основного пула ликвидности. Нужен для запроса свечей:
+  // OHLCV существует у пары, а не у токена — у одного токена может быть
+  // десяток пулов с разной ценой, и брать надо самый ликвидный.
+  poolAddress String?
+  /** Источник появления в списке: auto — импортёр, manual — админ. */
+  source      String? @default("manual")
+  /** Скрыт из витрины вручную, при этом остаётся в истории сделок. */
+  isHidden    Boolean @default(false)
+
+  // Риск-метрики, обновляются воркером
+  liquidityUsd    Decimal? @db.Decimal(24, 8)
+  volume24hUsd    Decimal? @db.Decimal(24, 8)
+  priceUsd        Decimal? @db.Decimal(38, 18)
+  priceChange24h  Decimal? @db.Decimal(12, 4)
+  fdvUsd          Decimal? @db.Decimal(24, 8)
+  holders         Int?
+  isHoneypot      Boolean  @default(false)
+  lpBurnedPct     Decimal? @db.Decimal(8, 4)
+  topHolderPct    Decimal? @db.Decimal(8, 4)
+  riskScore       Int? // 0-100, чем выше — тем опаснее
+
+  // ─── Допуск в терминал ──────────────────────────────────────────────
+  // Отдельно от riskScore: тот отвечает «насколько опасно», этот —
+  // «показывать ли вообще». Скор 78 ничего не говорит человеку,
+  // который смотрит список из двухсот токенов.
+
+  /**
+   * BLOCK | WARN | OK. Оставлено для совместимости со старыми записями;
+   * новая логика пишет riskLevel.
+   */
+  scamVerdict   String?
+  /** Причины блокировки и поводы для осторожности. */
+  scamReasons   Json?
+
+  /**
+   * Уровень риска: verified | low | medium | high | blocked | pending.
+   *
+   * Отдельно от scamVerdict, потому что различает больше состояний.
+   * «Проверен и известен» и «ничего плохого не нашли» — разные
+   * утверждения, и первое можно показывать без оговорок, второе нет.
+   */
+  riskLevel     String?
+  /** Машиночитаемые коды причин: HONEYPOT, FAKE_SYMBOL и прочие. */
+  riskCodes     String[]
+  /** Токен есть в реестре подтверждённых адресов. */
+  isRegistered  Boolean @default(false)
+  /** Когда последний раз проверяли контракт и поведение пула. */
+  scamCheckedAt DateTime?
+  /**
+   * Версия правил, по которым выставлен вердикт.
+   *
+   * Без неё изменение правил не влияло ни на что: у проверенного токена
+   * стоит отметка времени, и следующая проверка откладывается на сутки —
+   * даже если за это время появилось правило, которое его блокирует.
+   * Именно так подделки под NVDA пережили добавление проверки на них.
+   */
+  scamRulesVersion Int @default(0)
+
+  // Счётчики сделок из DexScreener: единственный признак ханипота,
+  // видимый без вызова контракта.
+  buys24h       Int?
+  sells24h      Int?
+  /** Ссылки на сайт и соцсети, если источник их отдал. */
+  socials       Json?
+
+  metricsUpdated  DateTime?
+
+  createdAt DateTime @default(now())
+
+  balances  Balance[]
+  ordersIn  Order[]    @relation("tokenIn")
+  ordersOut Order[]    @relation("tokenOut")
+  positions Position[]
+  calls     Call[]
+  candles   Candle[]
+  research  TokenResearch?
+
+  @@unique([chain, address])
+  @@index([chain, isVerified])
+  @@index([volume24hUsd])
+  @@index([scamVerdict, volume24hUsd])
+  @@index([scamCheckedAt])
+  @@index([scamRulesVersion])
+  @@index([riskLevel, volume24hUsd])
+}
+
+model Candle {
+  id        String   @id @default(cuid())
+  tokenId   String
+  token     Token    @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+  interval  String // 1m 5m 15m 1h 4h 1d
+  openTime  DateTime
+  open      Decimal  @db.Decimal(38, 18)
+  high      Decimal  @db.Decimal(38, 18)
+  low       Decimal  @db.Decimal(38, 18)
+  close     Decimal  @db.Decimal(38, 18)
+  volumeUsd Decimal  @db.Decimal(24, 8)
+
+  @@unique([tokenId, interval, openTime])
+  @@index([tokenId, interval, openTime])
+}
+
+// ────────────────────────── Кастодиальные кошельки ──────────────────────────
+
+enum WalletKind {
+  HOT_DEPOSIT // персональный адрес депозита пользователя
+  HOT_TRADING // общий торговый кошелёк (omnibus)
+  COLD // холодное хранение, ключ вне системы
+  FEE_COLLECTOR
+}
+
+model Wallet {
+  id      String     @id @default(cuid())
+  userId  String?
+  user    User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+  chain   Chain
+  kind    WalletKind
+  address String
+
+  // Приватный ключ НИКОГДА не хранится в открытом виде.
+  // Envelope encryption: DEK шифрует ключ, KMS шифрует DEK.
+  encryptedKey    Bytes? // AES-256-GCM ciphertext
+  keyNonce        Bytes?
+  keyAuthTag      Bytes?
+  wrappedDek      Bytes? // DEK, зашифрованный мастер-ключом KMS
+  kmsKeyId        String?
+  derivationPath  String? // если HD-кошелёк
+  isActive        Boolean @default(true)
+
+  createdAt DateTime @default(now())
+
+  deposits Deposit[]
+
+  @@unique([chain, address])
+  @@index([userId])
+}
+
+// ────────────────────────────── Баланс и учёт ───────────────────────────────
+// Двойная запись: Balance — это агрегат, LedgerEntry — источник истины.
+
+model Balance {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenId   String
+  token     Token    @relation(fields: [tokenId], references: [id])
+  available Decimal  @default(0) @db.Decimal(38, 18)
+  locked    Decimal  @default(0) @db.Decimal(38, 18) // зарезервировано под лимитки
+  updatedAt DateTime @updatedAt
+  version   Int      @default(0) // оптимистичная блокировка
+
+  @@unique([userId, tokenId])
+  @@index([userId])
+}
+
+enum LedgerType {
+  DEPOSIT
+  WITHDRAWAL
+  TRADE_IN
+  TRADE_OUT
+  FEE_PERFORMANCE
+  FEE_SWAP
+  FEE_NETWORK
+  LOCK
+  UNLOCK
+  ADJUSTMENT
+}
+
+model LedgerEntry {
+  id        String     @id @default(cuid())
+  userId    String
+  tokenId   String
+  type      LedgerType
+  amount    Decimal    @db.Decimal(38, 18) // знаковая: + приход, - расход
+  refType   String? // Trade | Order | Withdrawal | Deposit | FeeLedger
+  refId     String?
+  memo      String?
+  createdAt DateTime   @default(now())
+
+  @@index([userId, tokenId, createdAt])
+  @@index([refType, refId])
+}
+
+// ───────────────────────────── Ордера и сделки ──────────────────────────────
+
+enum OrderSide {
+  BUY
+  SELL
+}
+
+enum OrderType {
+  MARKET
+  LIMIT
+  STOP_LOSS
+  TAKE_PROFIT
+  TRAILING_STOP
+}
+
+enum OrderStatus {
+  PENDING // создан, ждёт резерва средств
+  OPEN // активен (лимитка в книге)
+  PARTIALLY_FILLED
+  FILLED
+  CANCELLED
+  REJECTED
+  EXPIRED
+}
+
+enum OrderSource {
+  MANUAL
+  COPY_TRADE
+  CALL // клик по коллу админа
+  API
+}
+
+model Order {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chain  Chain
+
+  tokenInId  String
+  tokenIn    Token  @relation("tokenIn", fields: [tokenInId], references: [id])
+  tokenOutId String
+  tokenOut   Token  @relation("tokenOut", fields: [tokenOutId], references: [id])
+
+  side   OrderSide
+  type   OrderType
+  status OrderStatus @default(PENDING)
+  source OrderSource @default(MANUAL)
+
+  amountIn     Decimal  @db.Decimal(38, 18) // сколько отдаём
+  filledIn     Decimal  @default(0) @db.Decimal(38, 18)
+  filledOut    Decimal  @default(0) @db.Decimal(38, 18)
+  // Обе цены — в долларах за торгуемый токен, а не в единицах tokenIn.
+  // Именно так их шлёт интерфейс и так сравнивает воркер отложенных
+  // ордеров: он берёт token.priceUsd и сопоставляет напрямую.
+  limitPrice   Decimal? @db.Decimal(38, 18)
+  triggerPrice Decimal? @db.Decimal(38, 18) // цена срабатывания стопа/тейка, USD
+  trailingBps  Int? // для trailing stop
+  slippageBps  Int      @default(100)
+  expiresAt    DateTime?
+
+  // связь с копитрейдингом
+  parentOrderId String?
+  parentOrder   Order?  @relation("copyChildren", fields: [parentOrderId], references: [id])
+  children      Order[] @relation("copyChildren")
+  callId        String?
+  call          Call?   @relation(fields: [callId], references: [id])
+
+  rejectReason String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  trades Trade[]
+
+  @@index([userId, status])
+  @@index([status, type]) // воркер лимиток
+  @@index([parentOrderId])
+}
+
+enum TradeStatus {
+  SUBMITTED
+  CONFIRMED
+  FAILED
+}
+
+model Trade {
+  id      String @id @default(cuid())
+  orderId String
+  order   Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  userId  String
+  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  chain     Chain
+  amountIn  Decimal @db.Decimal(38, 18)
+  amountOut Decimal @db.Decimal(38, 18)
+  price     Decimal @db.Decimal(38, 18) // исполненная цена out в in
+  priceUsd  Decimal @db.Decimal(38, 18) // цена торгуемого токена в USD на момент сделки
+  valueUsd  Decimal @db.Decimal(24, 8)
+
+  // исполнение
+  route         Json? // маршрут агрегатора
+  aggregator    String? // jupiter | 0x | odos
+  txSignature   String? @unique
+  blockNumber   BigInt?
+  networkFeeUsd Decimal? @db.Decimal(24, 8)
+  slippageBps   Int?
+  priceImpactBps Int?
+
+  // комиссии
+  swapFeeUsd        Decimal @default(0) @db.Decimal(24, 8)
+  performanceFeeUsd Decimal @default(0) @db.Decimal(24, 8)
+  realizedPnlUsd    Decimal @default(0) @db.Decimal(24, 8) // только для SELL
+
+  status    TradeStatus @default(SUBMITTED)
+  error     String?
+  createdAt DateTime    @default(now())
+  confirmedAt DateTime?
+
+  fees FeeLedger[]
+
+  @@index([userId, createdAt])
+  @@index([status])
+}
+
+// ─────────────────────────── Позиции (учёт PnL) ─────────────────────────────
+
+model Position {
+  id      String @id @default(cuid())
+  userId  String
+  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenId String
+  token   Token  @relation(fields: [tokenId], references: [id])
+
+  quantity      Decimal @default(0) @db.Decimal(38, 18)
+  avgCostUsd    Decimal @default(0) @db.Decimal(38, 18) // средневзвешенная цена входа
+  costBasisUsd  Decimal @default(0) @db.Decimal(24, 8)
+  realizedPnlUsd Decimal @default(0) @db.Decimal(24, 8)
+  feesPaidUsd   Decimal @default(0) @db.Decimal(24, 8)
+
+  // источник позиции — важно: performance fee берётся только с копитрейд-объёма
+  copiedQuantity Decimal @default(0) @db.Decimal(38, 18)
+
+  openedAt  DateTime  @default(now())
+  closedAt  DateTime?
+  updatedAt DateTime  @updatedAt
+
+  @@unique([userId, tokenId])
+  @@index([userId])
+}
+
+// ────────────────────── Исследование токена (факты + AI) ────────────────────
+
+/**
+ * Результат разбора токена: проверяемые факты из открытых источников
+ * и отдельно — трактовка модели.
+ *
+ * Эти две части сознательно не смешиваются. Факт «активен mint authority»
+ * проверяем и воспроизводим; вывод «команда выглядит анонимной» — суждение,
+ * которое может быть ошибочным. Пользователь должен видеть, где что.
+ */
+model TokenResearch {
+  id      String @id @default(cuid())
+  tokenId String @unique
+  token   Token  @relation(fields: [tokenId], references: [id], onDelete: Cascade)
+
+  // ─── Проверяемые факты ───────────────────────────────────────────────
+  /** Ответ сканера безопасности: mint/freeze authority, налоги, ханипот. */
+  securityFlags Json?
+  /** Ссылки на соцсети и сайт проекта, найденные в открытых источниках. */
+  socials       Json?
+  /** Распределение по держателям: топ-10, доля создателя, число адресов. */
+  holderStats   Json?
+  /** Источники фактов: имя сервиса и время получения. */
+  factSources   Json?
+
+  // ─── Трактовка модели ────────────────────────────────────────────────
+  aiSummary     String? @db.Text
+  /** Репутационный риск 0-100. Отдельно от технического riskScore токена. */
+  aiRiskScore   Int?
+  aiRiskFactors Json?
+  /** positive | neutral | negative | unknown */
+  aiSentiment   String?
+  /** Ссылки, на которые опиралась модель. */
+  aiSources     Json?
+  aiModel       String?
+
+  /** ok — всё собрано, partial — часть источников недоступна, failed — нет данных. */
+  status    String   @default("ok")
+  error     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([updatedAt])
+}
+
+// ──────────────────────────── Радар новых токенов ───────────────────────────
+
+/**
+ * Обнаруженный новый токен.
+ *
+ * Отдельная таблица, а не флаг у Token: радар видит гораздо больше, чем
+ * попадает в витрину. Большинство новых пулов — мусор, который не должен
+ * засорять список торгуемых токенов, но должен остаться в истории, чтобы
+ * не уведомлять об одном и том же дважды.
+ */
+model RadarEvent {
+  id      String @id @default(cuid())
+  chain   Chain
+  address String
+  symbol  String
+  name    String
+
+  poolAddress   String?
+  priceUsd      Decimal? @db.Decimal(38, 18)
+  liquidityUsd  Decimal? @db.Decimal(24, 8)
+  volume24hUsd  Decimal? @db.Decimal(24, 8)
+  fdvUsd        Decimal? @db.Decimal(24, 8)
+  /** Возраст пула на момент обнаружения, часы. */
+  poolAgeHours  Decimal? @db.Decimal(12, 4)
+
+  /** Кто нашёл: okx | geckoterminal. */
+  source     String
+  riskScore  Int?
+  riskFlags  Json?
+
+  /**
+   * Уровень и коды причин из того же движка, что у терминала.
+   *
+   * До этого радар считал риск отдельно — по ликвидности, объёму
+   * и возрасту пула, — и один токен мог быть «низкий риск» в радаре
+   * и «заблокирован» в терминале. Для человека это выглядит как
+   * поломка, и справедливо: два раздела одного продукта не могут
+   * расходиться в том, опасен токен или нет.
+   *
+   * riskFlags оставлены для старых записей, но новые пишут сюда.
+   */
+  riskLevel  String?
+  riskCodes  String[]
+  /** Версия правил, по которым выставлен уровень. */
+  riskRulesVersion Int @default(0)
+
+  // ─── Отслеживание результата ────────────────────────────────────────
+  // Ценность радара определяется не тем, сколько токенов он нашёл,
+  // а тем, что с ними стало после. Поэтому фиксируем состояние в момент
+  // обнаружения и следим за ним дальше.
+
+  /** Капитализация в момент обнаружения — база для расчёта кратности. */
+  mcapAtSignalUsd Decimal? @db.Decimal(24, 8)
+  currentMcapUsd  Decimal? @db.Decimal(24, 8)
+  /** Максимум капитализации за всё время наблюдения. */
+  peakMcapUsd     Decimal? @db.Decimal(24, 8)
+
+  currentPriceUsd Decimal? @db.Decimal(38, 18)
+  /** Во сколько раз выросла капитализация к текущему моменту. */
+  currentMultiple Decimal? @db.Decimal(12, 4)
+  /** Максимальная достигнутая кратность. Именно её показывают как результат. */
+  peakMultiple    Decimal? @db.Decimal(12, 4)
+  /** Когда был достигнут пик — показывает, успел ли бы человек выйти. */
+  peakAt          DateTime?
+
+  currentHolders  Int?
+  holdersAtSignal Int?
+  currentTop10Pct Decimal? @db.Decimal(8, 4)
+
+  /** Точки для мини-графика: [{t, p, m}] — время, цена, капитализация. */
+  pricePoints   Json?
+  lastCheckedAt DateTime?
+  /** Когда последний раз забирали сделки пула для разметки кошельков. */
+  walletsCheckedAt DateTime?
+  /**
+   * Свод по кошелькам, посчитанный воркером и сохранённый здесь.
+   *
+   * Денормализация сознательная: лента радара показывает до полусотни
+   * карточек, и считать сигнал запросом на каждую означало бы полсотни
+   * агрегаций на открытие страницы.
+   */
+  smartBuyers       Int     @default(0)
+  smartBuyVolumeUsd Decimal @default(0) @db.Decimal(24, 8)
+  whaleBuyers       Int     @default(0)
+  /** Сила сигнала 0-100 с учётом давности покупок. */
+  walletSignalScore Int     @default(0)
+  /** Наблюдение прекращено: пул умер либо прошло слишком много времени. */
+  isTracking    Boolean @default(true)
+
+  /** Уведомления по событию уже разосланы. */
+  notified   Boolean  @default(false)
+  /** Токен заведён в витрину по этому событию. */
+  listedTokenId String?
+
+  /** Решения автоправила по этой находке. */
+  fires AutoRuleFire[]
+
+  firstSeenAt DateTime @default(now())
+
+  @@unique([chain, address])
+  @@index([firstSeenAt])
+  @@index([notified, riskScore])
+  @@index([isTracking, lastCheckedAt])
+  @@index([isTracking, walletsCheckedAt])
+  @@index([peakMultiple])
+
+  // Индексы под сортировки ленты. Без них база при каждом обновлении
+  // читает таблицу целиком и сортирует в памяти — на тысяче находок
+  // это уже заметно, а растёт она непрерывно.
+  //
+  // Первым полем везде riskLevel: заблокированные отсекаются до
+  // сортировки, и чем раньше это происходит, тем меньше строк
+  // доходит до сортировки.
+  @@index([riskLevel, firstSeenAt])
+  @@index([riskLevel, currentMultiple])
+  @@index([riskLevel, liquidityUsd])
+  @@index([riskLevel, riskScore])
+  @@index([riskRulesVersion])
+}
+
+// ───────────────────── Кошельки: смарт-мани и киты ──────────────────────────
+
+/**
+ * Кошелёк, замеченный в сделках по отслеживаемым токенам.
+ *
+ * Метка «смарт» здесь не покупается у поставщика и не берётся из чужого
+ * списка — она вычисляется из наших же наблюдений: кошелёк покупал токены,
+ * которые потом выросли. Это единственный способ, который можно проверить
+ * и объяснить, а не принять на веру.
+ *
+ * Ключевое ограничение: метка не выдаётся, пока сделок мало. На выборке
+ * из трёх покупок «100% попаданий» — это шум, а не навык.
+ */
+model TraderWallet {
+  id      String @id @default(cuid())
+  chain   Chain
+  address String
+
+  /** Человеческая метка, если известна: биржа, маркетмейкер, известный фонд. */
+  knownAs String?
+
+  // ─── Накопленная статистика ─────────────────────────────────────────
+  /** Сколько разных токенов покупал среди отслеживаемых. */
+  tokensBought Int @default(0)
+  /** Покупки, после которых токен вырастал минимум вдвое. */
+  wins2x       Int @default(0)
+  wins5x       Int @default(0)
+  /** Покупки, после которых токен терял более 80%. */
+  rugs         Int @default(0)
+  /** Совокупный объём покупок в долларах. */
+  volumeUsd    Decimal @default(0) @db.Decimal(24, 8)
+  /** Средняя пиковая кратность по его покупкам. */
+  avgPeakMultiple Decimal? @db.Decimal(12, 4)
+  /** Медианное время между запуском пула и его покупкой, часы. */
+  medianEntryHours Decimal? @db.Decimal(12, 4)
+
+  /**
+   * Итоговая оценка 0-100. Считается только при достаточной выборке,
+   * иначе остаётся null — отсутствие оценки честнее выдуманной.
+   */
+  score Int?
+  /** smart | whale | early | none */
+  label String @default("none")
+
+  firstSeenAt DateTime @default(now())
+  lastActiveAt DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  trades WalletTrade[]
+
+  @@unique([chain, address])
+  @@index([label, score])
+  @@index([lastActiveAt])
+}
+
+/**
+ * Отдельная покупка кошелька по отслеживаемому токену.
+ *
+ * Хранится вместе с капитализацией на момент сделки: без неё невозможно
+ * посчитать, во сколько раз вырос токен ПОСЛЕ входа, а именно это
+ * отличает удачную покупку от покупки на пике.
+ */
+model WalletTrade {
+  id       String       @id @default(cuid())
+  walletId String
+  wallet   TraderWallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+
+  chain         Chain
+  tokenAddress  String
+  radarEventId  String?
+
+  /** BUY | SELL */
+  side       String
+  amountUsd  Decimal  @db.Decimal(24, 8)
+  priceUsd   Decimal? @db.Decimal(38, 18)
+  /** Капитализация в момент сделки — база для оценки исхода. */
+  mcapAtTradeUsd Decimal? @db.Decimal(24, 8)
+  /** Возраст пула на момент покупки: чем раньше вход, тем ценнее сигнал. */
+  poolAgeHours Decimal? @db.Decimal(12, 4)
+
+  txHash String?
+  tradedAt DateTime
+
+  /** Исход, проставляется позже: во сколько раз вырос токен после сделки. */
+  outcomeMultiple Decimal?  @db.Decimal(12, 4)
+  outcomeAt       DateTime?
+
+  // Сторона входит в ключ: арбитражная транзакция может содержать
+  // и покупку, и продажу по одному пулу, и без неё вторая запись
+  // молча терялась бы.
+  @@unique([walletId, txHash, side])
+  @@index([chain, tokenAddress, tradedAt])
+  @@index([radarEventId])
+  @@index([outcomeMultiple])
+}
+
+/**
+ * Ключ для программного доступа.
+ *
+ * Нужен, чтобы скрипт мог работать от имени аккаунта: наполнять радар
+ * находками, читать позиции, ставить ордера. Отдельная сущность,
+ * а не пользовательский JWT, по двум причинам.
+ *
+ * Первая: JWT живёт минуты и обновляется через refresh-сессию, привязанную
+ * к браузеру. Скрипт на сервере так не умеет.
+ *
+ * Вторая, важнее: у ключа своя область прав. Скрипту, который торгует,
+ * незачем уметь менять пароль или выводить средства. Область задаётся
+ * при создании и потом не расширяется.
+ *
+ * Вывод средств не входит ни в одну область и не может быть выдан ключу
+ * в принципе. Это не настройка, а свойство системы: ключ хранится в файле
+ * на чужой машине, его нельзя защитить вторым фактором, и единственная
+ * надёжная гарантия — отсутствие самой возможности.
+ *
+ * Хранится SHA-256 от ключа. Утечка базы не даёт доступа.
+ */
+model ApiKey {
+  id     String @id @default(cuid())
+  name   String
+  /** Владелец. Действия ключа выполняются от его имени. */
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  tokenHash String @unique
+  /** Первые символы — чтобы отличать ключи в списке. Не секрет. */
+  prefix    String
+
+  /**
+   * Области доступа: radar:ingest | trade:read | trade:write.
+   * Пустой список означает ключ без прав — такой отвергается.
+   */
+  scopes String[]
+
+  isActive   Boolean @default(true)
+  maxPerHour Int     @default(60)
+
+  /**
+   * Предел суммы одной сделки для этого ключа, USD.
+   * Ошибка в скрипте с лишним нулём иначе стоит всего депозита.
+   */
+  maxOrderUsd Decimal? @db.Decimal(24, 8)
+
+  lastUsedAt DateTime?
+  usedCount  Int      @default(0)
+  createdAt  DateTime @default(now())
+
+  @@index([isActive])
+  @@index([userId])
+}
+
+// ─────────────────────── Автопубликация коллов ──────────────────────────────
+
+/**
+ * Правило автоматической публикации.
+ *
+ * В системе существует ровно одна активная запись: правил несколько
+ * означало бы, что на одну находку могут сработать два — и надо решать,
+ * какое из них главнее. Пока такой потребности нет, единственное правило
+ * убирает целый класс вопросов.
+ *
+ * Выключено по умолчанию и стартует в режиме наблюдения. Автоматика,
+ * включённая сразу в боевом режиме, на первом же часу публикует всё,
+ * что прошло недонастроенный фильтр, — и это видят пользователи.
+ */
+model AutoRule {
+  id   String @id @default(cuid())
+  name String @default("Основное правило")
+
+  /** Главный выключатель. */
+  isEnabled Boolean @default(false)
+  /**
+   * Режим наблюдения: правило считается и пишет в журнал, но ничего
+   * не публикует. Позволяет неделю смотреть, что бы оно наделало,
+   * не рискуя витриной.
+   */
+  isDryRun  Boolean @default(true)
+
+  /** Сети, на которых правило работает. Пусто — все поддерживаемые. */
+  chains Chain[]
+
+  // ─── Условие по кошелькам: основной триггер ─────────────────────────
+  /** Минимум размеченных кошельков с историей среди покупателей. */
+  minSmartBuyers      Int     @default(2)
+  /** Минимальная сила сигнала 0-100 с учётом давности покупок. */
+  minSignalStrength   Int     @default(40)
+  /** Минимальная суммарная покупка размеченных кошельков, USD. */
+  minSmartVolumeUsd   Decimal @default(3000) @db.Decimal(24, 8)
+
+  // ─── Страховочные условия ───────────────────────────────────────────
+  // Сигнал по кошелькам не отменяет базовой проверки токена: смарт-деньги
+  // тоже заходят в honeypot, разница лишь в том, что у них хватает денег
+  // на потерю.
+  minLiquidityUsd Decimal @default(30000) @db.Decimal(24, 8)
+  minVolume24hUsd Decimal @default(20000) @db.Decimal(24, 8)
+  maxRiskScore    Int     @default(60)
+  maxPoolAgeHours Int     @default(72)
+
+  // ─── Ограничители ───────────────────────────────────────────────────
+  /** Не более скольких коллов в сутки. Защита от лавины в активный час. */
+  maxCallsPerDay  Int @default(5)
+  /** Пауза между публикациями, минуты. */
+  cooldownMinutes Int @default(60)
+
+  // ─── Параметры создаваемого колла ───────────────────────────────────
+  /** Цели в процентах от цены входа, например [50, 100, 200]. */
+  targetPcts     Json    @default("[50, 100, 200]")
+  /** Стоп-лосс в процентах ниже входа. */
+  stopLossPct    Int     @default(35)
+  suggestedPct   Decimal @default(2) @db.Decimal(8, 4)
+  timeHorizon    String  @default("1-3 дня")
+  /** Включать ли копитрейдинг у создаваемых коллов. */
+  isCopyEnabled  Boolean @default(false)
+  /** От чьего имени публикуются коллы. */
+  authorId       String?
+
+  lastFiredAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  fires AutoRuleFire[]
+}
+
+/**
+ * Журнал решений правила.
+ *
+ * Записываются и срабатывания, и отказы с причиной. Журнал только
+ * успешных срабатываний не позволяет понять, почему правило молчит —
+ * а это самый частый вопрос к любой автоматике.
+ */
+model AutoRuleFire {
+  id     String   @id @default(cuid())
+  ruleId String
+  rule   AutoRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+
+  radarEventId String
+  radarEvent   RadarEvent @relation(fields: [radarEventId], references: [id], onDelete: Cascade)
+  chain        Chain
+  address      String
+  symbol       String
+
+  /** FIRED | DRY_RUN | SKIPPED */
+  outcome String
+  /** Человеческое объяснение решения. */
+  reason  String   @db.Text
+  /** Снимок значений, на которых принято решение. */
+  snapshot Json?
+
+  /** Созданный колл, если он был создан. */
+  callId String?
+
+  createdAt DateTime @default(now())
+
+  @@unique([ruleId, radarEventId])
+  @@index([ruleId, createdAt])
+  @@index([outcome, createdAt])
+}
+
+enum RadarChannel {
+  IN_APP
+  TELEGRAM
+}
+
+/** Подписка пользователя на уведомления радара со своими порогами. */
+model RadarSubscription {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  channel RadarChannel @default(IN_APP)
+  isActive Boolean     @default(true)
+
+  chains          Chain[]
+  minLiquidityUsd Decimal? @db.Decimal(24, 8)
+  minVolume24hUsd Decimal? @db.Decimal(24, 8)
+  maxRiskScore    Int?
+  /** Не уведомлять о пулах старше указанного возраста. */
+  maxPoolAgeHours Int?
+
+  /** Защита от лавины: не больше указанного числа сообщений в час. */
+  maxAlertsPerHour Int      @default(20)
+  sentLastHour     Int      @default(0)
+  windowStartedAt  DateTime @default(now())
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, channel])
+  @@index([isActive])
+}
+
+// ─────────────────────────── Коллы (сигналы админа) ─────────────────────────
+
+enum CallStatus {
+  DRAFT
+  PUBLISHED
+  HIT_TARGET
+  STOPPED_OUT
+  EXPIRED
+  CANCELLED
+}
+
+enum CallRisk {
+  LOW
+  MEDIUM
+  HIGH
+  DEGEN
+}
+
+model Call {
+  id       String @id @default(cuid())
+  authorId String
+  author   User   @relation(fields: [authorId], references: [id])
+  tokenId  String
+  token    Token  @relation(fields: [tokenId], references: [id])
+  chain    Chain
+
+  title     String
+  thesis    String   @db.Text // почему проект имеет потенциал
+  risk      CallRisk @default(HIGH)
+  status    CallStatus @default(DRAFT)
+
+  entryPriceUsd  Decimal  @db.Decimal(38, 18)
+  targets        Json // [{ priceUsd, pct }] — лестница тейков
+  stopLossUsd    Decimal? @db.Decimal(38, 18)
+  suggestedPct   Decimal? @db.Decimal(8, 4) // рекомендуемая доля портфеля
+  timeHorizon    String? // "1-3 дня", "свинг"
+  links          Json? // сайт, twitter, dexscreener
+
+  // авто-фиксация результата
+  peakPriceUsd  Decimal? @db.Decimal(38, 18)
+  peakMultiple  Decimal? @db.Decimal(12, 4)
+  closedPriceUsd Decimal? @db.Decimal(38, 18)
+  resultPct     Decimal? @db.Decimal(12, 4)
+
+  isCopyEnabled Boolean @default(false) // включает fan-out подписчикам
+
+  publishedAt DateTime?
+  expiresAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  orders Order[]
+
+  @@index([status, publishedAt])
+  @@index([chain, status])
+}
+
+// ─────────────────────────────── Копитрейдинг ───────────────────────────────
+
+enum CopyStatus {
+  ACTIVE
+  PAUSED
+  CANCELLED
+}
+
+enum CopyPendingMode {
+  ON_FILL
+  MIRROR
+}
+
+enum CopySizing {
+  FIXED_USD // фиксированная сумма на сделку
+  PCT_EQUITY // % от капитала подписчика
+  PROPORTIONAL // пропорционально доле лидера
+}
+
+model CopySubscription {
+  id         String @id @default(cuid())
+  followerId String
+  follower   User   @relation("follower", fields: [followerId], references: [id], onDelete: Cascade)
+  leaderId   String
+  leader     User   @relation("leader", fields: [leaderId], references: [id], onDelete: Cascade)
+
+  status CopyStatus @default(ACTIVE)
+  sizing CopySizing @default(PCT_EQUITY)
+
+  /**
+   * Когда копировать отложенные ордера лидера.
+   *
+   * ON_FILL — рыночная копия в момент срабатывания лимитки лидера.
+   *   Вход гарантирован, но по цене на секунды позже и хуже.
+   * MIRROR — такая же лимитка ставится сразу.
+   *   Цена входа та же, что у лидера, но исполнение не гарантировано,
+   *   и средства заморожены всё время жизни ордера.
+   *
+   * По умолчанию ON_FILL: заморозка средств — не то, что человек ожидает
+   * получить, не выбрав этого явно.
+   */
+  pendingMode CopyPendingMode @default(ON_FILL)
+  /**
+   * Предел доли капитала под заморозкой в зеркалируемых ордерах.
+   * Без него десяток лимиток лидера связывает все средства подписчика,
+   * и на выход из открытых позиций денег не остаётся.
+   */
+  maxLockedShare Decimal? @default(0.5) @db.Decimal(5, 4)
+
+  fixedUsd      Decimal? @db.Decimal(24, 8)
+  pctEquity     Decimal? @db.Decimal(8, 4) // например 5.0 = 5% капитала на сделку
+  maxPerTradeUsd Decimal? @db.Decimal(24, 8)
+  maxOpenPositions Int    @default(10)
+  dailyLossLimitUsd Decimal? @db.Decimal(24, 8)
+  allowedChains Chain[]
+  minLiquidityUsd Decimal? @db.Decimal(24, 8)
+  maxRiskScore  Int? // не копировать токены опаснее порога
+
+  // Экономика: 10% от прибыли, договор фиксируется на момент подписки
+  performanceFeeBps Int @default(1000)
+  highWaterMarkUsd  Decimal @default(0) @db.Decimal(24, 8)
+
+  // накопительные метрики
+  copiedTrades  Int     @default(0)
+  grossPnlUsd   Decimal @default(0) @db.Decimal(24, 8)
+  feesPaidUsd   Decimal @default(0) @db.Decimal(24, 8)
+
+  acceptedTermsAt DateTime // юридически: согласие с условиями комиссии
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([followerId, leaderId])
+  @@index([leaderId, status])
+}
+
+// ────────────────────────────── Реестр комиссий ─────────────────────────────
+
+enum FeeType {
+  PERFORMANCE
+  SWAP
+  WITHDRAWAL
+  NETWORK
+}
+
+enum FeeStatus {
+  ACCRUED // начислена, удержана из выручки
+  SETTLED // переведена на счёт платформы/лидера
+  WAIVED
+  REFUNDED
+}
+
+model FeeLedger {
+  id      String @id @default(cuid())
+  userId  String
+  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tradeId String?
+  trade   Trade? @relation(fields: [tradeId], references: [id], onDelete: SetNull)
+
+  subscriptionId String?
+  leaderId       String?
+
+  type   FeeType
+  status FeeStatus @default(ACCRUED)
+
+  // Полная прозрачность расчёта — для споров и аудита
+  basisPnlUsd   Decimal @db.Decimal(24, 8) // прибыль, с которой считалась комиссия
+  feeBps        Int
+  amountUsd     Decimal @db.Decimal(24, 8)
+  amountToken   Decimal @db.Decimal(38, 18)
+  feeTokenId    String?
+  leaderShareUsd Decimal @default(0) @db.Decimal(24, 8) // сплит лидер/платформа
+  platformShareUsd Decimal @default(0) @db.Decimal(24, 8)
+
+  calcSnapshot Json? // avgCost, qty, exitPrice — воспроизводимость расчёта
+  createdAt    DateTime @default(now())
+  settledAt    DateTime?
+
+  @@index([userId, createdAt])
+  @@index([leaderId, status])
+}
+
+// ───────────────────────── Депозиты и выводы ────────────────────────────────
+
+model Deposit {
+  id       String @id @default(cuid())
+  walletId String
+  wallet   Wallet @relation(fields: [walletId], references: [id])
+  userId   String
+  tokenId  String
+  chain    Chain
+
+  amount        Decimal @db.Decimal(38, 18)
+  txSignature   String  @unique
+  confirmations Int     @default(0)
+  isCredited    Boolean @default(false)
+
+  createdAt   DateTime  @default(now())
+  creditedAt  DateTime?
+
+  @@index([userId])
+}
+
+enum WithdrawalStatus {
+  REQUESTED
+  AWAITING_2FA
+  MANUAL_REVIEW
+  APPROVED
+  BROADCAST
+  CONFIRMED
+  REJECTED
+  FAILED
+}
+
+model Withdrawal {
+  id      String @id @default(cuid())
+  userId  String
+  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenId String
+  chain   Chain
+
+  amount      Decimal @db.Decimal(38, 18)
+  feeAmount   Decimal @default(0) @db.Decimal(38, 18)
+  toAddress   String
+  status      WithdrawalStatus @default(REQUESTED)
+  txSignature String?
+  reviewedBy  String?
+  rejectReason String?
+
+  createdAt   DateTime  @default(now())
+  confirmedAt DateTime?
+
+  @@index([userId, status])
+  @@index([status])
+}
+
+// ─────────────────────────────── Аудит ──────────────────────────────────────
+
+model AuditLog {
+  id       String  @id @default(cuid())
+  actorId  String?
+  actor    User?   @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  action   String // call.publish, withdrawal.approve, user.freeze, fee.waive
+  entity   String
+  entityId String?
+  before   Json?
+  after    Json?
+  ip       String?
+  createdAt DateTime @default(now())
+
+  @@index([entity, entityId])
+  @@index([actorId, createdAt])
+}
+
+model IdempotencyKey {
+  key       String   @id
+  userId    String
+  response  Json?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
+
+
+/**
+ * Живая сделка отслеживаемого кошелька.
+ *
+ * Отдельно от WalletTrade намеренно. Там — разобранные экономические
+ * операции, участвующие в расчёте; здесь сырой поток от провайдера,
+ * который ещё предстоит разобрать. Смешивать их значило бы пускать
+ * непроверенное в статистику.
+ */
+model WalletActivity {
+  /** Устойчивый ключ события. Он же защита от повторной записи. */
+  id String @id
+
+  chain         Chain
+  walletAddress String
+  tokenAddress  String
+  tokenSymbol   String?
+
+  /** BUY | SELL */
+  side          String
+  quoteSymbol   String?
+  quoteAmount   Decimal? @db.Decimal(38, 18)
+  priceUsd      Decimal? @db.Decimal(38, 18)
+  marketCapUsd  Decimal? @db.Decimal(24, 8)
+  /** Только для продаж: у покупки результата ещё нет. */
+  realizedPnlUsd Decimal? @db.Decimal(24, 8)
+
+  txHash      String?
+  trackerType Int?
+  /** okx_websocket | okx_rest */
+  source      String
+  /** Насколько полон разбор события, 0-1. */
+  parsingConfidence Decimal @default(1) @db.Decimal(4, 3)
+
+  /**
+   * Событие учтено в позициях кошелька.
+   *
+   * Ставится true только тогда, когда для него нашлась
+   * каноническая сделка из истории DEX с точным количеством
+   * и пересчёт позиции прошёл успешно. Сам факт сохранения
+   * события основанием не является: лента отслеживания не даёт
+   * количества купленного токена, и учесть её напрямую нельзя.
+   */
+  appliedToLedger Boolean @default(false)
+  /** pending | matched | applied | ignored | deferred | failed */
+  ledgerState     String  @default("pending")
+  ledgerAppliedAt DateTime?
+  ledgerErrorCode String?
+  ledgerAttempts  Int     @default(0)
+
+  tradedAt   DateTime
+  receivedAt DateTime @default(now())
+
+  @@index([tradedAt])
+  @@index([chain, tradedAt])
+  @@index([walletAddress, tradedAt])
+  @@index([tokenAddress, tradedAt])
+  @@index([side, tradedAt])
+  @@index([source, tradedAt])
+  @@index([appliedToLedger])
+}
+
+/**
+ * Состояние фоновых поисков.
+ *
+ * Одна строка на задачу. Нужна для двух вещей сразу: не дать двум
+ * экземплярам API запустить один поиск одновременно и показать
+ * администратору, когда поиск последний раз удавался.
+ *
+ * Второе важнее, чем кажется: замерший поиск и спокойный рынок
+ * выглядят одинаково — пустым списком.
+ */
+model JobState {
+  name String @id
+
+  isRunning       Boolean   @default(false)
+  lastStartedAt   DateTime?
+  lastCompletedAt DateTime?
+  /** Последний проход, завершившийся без ошибки. */
+  lastSuccessAt   DateTime?
+  durationMs      Int?
+  itemCount       Int?
+  errorCode       String?
+
+  updatedAt DateTime @updatedAt
+}
+
+
+/**
+ * Каноническая сделка из истории DEX.
+ *
+ * Единственный источник точных количеств. Лента отслеживания
+ * и WebSocket дают направление, цену и количество котировочного
+ * токена, но не количество купленного — вычислять его делением
+ * нельзя, это разные валюты.
+ *
+ * Числа хранятся строками: количество с восемнадцатью знаками
+ * после запятой в double теряет точность молча.
+ */
+model WalletEconomicTrade {
+  /** Ключ из кошелька, токена, направления, времени и сумм. */
+  key String @id
+
+  chain         Chain
+  walletAddress String
+  tokenAddress  String
+  tokenSymbol   String?
+
+  /** BUY | SELL */
+  side       String
+  amount     Decimal  @db.Decimal(40, 18)
+  valueUsd   Decimal  @db.Decimal(30, 10)
+  price      Decimal  @db.Decimal(40, 20)
+  marketCapUsd Decimal? @db.Decimal(30, 10)
+  /** Результат по версии OKX. Для сверки, в расчёт не идёт. */
+  providerPnlUsd Decimal? @db.Decimal(30, 10)
+
+  provider  String   @default("okx_dex_history")
+  tradedAt  DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([walletAddress, chain, tradedAt])
+  @@index([walletAddress, chain, tokenAddress, tradedAt])
+}
+
+/**
+ * Кошельки, которым нужен пересчёт позиций.
+ *
+ * Очередь с объединением: десять событий одного кошелька за двадцать
+ * секунд должны дать один запрос к истории, а не десять.
+ */
+model WalletSyncQueue {
+  /** chain:wallet */
+  id String @id
+
+  chain         Chain
+  walletAddress String
+
+  /** Когда пересчитывать: обновляется при каждом новом событии. */
+  dueAt      DateTime
+  attempts   Int      @default(0)
+  lastErrorCode String?
+  lastSyncAt DateTime?
+  lastSuccessAt DateTime?
+
+  /**
+   * Поколение задачи.
+   *
+   * Растёт с каждым новым событием. Воркер запоминает его при
+   * захвате и снимает задачу только при совпадении: иначе за время
+   * выгрузки истории пришло новое событие, и снятие стёрло бы
+   * работу, о которой воркер не знал. Сделка потерялась бы
+   * навсегда и молча.
+   */
+  generation Int @default(1)
+
+  /**
+   * Аренда задачи.
+   *
+   * Захват делается условным обновлением, а не парой «найти
+   * и обновить»: два экземпляра API увидели бы одну строку и оба
+   * сочли бы, что забрали её. Просроченная аренда перехватывается —
+   * процесс, упавший с захваченной задачей, не должен блокировать
+   * её навсегда.
+   */
+  lockedBy    String?
+  leaseToken  String?
+  lockedUntil DateTime?
+
+  updatedAt DateTime @updatedAt
+
+  @@unique([chain, walletAddress])
+  @@index([dueAt, lockedUntil])
+}

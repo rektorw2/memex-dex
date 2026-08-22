@@ -9,6 +9,7 @@ import { startWalletTracker, stopWalletTracker } from './wallet-tracker.js';
 import { startAutoPublisher, stopAutoPublisher } from './auto-publisher.js';
 import { startScamChecker, stopScamChecker } from './scam-checker.js';
 import { startRadarRisk, stopRadarRisk } from './radar-risk.js';
+import { startEntitlementSweeper, stopEntitlementSweeper } from './entitlement-sweeper.js';
 import { startWalletDiscovery, stopWalletDiscovery } from './wallet-discovery.js';
 import { startActivityIngest, stopActivityIngest } from '../services/okx-ws-pool.js';
 import { startLedgerSync, stopLedgerSync } from './wallet-ledger-sync.js';
@@ -27,6 +28,7 @@ startWalletTracker();
 startAutoPublisher();
 startScamChecker();
 startRadarRisk();
+startEntitlementSweeper();
 
 /**
  * Воркеры кошельков запускаются только после проверки схемы.
@@ -58,6 +60,7 @@ const shutdown = async () => {
   stopAutoPublisher();
   stopScamChecker();
   stopRadarRisk();
+  stopEntitlementSweeper();
 
   // Останавливаем только то, что действительно запустилось: иначе
   // при отставшей схеме остановка обращалась бы к невыполненному

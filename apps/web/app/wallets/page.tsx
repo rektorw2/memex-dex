@@ -1,5 +1,7 @@
 'use client';
 
+import { Requires } from '@/components/Paywall';
+
 import { useState, useEffect, useMemo } from 'react';
 import useSWR from 'swr';
 import { fetcher, fmtUsd, errorMessage } from '@/lib/api';
@@ -38,7 +40,7 @@ import { FollowingTab } from '@/components/wallets/FollowingTab';
 
 type Tab = 'wallets' | 'activity' | 'following';
 
-export default function WalletsPage() {
+function WalletsPageContent() {
   const [tab, setTab] = useState<Tab>('wallets');
   const [methodOpen, setMethodOpen] = useState(false);
 
@@ -761,5 +763,23 @@ function Options({
         </button>
       ))}
     </div>
+  );
+}
+
+/**
+ * Обёртка доступа.
+ *
+ * Содержимое страницы не меняется: закрывается она целиком, снаружи.
+ * Так проверка стоит в одном месте, а не растекается по каждому
+ * запросу внутри, и её нельзя случайно потерять при правке разметки.
+ *
+ * Решение принимает сервер: даже если обёртка ошибётся и пропустит,
+ * запросы внутри вернут 403.
+ */
+export default function WalletsPage() {
+  return (
+    <Requires capability="SMART_WALLETS_ACCESS" title="Смарт-кошельки">
+      <WalletsPageContent />
+    </Requires>
   );
 }

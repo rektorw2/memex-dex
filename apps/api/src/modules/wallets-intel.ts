@@ -1,3 +1,4 @@
+import { entitlementOfRequest, denyIfMissing } from '../services/entitlement.js';
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import {
@@ -17,6 +18,13 @@ import { walletActivityForToken } from '../workers/wallet-tracker.js';
  * размером выборки. Число без выборки в этой области бесполезно: «доля
  * попаданий 100%» на трёх сделках и на трёхстах — совершенно разные
  * утверждения, а выглядят одинаково.
+ */
+/*
+ * Смарт-кошельки — платный раздел.
+ *
+ * Проверка стоит на каждом читающем маршруте, а не на префиксе:
+ * префиксная защита отваливается ровно тогда, когда кто-то добавляет
+ * маршрут чуть в стороне, и отваливается молча.
  */
 export const walletIntelRoutes: FastifyPluginAsync = async (app) => {
   /**
@@ -82,7 +90,10 @@ export const walletIntelRoutes: FastifyPluginAsync = async (app) => {
     };
   });
 
-  app.get('/wallets/activity', async (req) => {
+  app.get('/wallets/activity', async (req, reply) => {
+    const ent = await entitlementOfRequest(req);
+    if (denyIfMissing(ent, 'SMART_WALLETS_ACCESS', reply)) return reply;
+
     const q = z
       .object({
         chain: z.string().optional(),
@@ -131,7 +142,10 @@ export const walletIntelRoutes: FastifyPluginAsync = async (app) => {
    * без оценки не «плохие», у них просто мало истории; смешивать их
    * с оценёнными в одном списке значит вводить в заблуждение.
    */
-  app.get('/wallets/top', async (req) => {
+  app.get('/wallets/top', async (req, reply) => {
+    const ent = await entitlementOfRequest(req);
+    if (denyIfMissing(ent, 'SMART_WALLETS_ACCESS', reply)) return reply;
+
     const q = z
       .object({
         chain: z.string().optional(),
@@ -168,6 +182,9 @@ export const walletIntelRoutes: FastifyPluginAsync = async (app) => {
 
   /** Карточка кошелька с его сделками. */
   app.get('/wallets/:chain/:address', async (req, reply) => {
+    const ent = await entitlementOfRequest(req);
+    if (denyIfMissing(ent, 'SMART_WALLETS_ACCESS', reply)) return reply;
+
     const p = z
       .object({ chain: z.string(), address: z.string() })
       .parse(req.params);
@@ -207,7 +224,10 @@ export const walletIntelRoutes: FastifyPluginAsync = async (app) => {
    * остальных данных страницы, и грузить его нужно после основного
    * содержимого, а не задерживать им всю страницу.
    */
-  app.get('/wallets/signal/:chain/:address', async (req) => {
+  app.get('/wallets/signal/:chain/:address', async (req, reply) => {
+    const ent = await entitlementOfRequest(req);
+    if (denyIfMissing(ent, 'SMART_WALLETS_ACCESS', reply)) return reply;
+
     const p = z.object({ chain: z.string(), address: z.string() }).parse(req.params);
     const q = z.object({ hours: z.coerce.number().max(168).default(48) }).parse(req.query);
 

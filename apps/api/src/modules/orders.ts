@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { Prisma as P } from '@prisma/client';
 import { requiredLock } from '@memex/core';
 import { prisma, serializable } from '../lib/prisma.js';
+import { entitlementOfRequest, denyIfMissing } from '../services/entitlement.js';
 import { executeOrder } from '../services/execution.js';
 import { placeOrderForUser, cancelOrderForUser } from '../services/order-intake.js';
 import * as balances from '../services/balances.js';
@@ -29,6 +30,22 @@ export const orderRoutes: FastifyPluginAsync = async (app) => {
   app.post('/orders', { preHandler: [app.authenticate] }, async (req, reply) => {
     const body = createOrderSchema.parse(req.body);
     const userId = req.user.sub;
+
+    /*
+     * Право проверяется по направлению сделки, а не по маршруту.
+     *
+     * Покупка — платная возможность: за неё берут деньги, и после
+     * окончания подписки она закрывается. Продажа — нет и никогда
+     * не будет: актив принадлежит человеку, а не платформе, и запереть
+     * его в позиции из-за неоплаченного счёта нельзя.
+     *
+     * Один маршрут на оба направления — не недосмотр, а причина
+     * делать проверку именно здесь: разведи их по разным маршрутам,
+     * и однажды кто-то закроет весь маршрут целиком.
+     */
+    const ent = await entitlementOfRequest(req);
+    const needed = body.side === 'BUY' ? 'MANUAL_TRADE' : 'SELL_OWN_ASSET';
+    if (denyIfMissing(ent, needed, reply)) return reply;
 
     // Идемпотентность: повтор запроса с тем же ключом не создаёт второй ордер.
     // Без этого двойной клик на мобильном = две покупки.
@@ -94,7 +111,23 @@ export const orderRoutes: FastifyPluginAsync = async (app) => {
   });
 
   /** Предпросмотр: сколько получит пользователь, без создания ордера. */
-  app.post('/orders/quote', { preHandler: [app.authenticate] }, async (req) => {
+  app.post('/orders/quote', { preHandler: [app.authenticate] }, async (req, reply) => {
+    /*
+     * Котировка — шаг покупки, а не отдельная услуга.
+     *
+     * Оставить её открытой значило бы дать человеку без плана
+     * посчитать сделку, дойти до кнопки и получить отказ там.
+     * Отказывать надо в начале пути, а не в конце.
+     *
+     * Продажа своего актива котируется по тому же маршруту, поэтому
+     * право проверяется по направлению, как и у самой заявки.
+     */
+    const side = (req.body as { side?: 'BUY' | 'SELL' } | undefined)?.side;
+    const ent = await entitlementOfRequest(req);
+    if (denyIfMissing(ent, side === 'SELL' ? 'SELL_OWN_ASSET' : 'MANUAL_TRADE', reply)) {
+      return reply;
+    }
+
     const body = createOrderSchema.pick({
       chain: true, tokenInId: true, tokenOutId: true, amountIn: true, slippageBps: true,
     }).parse(req.body);

@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { assessToken, SAFE_LEVELS, TRADEABLE_LEVELS, looksLikeAddress } from '@memex/core';
 import { prisma } from '../lib/prisma.js';
+import { entitlementOfRequest, denyIfMissing } from '../services/entitlement.js';
 import { SUPPORTED_INTERVALS } from '../services/market-data.js';
 import { serializeResearch } from '../services/research.js';
 import { RULES_VERSION } from '../workers/scam-checker.js';
@@ -99,7 +100,18 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
    * на трёх четвертях витрины, почти наверняка описывает норму
    * рынка, а не нарушение.
    */
-  app.get('/tokens/risk-breakdown', async (req) => {
+  app.get('/tokens/risk-breakdown', async (req, reply) => {
+    /*
+     * Разбор токена — платная часть терминала.
+     *
+     * Список токенов остаётся открытым: это витрина, по ней человек
+     * решает, стоит ли вообще заводить аккаунт. Закрыто то, ради чего
+     * платят, — разложенная по причинам оценка риска, история цены
+     * и сводка для решения о покупке.
+     */
+    const ent = await entitlementOfRequest(req);
+    if (denyIfMissing(ent, 'TERMINAL_ACCESS', reply)) return reply;
+
     const q = z
       .object({ level: z.enum(['blocked', 'high', 'medium', 'all']).default('blocked') })
       .parse(req.query ?? {});
@@ -153,7 +165,11 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
    * почти пустой, и человек решил бы, что она сломана, хотя на самом
    * деле проверка просто ещё не дошла.
    */
-  app.get('/tokens/dexscreener', async (req) => {
+  app.get('/tokens/dexscreener', async (req, reply) => {
+    // Внешний разбор — та же платная часть терминала, что и обзор.
+    const ent = await entitlementOfRequest(req);
+    if (denyIfMissing(ent, 'TERMINAL_ACCESS', reply)) return reply;
+
     const q = z
       .object({
         chain: z.string().optional(),
@@ -420,6 +436,17 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
    * он нажал «Купить».
    */
   app.get('/tokens/:id/overview', async (req, reply) => {
+    /*
+     * Разбор токена — платная часть терминала.
+     *
+     * Список токенов остаётся открытым: это витрина, по ней человек
+     * решает, стоит ли вообще заводить аккаунт. Закрыто то, ради чего
+     * платят, — разложенная по причинам оценка риска, история цены
+     * и сводка для решения о покупке.
+     */
+    const ent = await entitlementOfRequest(req);
+    if (denyIfMissing(ent, 'TERMINAL_ACCESS', reply)) return reply;
+
     const { id } = z.object({ id: z.string() }).parse(req.params);
 
     const token = await prisma.token.findUnique({ where: { id }, include: { research: true } });
@@ -527,6 +554,17 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.get('/tokens/:id/candles', async (req, reply) => {
+    /*
+     * Разбор токена — платная часть терминала.
+     *
+     * Список токенов остаётся открытым: это витрина, по ней человек
+     * решает, стоит ли вообще заводить аккаунт. Закрыто то, ради чего
+     * платят, — разложенная по причинам оценка риска, история цены
+     * и сводка для решения о покупке.
+     */
+    const ent = await entitlementOfRequest(req);
+    if (denyIfMissing(ent, 'TERMINAL_ACCESS', reply)) return reply;
+
     const { id } = z.object({ id: z.string() }).parse(req.params);
     const q = z
       .object({

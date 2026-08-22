@@ -10,6 +10,11 @@ import { radarPerformance } from '../workers/radar-tracker.js';
 import { downsample } from '@memex/core';
 import { riskStateFields } from './radar-risk-state.js';
 import { cached } from '../lib/cache.js';
+import {
+  entitlementOfRequest,
+  applyCacheHeaders,
+  denyIfMissing,
+} from '../services/entitlement.js';
 
 /**
  * Порядки выдачи ленты.
@@ -114,8 +119,19 @@ async function computeRadarSummary(chain?: string) {
 }
 
 export const radarRoutes: FastifyPluginAsync = async (app) => {
-  /** Лента находок. Открыта всем: это витрина, а не персональные данные. */
-  app.get('/radar', async (req) => {
+  /**
+   * Лента находок.
+   *
+   * Открыта всем, но не всем одинаково. Бесплатный план видит
+   * состояние трёхминутной давности — целиком, включая сам состав
+   * списка, счётчики и порядок. Мгновенный видит то, что есть.
+   *
+   * Решение принимается по подписке авторизованного пользователя.
+   * Ни `plan` в теле, ни `plan` в строке запроса, ни заголовок
+   * на это не влияют: всё, что приходит от клиента, клиент же
+   * и пишет.
+   */
+  app.get('/radar', async (req, reply) => {
     const q = z
       .object({
         chain: z.string().optional(),
@@ -154,8 +170,17 @@ export const radarRoutes: FastifyPluginAsync = async (app) => {
           .enum(['recent', 'growth', 'liquidity', 'risk', 'holders', 'wallets'])
           .default('recent'),
         limit: z.coerce.number().max(100).default(50),
+        offset: z.coerce.number().min(0).default(0),
       })
       .parse(req.query);
+
+    const ent = await entitlementOfRequest(req);
+    applyCacheHeaders(reply);
+
+    // Радар — платный раздел. Отказ отдаётся до обращения к базе:
+    // считать выдачу для того, кому её нельзя показать, незачем,
+    // а по времени ответа можно было бы догадаться о её размере.
+    if (denyIfMissing(ent, 'RADAR_ACCESS', reply)) return reply;
 
     const events = await prisma.radarEvent.findMany({
       where: {
@@ -180,6 +205,7 @@ export const radarRoutes: FastifyPluginAsync = async (app) => {
       },
       orderBy: RADAR_SORTS[q.sort],
       take: q.limit,
+      skip: q.offset,
     });
 
     return {
@@ -200,7 +226,11 @@ export const radarRoutes: FastifyPluginAsync = async (app) => {
    * отдаётся всегда: список, где висит только «111x», обманчив — к моменту
    * просмотра токен может стоить дешевле точки входа.
    */
-  app.get('/radar/gems', async (req) => {
+  app.get('/radar/gems', async (req, reply) => {
+    const ent = await entitlementOfRequest(req);
+    applyCacheHeaders(reply);
+    if (denyIfMissing(ent, 'RADAR_ACCESS', reply)) return reply;
+
     const q = z
       .object({
         chain: z.string().optional(),
@@ -237,6 +267,41 @@ export const radarRoutes: FastifyPluginAsync = async (app) => {
   });
 
   /** Качество работы радара за неделю, включая долю провалов. */
+  /**
+   * Одна находка по идентификатору.
+   *
+   * Существует в том числе затем, чтобы задержку нельзя было обойти
+   * прямым обращением. Отдельный маршрут — самый простой способ
+   * получить свежие данные, если о нём забыть: лента фильтруется,
+   * а карточка открывается напрямую.
+   *
+   * Для задержанного плана ответ собирается из того же снимка,
+   * что и лента. Если снимка на момент отсечки нет — 404, тот же
+   * ответ, что и для несуществующего идентификатора. Различать их
+   * нельзя: разный ответ на «нет такой находки» и «есть, но рано»
+   * сообщил бы о существовании скрытого.
+   */
+  app.get('/radar/event/:id', async (req, reply) => {
+    const { id } = z.object({ id: z.string().min(1) }).parse(req.params);
+
+    const ent = await entitlementOfRequest(req);
+    applyCacheHeaders(reply);
+
+    // Та же проверка, что и у ленты. Отдельный маршрут по
+    // идентификатору — самый простой способ обойти платный доступ,
+    // если о нём забыть: лента закрыта, а карточка открывается
+    // напрямую.
+    if (denyIfMissing(ent, 'RADAR_ACCESS', reply)) return reply;
+
+    const e = await prisma.radarEvent.findUnique({ where: { id } });
+
+    if (!e) {
+      return reply.code(404).send({ error: 'Находка не найдена' });
+    }
+
+    return { event: serializeEvent(e, 48) };
+  });
+
   app.get('/radar/performance', async () => radarPerformance());
 
   /** Настройки уведомлений пользователя. */
@@ -467,5 +532,3 @@ function serializeEvent(e: {
     },
   };
 }
-
-

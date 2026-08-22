@@ -257,6 +257,92 @@ const schema = z.object({
   ZEROX_API_KEY: optional(z.string()),
   EXECUTION_MODE: z.enum(['paper', 'live']).default('paper'),
 
+  /**
+   * Приём реальных пополнений.
+   *
+   * Выключено, и включать нельзя до решения по подписи транзакций.
+   * Пока приватные ключи пользователей лежат на сервере под ключом,
+   * которым тоже управляет сервер, принятые средства охраняются
+   * ровно одним секретом. Пополнение при таком устройстве означает,
+   * что платформа собрала чужие деньги в одну точку отказа.
+   *
+   * Проверка ниже не даёт включить признак вместе с боевым режимом
+   * и локальным KMS.
+   */
+  FUNDING_ENABLED: z.coerce.boolean().default(false),
+
+  // ─── Почта ─────────────────────────────────────────────────────────
+  //
+  // Подтверждение адреса — обязательный шаг перед бесплатным периодом,
+  // поэтому неработающая доставка равна неработающей регистрации.
+  // Умолчание `disabled` выбрано намеренно: приложение, поднятое без
+  // настроек, честно отвечает «доставка не настроена», а не делает
+  // вид, что письма уходят.
+
+  /** disabled | console | resend. */
+  EMAIL_PROVIDER: z.enum(['disabled', 'console', 'resend']).default('disabled'),
+  /** Отправитель: «Имя <адрес@домен>» либо просто адрес. */
+  EMAIL_FROM: z.string().optional(),
+  /** Ключ Resend. В журнал и в ответы не попадает никогда. */
+  RESEND_API_KEY: z.string().optional(),
+  /** Публичное имя продукта. Уходит в тему письма. */
+  PUBLIC_APP_NAME: z.string().default('Memex DEX'),
+  /** Публичный адрес приложения. Нужен ссылкам в письмах, если появятся. */
+  PUBLIC_APP_URL: z.string().optional(),
+
+  // ─── Оплата подписок через Bridge ──────────────────────────────────
+  //
+  // Выключено по умолчанию. Каталог тарифов при этом работает:
+  // посмотреть цены можно и без возможности заплатить, а вот
+  // показать кнопку оплаты, за которой ничего нет, нельзя.
+  //
+  // Это выручка платформы, а не пополнение торгового кошелька
+  // (FUNDING_ENABLED) — два разных денежных потока с разными
+    // правилами и разными последствиями.
+
+  BRIDGE_PAYMENTS_ENABLED: z.coerce.boolean().default(false),
+  BRIDGE_API_KEY: z.string().optional(),
+  BRIDGE_API_BASE_URL: z.string().default('https://api.bridge.xyz/v0'),
+  /** Открытый ключ конкретного webhook-адреса. Выдаётся при его включении. */
+  BRIDGE_WEBHOOK_PUBLIC_KEY: z.string().optional(),
+  /** Куда Bridge присылает USDC. Единственный адрес выручки. */
+  SUBSCRIPTION_TREASURY_SOLANA_ADDRESS: z.string().optional(),
+  /** Насколько старое событие ещё принимается. */
+  BRIDGE_WEBHOOK_MAX_AGE_SECONDS: z.coerce.number().int().min(60).max(3600).default(600),
+
+  // ─── Оплата подписок: выбор провайдера ─────────────────────────────
+  //
+  // Провайдер выбирается сервером, а не клиентом. Строка из браузера
+  // определяла бы, чьи правила проверки применить к деньгам, —
+  // а это ровно то решение, которое пользователю не принадлежит.
+  //
+  // Одновременно активным может быть только один: два включённых
+  // означали бы платежи в двух местах и вопрос «какой из них
+  // настоящий» при первом же расхождении.
+  SUBSCRIPTION_PAYMENT_PROVIDER: z.enum(['disabled', 'bridge', 'coinbase']).default('disabled'),
+
+  // ─── Coinbase Onramp ───────────────────────────────────────────────
+  COINBASE_ONRAMP_ENABLED: z.coerce.boolean().default(false),
+  /** Песочница и боевая среда — разные адреса и разные деньги. */
+  COINBASE_ONRAMP_MODE: z.enum(['sandbox', 'production']).default('sandbox'),
+  COINBASE_CDP_API_KEY_ID: z.string().optional(),
+  /** Закрытый ключ: PEM для P-256 либо base64 для Ed25519. */
+  COINBASE_CDP_API_KEY_SECRET: z.string().optional(),
+  /** Секрет подписи вебхука. Выдаётся при создании подписки. */
+  COINBASE_WEBHOOK_SECRET: z.string().optional(),
+  /** Куда возвращается человек. Домен должен быть в списке Coinbase. */
+  COINBASE_REDIRECT_URL: z.string().optional(),
+  /** Насколько старое событие ещё принимается. Пять минут по документации. */
+  COINBASE_WEBHOOK_MAX_AGE_SECONDS: z.coerce.number().int().min(60).max(900).default(300),
+  /**
+   * Адрес, подставляемый вместо настоящего в песочнице.
+   *
+   * Документация разрешает тестовый адрес при локальной проверке.
+   * В боевой среде подставлять его нельзя: по адресу провайдер
+   * определяет страну и доступные способы оплаты.
+   */
+  COINBASE_SANDBOX_CLIENT_IP: z.string().default('192.0.2.1'),
+
   PERFORMANCE_FEE_BPS: z.coerce.number().default(1000),
   PLATFORM_SWAP_FEE_BPS: z.coerce.number().default(0),
   /**
@@ -326,6 +412,157 @@ export const env = {
 // Предохранитель: боевой режим с локальным KMS — это утечка ключей,
 // ждущая своего часа. Мастер-ключ в переменной окружения означает, что
 // дамп окружения равен доступу ко всем средствам пользователей.
+/*
+ * Почта: настройки должны быть согласованы до первого запроса.
+ *
+ * Выбранный провайдер без ключа или без отправителя — это приложение,
+ * которое обещает отправить письмо и не может. Обнаружить такое лучше
+ * при старте, чем по жалобе человека, который ждёт код десять минут.
+ */
+if (env.EMAIL_PROVIDER === 'resend') {
+  const missing = [
+    !env.RESEND_API_KEY ? 'RESEND_API_KEY' : null,
+    !env.EMAIL_FROM ? 'EMAIL_FROM' : null,
+  ].filter(Boolean);
+
+  if (missing.length > 0) {
+    throw new Error(
+      `EMAIL_PROVIDER=resend требует ${missing.join(' и ')}. ` +
+        'Без них приложение сообщало бы об отправленных письмах, которых нет.',
+    );
+  }
+}
+
+/*
+ * Оплата подписок: настройки должны быть полными до первого запроса.
+ *
+ * Включённый модуль без ключа, без открытого ключа вебхука или без
+ * адреса казначейства — это приложение, которое возьмёт деньги
+ * и не сможет ни подтвердить платёж, ни доставить его по назначению.
+ * Обнаружить такое надо при старте.
+ */
+if (env.BRIDGE_PAYMENTS_ENABLED) {
+  const missing = [
+    !env.BRIDGE_API_KEY ? 'BRIDGE_API_KEY' : null,
+    !env.BRIDGE_WEBHOOK_PUBLIC_KEY ? 'BRIDGE_WEBHOOK_PUBLIC_KEY' : null,
+    !env.SUBSCRIPTION_TREASURY_SOLANA_ADDRESS ? 'SUBSCRIPTION_TREASURY_SOLANA_ADDRESS' : null,
+  ].filter(Boolean);
+
+  if (missing.length > 0) {
+    throw new Error(
+      `BRIDGE_PAYMENTS_ENABLED=true требует ${missing.join(', ')}. ` +
+        'Без них платёж некуда доставить и нечем подтвердить.',
+    );
+  }
+
+  // Адрес Solana — 32 байта в base58. Проверка формы, а не
+  // существования: опечатка в адресе казначейства означает деньги,
+  // ушедшие в никуда без возможности вернуть.
+  const address = env.SUBSCRIPTION_TREASURY_SOLANA_ADDRESS!;
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address)) {
+    throw new Error(
+      'SUBSCRIPTION_TREASURY_SOLANA_ADDRESS не похож на адрес Solana. ' +
+        'Опечатка здесь означает выручку, ушедшую в никуда.',
+    );
+  }
+}
+
+/*
+ * Coinbase Onramp: настройки должны быть полными и согласованными.
+ */
+if (env.COINBASE_ONRAMP_ENABLED) {
+  const missing = [
+    !env.COINBASE_CDP_API_KEY_ID ? 'COINBASE_CDP_API_KEY_ID' : null,
+    !env.COINBASE_CDP_API_KEY_SECRET ? 'COINBASE_CDP_API_KEY_SECRET' : null,
+    !env.COINBASE_WEBHOOK_SECRET ? 'COINBASE_WEBHOOK_SECRET' : null,
+    !env.COINBASE_REDIRECT_URL ? 'COINBASE_REDIRECT_URL' : null,
+    !env.SUBSCRIPTION_TREASURY_SOLANA_ADDRESS ? 'SUBSCRIPTION_TREASURY_SOLANA_ADDRESS' : null,
+  ].filter(Boolean);
+
+  if (missing.length > 0) {
+    throw new Error(
+      `COINBASE_ONRAMP_ENABLED=true требует ${missing.join(', ')}. ` +
+        'Без них платёж некуда доставить, нечем подтвердить и некуда вернуть человека.',
+    );
+  }
+
+  const address = env.SUBSCRIPTION_TREASURY_SOLANA_ADDRESS!;
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address)) {
+    throw new Error(
+      'SUBSCRIPTION_TREASURY_SOLANA_ADDRESS не похож на адрес Solana. ' +
+        'Опечатка здесь означает выручку, ушедшую в никуда.',
+    );
+  }
+
+  if (env.NODE_ENV === 'production') {
+    // Песочница в боевой среде — самая дорогая из возможных опечаток:
+    // страница оплаты принимает тестовые карты, а подписка выдаётся
+    // настоящая.
+    if (env.COINBASE_ONRAMP_MODE !== 'production') {
+      throw new Error(
+        'COINBASE_ONRAMP_MODE=sandbox в production запрещён: тестовые карты ' +
+          'выдавали бы настоящие подписки.',
+      );
+    }
+
+    const redirect = env.COINBASE_REDIRECT_URL!;
+    if (!/^https:\/\//.test(redirect)) {
+      throw new Error('COINBASE_REDIRECT_URL в production обязан быть https.');
+    }
+
+    if (/localhost|127\.0\.0\.1|sandbox/i.test(redirect)) {
+      throw new Error(
+        'COINBASE_REDIRECT_URL в production не может указывать на localhost или песочницу.',
+      );
+    }
+
+    if (/sandbox|test/i.test(env.COINBASE_CDP_API_KEY_ID ?? '')) {
+      throw new Error('COINBASE_CDP_API_KEY_ID выглядит тестовым, а среда боевая.');
+    }
+  }
+}
+
+/*
+ * Активный провайдер оплаты ровно один.
+ *
+ * Две включённые интеграции означали бы два места, куда приходят
+ * деньги, и вопрос «какое из них настоящее» при первом расхождении.
+ */
+if (
+  env.SUBSCRIPTION_PAYMENT_PROVIDER === 'bridge' &&
+  !env.BRIDGE_PAYMENTS_ENABLED
+) {
+  throw new Error(
+    'SUBSCRIPTION_PAYMENT_PROVIDER=bridge требует BRIDGE_PAYMENTS_ENABLED=true.',
+  );
+}
+
+if (
+  env.SUBSCRIPTION_PAYMENT_PROVIDER === 'coinbase' &&
+  !env.COINBASE_ONRAMP_ENABLED
+) {
+  throw new Error(
+    'SUBSCRIPTION_PAYMENT_PROVIDER=coinbase требует COINBASE_ONRAMP_ENABLED=true.',
+  );
+}
+
+if (env.NODE_ENV === 'production' && env.EMAIL_PROVIDER === 'console') {
+  throw new Error(
+    'EMAIL_PROVIDER=console в production запрещён. Этот транспорт пишет письмо ' +
+      'в журнал вместо отправки: пользователь никогда не получит код, ' +
+      'а API отчитается об успехе.',
+  );
+}
+
+if (env.NODE_ENV === 'production' && env.KMS_PROVIDER === 'local' && env.FUNDING_ENABLED) {
+  throw new Error(
+    'FUNDING_ENABLED=true запрещён при KMS_PROVIDER=local. ' +
+      'Приём чужих средств на кошельки, ключи от которых лежат рядом с приложением, ' +
+      'означает единственную точку отказа для всех денег пользователей. ' +
+      'Сначала policy-bound signing, см. docs/custody.md.',
+  );
+}
+
 if (env.NODE_ENV === 'production' && env.KMS_PROVIDER === 'local' && env.EXECUTION_MODE === 'live') {
   throw new Error(
     'KMS_PROVIDER=local запрещён при EXECUTION_MODE=live. ' +

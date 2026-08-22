@@ -5,6 +5,8 @@ import { AuthNav } from '@/components/AuthNav';
 import { MainNav } from '@/components/MainNav';
 import { MobileNav } from '@/components/MobileNav';
 import { FavoritesProvider } from '@/lib/favorites';
+import { AccessProvider } from '@/lib/access';
+import { AccessBanner } from '@/components/AccessBanner';
 
 export const metadata: Metadata = {
   title: 'Memex — торговля мем-коинами и копитрейдинг',
@@ -59,6 +61,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             Звезда стоит в списке, в карточке и в ленте, и все три
             обязаны показывать одно и то же: отдельные источники
             расходятся ровно в момент нажатия. */}
+        <AccessProvider>
         <FavoritesProvider>
         {/*
           Шапка устроена по-разному на телефоне и на десктопе.
@@ -102,6 +105,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </div>
         </header>
 
+        <AccessBanner />
         <main className="mx-auto min-w-0 max-w-[1800px] px-4 py-4 sm:px-5 sm:py-5">{children}</main>
 
         <footer className="max-w-[1600px] mx-auto px-4 py-8 text-xs text-muted border-t border-border mt-12">
@@ -114,6 +118,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </p>
         </footer>
         </FavoritesProvider>
+        </AccessProvider>
       </body>
     </html>
   );
