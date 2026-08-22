@@ -14,6 +14,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const KEYS = [
   'NODE_ENV',
+  'DATABASE_URL',
+  'JWT_SECRET',
+  'EMAIL_PROVIDER',
   'SUBSCRIPTION_PAYMENT_PROVIDER',
   'SUBSCRIPTION_TREASURY_SOLANA_ADDRESS',
   'BRIDGE_PAYMENTS_ENABLED',
@@ -26,6 +29,17 @@ const KEYS = [
   'COINBASE_WEBHOOK_SECRET',
   'COINBASE_REDIRECT_URL',
 ] as const;
+
+const REQUIRED_TEST_ENV = {
+  NODE_ENV: 'test',
+  DATABASE_URL: 'postgresql://test:test@localhost:5432/memex_test',
+  JWT_SECRET: 'test-only-jwt-secret-at-least-32-characters',
+  EMAIL_PROVIDER: 'disabled',
+  SUBSCRIPTION_PAYMENT_PROVIDER: 'disabled',
+  BRIDGE_PAYMENTS_ENABLED: 'false',
+  COINBASE_ONRAMP_ENABLED: 'false',
+  COINBASE_ONRAMP_MODE: 'sandbox',
+};
 
 const TREASURY = '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU';
 
@@ -55,9 +69,11 @@ afterEach(() => {
 
 /** Загрузка настроек с заданным окружением. Возвращает ошибку, если была. */
 async function load(overrides: Record<string, string>): Promise<Error | null> {
-  for (const k of KEYS) delete process.env[k];
+  // Пустые значения блокируют подмешивание локального .env. Удаление
+  // переменной здесь, напротив, разрешило бы загрузчику вернуть её из файла.
+  for (const k of KEYS) process.env[k] = '';
 
-  process.env.NODE_ENV = 'test';
+  Object.assign(process.env, REQUIRED_TEST_ENV);
   Object.assign(process.env, overrides);
 
   vi.resetModules();

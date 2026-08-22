@@ -193,7 +193,7 @@ const schema = z.object({
    * что подпись строится верно, не имея боевых ключей.
    */
   OKX_API_BASE_URL: z.string().default('https://web3.okx.com'),
-  OKX_MARKET_ENABLED: z.coerce.boolean().default(true),
+  OKX_MARKET_ENABLED: booleanFromEnv.default(true),
 
   /**
    * Пороги отбора кандидатов при поиске смарт-кошельков.
@@ -221,7 +221,7 @@ const schema = z.object({
    * Значения по умолчанию выбраны осторожно: лишнее переподключение
    * дешевле, чем источник, который висит мёртвым и выглядит живым.
    */
-  OKX_WS_ENABLED: z.coerce.boolean().default(true),
+  OKX_WS_ENABLED: booleanFromEnv.default(true),
   OKX_WS_URL: z.string().default('wss://wsdex.okx.com/ws/v6/dex'),
   OKX_WS_CONNECT_TIMEOUT_MS: z.coerce.number().default(10_000),
   OKX_WS_LOGIN_TIMEOUT_MS: z.coerce.number().default(10_000),
@@ -243,7 +243,7 @@ const schema = z.object({
    * к истории, а не десять. Параллельность намеренно маленькая:
    * сотня кошельков разом — это залп по лимиту провайдера.
    */
-  WALLET_LEDGER_SYNC_ENABLED: z.coerce.boolean().default(true),
+  WALLET_LEDGER_SYNC_ENABLED: booleanFromEnv.default(true),
   WALLET_LEDGER_SYNC_DEBOUNCE_MS: z.coerce.number().default(20_000),
   WALLET_LEDGER_SYNC_CONCURRENCY: z.coerce.number().default(3),
   WALLET_LEDGER_SYNC_RETRY_BASE_MS: z.coerce.number().default(5_000),
@@ -276,7 +276,7 @@ const schema = z.object({
    * Проверка ниже не даёт включить признак вместе с боевым режимом
    * и локальным KMS.
    */
-  FUNDING_ENABLED: z.coerce.boolean().default(false),
+  FUNDING_ENABLED: booleanFromEnv.default(false),
 
   // ─── Почта ─────────────────────────────────────────────────────────
   //
@@ -313,7 +313,7 @@ const schema = z.object({
   // (FUNDING_ENABLED) — два разных денежных потока с разными
     // правилами и разными последствиями.
 
-  BRIDGE_PAYMENTS_ENABLED: z.coerce.boolean().default(false),
+  BRIDGE_PAYMENTS_ENABLED: booleanFromEnv.default(false),
   BRIDGE_API_KEY: z.string().optional(),
   BRIDGE_API_BASE_URL: z.string().default('https://api.bridge.xyz/v0'),
   /** Открытый ключ конкретного webhook-адреса. Выдаётся при его включении. */
@@ -335,7 +335,7 @@ const schema = z.object({
   SUBSCRIPTION_PAYMENT_PROVIDER: z.enum(['disabled', 'bridge', 'coinbase']).default('disabled'),
 
   // ─── Coinbase Onramp ───────────────────────────────────────────────
-  COINBASE_ONRAMP_ENABLED: z.coerce.boolean().default(false),
+  COINBASE_ONRAMP_ENABLED: booleanFromEnv.default(false),
   /** Песочница и боевая среда — разные адреса и разные деньги. */
   COINBASE_ONRAMP_MODE: z.enum(['sandbox', 'production']).default('sandbox'),
   COINBASE_CDP_API_KEY_ID: z.string().optional(),
