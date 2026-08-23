@@ -74,6 +74,8 @@ export * from './payment-provider.js';
 export * from './entitlements.js';
 export * from './route-access.js';
 export * from './api-base.js';
+export * from './discovery-filters.js';
+export * from './chart-state.js';
 export * from './plans-presentation.js';
 export * from './deposit.js';
 export * from './email-verification.js';

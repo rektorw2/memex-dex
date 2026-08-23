@@ -5,6 +5,12 @@ import Link from 'next/link';
 import { TokenLogo } from '@/components/TokenLogo';
 import { PriceChart } from '@/components/PriceChart';
 import { fmtPrice, fmtUsd, fmtPct } from '@/lib/api';
+import {
+  CHART_STATE_TEXT,
+  chartStateRetryable,
+  chartStateWillResolve,
+  type ChartState,
+} from '@memex/core';
 import { CHAIN_LABEL, INTERVALS, type Token } from './types';
 import { ScamMark } from './TokenList';
 
@@ -19,7 +25,10 @@ import { ScamMark } from './TokenList';
 
 interface Props {
   token: Token | null;
-  candles: unknown[] | undefined;
+  /** Ответ маршрута свечей целиком: свечи вместе с причиной их отсутствия. */
+  chart: { state?: string; candles?: unknown[] } | undefined;
+  /** Повторить загрузку. Показывается только при ошибке. */
+  onRetry?: () => void;
   interval: string;
   onInterval: (v: string) => void;
   /** Высота графика. На телефоне меньше. */
@@ -30,7 +39,8 @@ interface Props {
 
 export function ChartPanel({
   token,
-  candles,
+  chart,
+  onRetry,
   interval,
   onInterval,
   chartHeight = 420,
@@ -48,7 +58,18 @@ export function ChartPanel({
   }
 
   const ch = token.priceChange24h == null ? null : Number(token.priceChange24h);
+  const candles = chart?.candles;
   const hasCandles = Array.isArray(candles) && candles.length > 0;
+
+  /*
+   * Причина приходит с сервера, а не выводится здесь.
+   *
+   * Раньше на всё было одно сообщение — «не найден пул ликвидности», —
+   * и его видели у токена с пулом на 184 тысячи: пул был, свечей
+   * не было. Пять разных причин, сведённые к одной строке, врут
+   * в четырёх случаях.
+   */
+  const state = (chart?.state ?? 'candles-queued') as ChartState;
 
   return (
     <div className="flex h-full min-w-0 flex-col">
@@ -131,12 +152,22 @@ export function ChartPanel({
             style={{ height: chartHeight }}
             className="flex flex-col items-center justify-center gap-1.5 text-center"
           >
-            <p className="text-sm text-muted">Свечи ещё не загружены</p>
-            <p className="max-w-[320px] text-xs leading-relaxed text-muted/70">
-              {token.hasChart
-                ? 'Загрузчик обходит токены по кругу — данные появятся в течение нескольких минут'
-                : 'Для этого токена не найден пул ликвидности'}
+            <p className="text-sm text-muted">
+              {chartStateWillResolve(state) ? 'График готовится' : 'Графика нет'}
             </p>
+
+            <p className="max-w-[320px] text-xs leading-relaxed text-muted/70">
+              {CHART_STATE_TEXT[state]}
+            </p>
+
+            {chartStateRetryable(state) && onRetry && (
+              <button
+                onClick={onRetry}
+                className="btn-ghost mt-2 px-4 py-1.5 text-xs"
+              >
+                Повторить
+              </button>
+            )}
           </div>
         )}
       </div>

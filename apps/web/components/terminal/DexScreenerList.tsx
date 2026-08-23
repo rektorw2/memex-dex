@@ -59,6 +59,7 @@ export function DexScreenerList({
     total: number;
     unchecked: number;
     tokens: DexToken[];
+    pending?: DexToken[];
   }>(`/tokens/dexscreener?${params}`, fetcher, {
     // Состав рекламного списка меняется часами, а не секундами:
     // продвижение покупают на сутки.
@@ -67,6 +68,16 @@ export function DexScreenerList({
   });
 
   const tokens = data?.tokens ?? [];
+
+  /*
+   * Ожидающие проверки — отдельный список, а не отсутствие списка.
+   *
+   * Раньше сервер удалял их фильтром `safeOnly`, и при семнадцати
+   * ожидающих человек видел «Ничего не прошло проверку» на пустом
+   * экране. Показать их можно и нужно, но так, чтобы `pending`
+   * нельзя было прочесть как «проверено».
+   */
+  const pending = data?.pending ?? [];
 
   return (
     <div className="space-y-3">
@@ -106,28 +117,49 @@ export function DexScreenerList({
             </div>
           ))}
         </div>
-      ) : tokens.length === 0 ? (
+      ) : tokens.length === 0 && pending.length === 0 ? (
         <div className="px-6 py-12 text-center">
-          <p className="text-sm text-muted">Ничего не прошло проверку</p>
+          <p className="text-sm text-muted">Показывать нечего</p>
           <p className="mx-auto mt-1 max-w-[280px] text-xs leading-relaxed text-muted/70">
             {data && data.total > 0
-              ? `Из ${data.total} продвигаемых токенов ни один пока не прошёл нашу проверку. ` +
-                'Часть из них ещё в очереди.'
+              ? `Все ${data.total} продвигаемых токенов не прошли проверку и скрыты.`
               : 'Список продвижения пуст либо DexScreener недоступен.'}
           </p>
         </div>
       ) : (
-        <div role="list" className="min-w-0">
-          {tokens.map((t) => (
-            <Row key={`${t.chain}:${t.address}`} token={t} />
-          ))}
+        <div className="min-w-0">
+          {tokens.length > 0 && (
+            <div role="list">
+              {tokens.map((t) => (
+                <Row key={`${t.chain}:${t.address}`} token={t} />
+              ))}
+            </div>
+          )}
+
+          {pending.length > 0 && (
+            <>
+              <div className="border-y border-border bg-raised px-4 py-2">
+                <p className="text-xs font-medium">Ещё не проверены — {pending.length}</p>
+                <p className="mt-0.5 text-[11px] leading-relaxed text-muted">
+                  Проверка не завершена: о риске этих токенов нам пока ничего
+                  не известно. Торговля отсюда недоступна.
+                </p>
+              </div>
+
+              <div role="list">
+                {pending.map((t) => (
+                  <Row key={`pending:${t.chain}:${t.address}`} token={t} pending />
+                ))}
+              </div>
+            </>
+          )}
         </div>
       )}
     </div>
   );
 }
 
-function Row({ token: t }: { token: DexToken }) {
+function Row({ token: t, pending }: { token: DexToken; pending?: boolean }) {
   const band = riskBand(t.riskScore);
   const ch = t.priceChange24h == null ? null : Number(t.priceChange24h);
   const chain = CHAINS[t.chain];
@@ -144,15 +176,30 @@ function Row({ token: t }: { token: DexToken }) {
             : 'text-muted';
 
   return (
-    <div className="flex items-center gap-3 border-b border-border/50 px-3 py-2.5">
+    <div
+      className={`flex items-center gap-3 border-b border-border/50 px-3 py-2.5 ${
+        // Ожидающие приглушены намеренно: они не должны выглядеть
+        // наравне с проверенными.
+        pending ? 'opacity-70' : ''
+      }`}
+    >
       <TokenLogo symbol={t.symbol} address={t.address} logoUrl={t.logoUrl} size={32} />
 
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
           <span className="truncate text-sm font-medium">{t.symbol}</span>
 
+          {pending && (
+            <span
+              className="shrink-0 rounded bg-raised px-1.5 py-0.5 text-[10px] text-muted"
+              title="Проверка не завершена"
+            >
+              не проверен
+            </span>
+          )}
+
           {/* Уровень риска словом, а не только цветом. */}
-          {band ? (
+          {!pending && band ? (
             <span className={`shrink-0 text-[10px] ${tone}`} title={band.label}>
               {band.sign} {Math.round(t.riskScore!)}
             </span>

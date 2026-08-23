@@ -4,7 +4,14 @@ import { Suspense, useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import useSWR from 'swr';
-import { shouldRequestPrivateData, loginHref, tradePanelState } from '@memex/core';
+import {
+  shouldRequestPrivateData,
+  loginHref,
+  tradePanelState,
+  CHART_STATE_TEXT,
+  chartStateWillResolve,
+  type ChartState,
+} from '@memex/core';
 import { fetcher, fmtPrice, fmtUsd, fmtPct } from '@/lib/api';
 import { useAccess } from '@/lib/access';
 import { CHAINS, chainLabel, geckoTerminalPool } from '@/lib/chains';
@@ -48,8 +55,10 @@ function TokenPage() {
     { refreshInterval: 20_000 },
   );
 
-  const { data: candles } = useSWR(
-    data?.token?.hasChart ? `/tokens/${id}/candles?interval=${interval}` : null,
+  // Спрашиваем всегда: причину отсутствия графика знает сервер,
+  // и не спросив, показать её нечем.
+  const { data: chart } = useSWR<{ state?: string; candles?: unknown[] }>(
+    id ? `/tokens/${id}/candles?interval=${interval}` : null,
     fetcher,
     { refreshInterval: 15_000 },
   );
@@ -160,11 +169,20 @@ function TokenPage() {
               ))}
             </div>
 
-            {Array.isArray(candles) && candles.length > 0 ? (
-              <PriceChart candles={candles as never} height={400} />
+            {Array.isArray(chart?.candles) && chart.candles.length > 0 ? (
+              <PriceChart candles={chart.candles as never} height={400} />
             ) : (
-              <div className="h-[400px] flex items-center justify-center text-muted text-sm">
-                {t.hasChart ? 'Свечи загружаются' : 'Пул ликвидности не найден'}
+              <div className="h-[400px] flex flex-col items-center justify-center gap-1.5 px-6 text-center">
+                {/* Причина приходит с сервера: «пул не найден» врало
+                    у токенов, у которых пул был. */}
+                <p className="text-sm text-muted">
+                  {chartStateWillResolve((chart?.state ?? 'candles-queued') as ChartState)
+                    ? 'График готовится'
+                    : 'Графика нет'}
+                </p>
+                <p className="max-w-[340px] text-xs leading-relaxed text-muted/70">
+                  {CHART_STATE_TEXT[(chart?.state ?? 'candles-queued') as ChartState]}
+                </p>
               </div>
             )}
           </div>

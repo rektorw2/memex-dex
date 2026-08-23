@@ -13,8 +13,7 @@ import {
   type PlanCode,
 } from '@memex/core';
 import { activeSubscription } from './subscriptions.js';
-import { isEmailVerified } from './email-verify.js';
-import { hasServiceAccess } from './service-access.js';
+import { accountFacts } from './service-access.js';
 import { trialOf } from './trial.js';
 import { serverNow } from '../lib/clock.js';
 
@@ -131,12 +130,21 @@ export async function entitlementOfRequest(
     };
   }
 
-  const [sub, trial, emailVerified, serviceAccess] = await Promise.all([
+  /*
+   * Три запроса вместо четырёх.
+   *
+   * Роль и подтверждение почты живут в одной строке `User`,
+   * а читались двумя отдельными запросами: каждый вызов `/access/me`
+   * платил за это лишним обращением к базе, а база у нас
+   * на другом континенте.
+   */
+  const [sub, trial, facts] = await Promise.all([
     activeSubscription(userId, now),
     trialOf(userId),
-    isEmailVerified(userId),
-    hasServiceAccess(userId),
+    accountFacts(userId),
   ]);
+
+  const { emailVerified, serviceAccess } = facts;
 
   const trialState = trial
     ? { startedAt: trial.startsAt.getTime(), expiresAt: trial.expiresAt.getTime() }

@@ -106,6 +106,13 @@ vi.mock('../services/email-verify.js', () => ({
  */
 vi.mock('../services/service-access.js', () => ({
   hasServiceAccess: async (userId: string | null) => userId != null && state.role === 'ADMIN',
+  // Роль и подтверждение почты читаются одним запросом: две отдельные
+  // выборки из одной строки стоили лишнего обращения к базе на каждый
+  // вызов `/access/me`.
+  accountFacts: async (userId: string | null) =>
+    userId == null
+      ? { serviceAccess: false, emailVerified: false }
+      : { serviceAccess: state.role === 'ADMIN', emailVerified: state.emailVerified },
 }));
 
 vi.mock('../services/subscriptions.js', () => ({

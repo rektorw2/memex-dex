@@ -41,11 +41,49 @@ const check = (name, cond, extra = '') => {
   if (!cond) failures++;
 };
 
+/**
+ * Возраст рынка. Третья миграция, только добавление колонок.
+ */
+const marketAge = fs.readFileSync(
+  `${R}/prisma/migrations/20260823040000_add_token_market_age/migration.sql`,
+  'utf8',
+);
+
+// ── Проверяется ли вообще то, что лежит в репозитории ──────────────
+/*
+ * Файл называет миграции поимённо, и это его слабое место: миграция
+ * появляется в каталоге, здесь её не дописывают, и проверка молча
+ * подтверждает вчерашнюю схему. Ровно так и случилось с возрастом
+ * рынка на стороне загрузчика.
+ *
+ * Поэтому сначала сверяется сам список.
+ */
+console.log('\n=== Каталог миграций ===');
+
+const KNOWN = [
+  '0_baseline',
+  '20260821120000_add_subscriptions_and_trial',
+  '20260823040000_add_token_market_age',
+];
+
+const onDisk = fs
+  .readdirSync(`${R}/prisma/migrations`, { withFileTypes: true })
+  .filter((e) => e.isDirectory())
+  .map((e) => e.name)
+  .sort();
+
+check(
+  'проверяются все миграции каталога',
+  JSON.stringify(onDisk) === JSON.stringify([...KNOWN].sort()),
+  onDisk.filter((n) => !KNOWN.includes(n)).join(', ') || 'совпадает',
+);
+
 // ── Сценарий 1: чистая база ────────────────────────────────────────
 console.log('\n=== Чистая база: baseline, затем feature ===');
 const clean = await PGlite.create();
 await clean.exec(baseline);
 await clean.exec(feature);
+await clean.exec(marketAge);
 
 const tables = (
   await clean.query(`SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY 1`)
@@ -308,6 +346,7 @@ console.log('\n=== Оплата подписок ===');
 const pay = await PGlite.create();
 await pay.exec(baseline);
 await pay.exec(feature);
+await pay.exec(marketAge);
 await pay.exec(`
   INSERT INTO "User" ("id","email","passwordHash","emailVerifiedAt","updatedAt")
   VALUES ('pu1','pay@x.y','h',NOW(),NOW());
@@ -530,6 +569,46 @@ const bridgeStillThere = await pay.query(
 );
 check('платежи Bridge продолжают читаться', bridgeStillThere.rows[0].c >= 3,
   `${bridgeStillThere.rows[0].c} шт.`);
+
+// ─────────────────────────── Возраст рынка ─────────────────────────────────
+
+console.log('\n=== Возраст рынка ===');
+
+const ageCols = (await clean.query(`
+  SELECT column_name, is_nullable, column_default
+  FROM information_schema.columns
+  WHERE table_name='Token' AND column_name IN ('poolCreatedAt','firstSeenAt')
+  ORDER BY 1
+`)).rows;
+
+check('колонки возраста добавлены', ageCols.length === 2,
+  ageCols.map((c) => c.column_name).join(', '));
+
+check('обе необязательны', ageCols.every((c) => c.is_nullable === 'YES'));
+
+// Умолчание `now()` объявило бы все существующие токены созданными
+// в момент миграции, то есть выдало бы полторы тысячи старых
+// за новые разом.
+check('умолчания нет: старые записи не становятся новыми',
+  ageCols.every((c) => c.column_default === null));
+
+const ageIdx = (await clean.query(`
+  SELECT indexname FROM pg_indexes
+  WHERE tablename='Token' AND indexname LIKE '%CreatedAt%' OR indexname LIKE '%firstSeenAt%'
+`)).rows.map((r) => r.indexname);
+
+check('индексы под отбор по возрасту на месте', ageIdx.length >= 2, ageIdx.join(', '));
+
+// Существующие строки остаются без возраста, и это правильный ответ:
+// «возраст неизвестен» честнее выдуманной даты.
+await clean.exec(`
+  INSERT INTO "Token" ("id","chain","address","symbol","name","decimals")
+  VALUES ('t-age','SOLANA','AgeTestAddress1111111111111111111111111111','AGE','Age',9);
+`);
+
+const aged = await clean.query(`SELECT "poolCreatedAt" p, "firstSeenAt" f FROM "Token" WHERE id='t-age'`);
+check('у новой строки возраст пуст, а не выдуман',
+  aged.rows[0].p === null && aged.rows[0].f === null);
 
 console.log(`\nИтог: ${failures === 0 ? 'все проверки пройдены' : failures + ' проверок не прошли'}`);
 process.exit(failures === 0 ? 0 : 1);

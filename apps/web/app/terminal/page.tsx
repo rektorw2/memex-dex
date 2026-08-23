@@ -87,10 +87,25 @@ function Terminal() {
   const active =
     tokens?.find((t) => t.id === selectedId) ?? tokens?.find((t) => !t.isQuote) ?? null;
 
-  const { data: candles } = useSWR(
-    active?.hasChart ? `/tokens/${active.id}/candles?interval=${interval}` : null,
+  /*
+   * Свечи запрашиваются всегда, когда токен выбран.
+   *
+   * Раньше запрос гасился при `hasChart === false`, то есть при
+   * отсутствии адреса пула, — и человек не получал даже объяснения,
+   * почему графика нет. Причину знает сервер, и узнать её можно
+   * только спросив.
+   *
+   * `keepPreviousData` выключен намеренно: при смене токена или
+   * таймфрейма прежние свечи обязаны исчезнуть, иначе секунду
+   * рисуется чужой график с новым заголовком.
+   */
+  const {
+    data: chart,
+    mutate: reloadChart,
+  } = useSWR<{ state?: string; candles?: unknown[] }>(
+    active ? `/tokens/${active.id}/candles?interval=${interval}` : null,
     fetcher,
-    { refreshInterval: 15_000 },
+    { refreshInterval: 15_000, keepPreviousData: false },
   );
 
   // Ключ null отключает запрос целиком. Пока права ещё загружаются,
@@ -192,7 +207,8 @@ function Terminal() {
           <section className="panel min-h-0 overflow-hidden">
             <ChartPanel
               token={active}
-              candles={candles as unknown[] | undefined}
+              chart={chart}
+              onRetry={() => void reloadChart()}
               interval={interval}
               onInterval={setInterval}
               chartHeight={380}
@@ -250,7 +266,8 @@ function Terminal() {
             <div className="panel overflow-hidden">
               <ChartPanel
                 token={active}
-                candles={candles as unknown[] | undefined}
+                chart={chart}
+              onRetry={() => void reloadChart()}
                 interval={interval}
                 onInterval={setInterval}
                 chartHeight={260}

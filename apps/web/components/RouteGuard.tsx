@@ -27,7 +27,7 @@ import { useRole } from '@/lib/role';
 export function RouteGuard({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const { access, loading, anonymous } = useAccess();
+  const { access, loading, coldStart, error, reload, anonymous } = useAccess();
   const { isAdmin } = useRole();
 
   const isPublic = isPublicRoute(pathname);
@@ -69,11 +69,38 @@ export function RouteGuard({ children }: { children: React.ReactNode }) {
   // и задержка здесь была бы задержкой ни за чем.
   if (isPublic) return <>{children}</>;
 
+  /*
+   * Прячем страницу только на самой первой загрузке.
+   *
+   * `loading` теперь означает «о человеке ещё ничего не известно»,
+   * а не «идёт какой-то запрос». Фоновая перепроверка проходит
+   * поверх готового интерфейса: раньше любое обновление прав
+   * подменяло страницу надписью и выглядело как повторная загрузка
+   * приложения.
+   */
   if (loading) {
     return (
-      <p className="py-16 text-center text-sm text-muted" role="status" aria-live="polite">
-        Проверяем доступ…
-      </p>
+      <div className="py-16 text-center" role="status" aria-live="polite">
+        <p className="text-sm text-muted">
+          {coldStart ? 'Сервер просыпается' : 'Проверяем доступ…'}
+        </p>
+
+        {coldStart && (
+          <p className="mx-auto mt-2 max-w-[320px] text-xs leading-relaxed text-muted/70">
+            Бесплатный тариф усыпляет сервис после простоя. Первый запрос
+            занимает около минуты — дальше всё быстро.
+          </p>
+        )}
+
+        {error && (
+          <div className="mt-4 space-y-2">
+            <p className="text-sm text-down">{error}</p>
+            <button onClick={() => void reload()} className="btn-ghost px-4 py-1.5 text-xs">
+              Повторить
+            </button>
+          </div>
+        )}
+      </div>
     );
   }
 

@@ -63,7 +63,7 @@ vi.mock('../lib/prisma.js', () => ({
       aggregate: async () => ({ _sum: {}, _count: 1, _avg: {}, _max: {}, _min: {} }),
       groupBy: async () => [],
     },
-    candle: { findMany: async () => [] },
+    candle: { findMany: async () => [], count: async () => 0 },
     call: { findMany: async () => [] },
     trade: { findMany: async () => [], aggregate: async () => ({ _sum: {}, _count: 0 }) },
     position: { count: async () => 0 },
@@ -103,6 +103,10 @@ vi.mock('../services/subscriptions.js', () => ({
 
 vi.mock('../services/trial.js', () => ({ trialOf: async () => null }));
 vi.mock('../services/email-verify.js', () => ({ isEmailVerified: async () => false }));
+vi.mock('../services/service-access.js', () => ({
+  hasServiceAccess: async () => false,
+  accountFacts: async () => ({ serviceAccess: false, emailVerified: false }),
+}));
 
 let app: FastifyInstance;
 

@@ -30,19 +30,50 @@ import { prisma } from '../lib/prisma.js';
  */
 
 /**
- * Имеет ли пользователь служебный доступ прямо сейчас.
+ * Что нужно знать о пользователе для расчёта прав.
  *
- * Аноним — нет. Несуществующий пользователь — нет. Никаких умолчаний
- * в сторону разрешения: ошибка чтения роли должна закрывать доступ,
- * а не открывать его.
+ * Одно чтение вместо двух. Раньше роль и состояние почты читались
+ * порознь — `hasServiceAccess` и `isEmailVerified` брали одну и ту же
+ * строку двумя запросами, — и каждый вызов `/access/me` платил
+ * за это лишним обращением к базе на другом континенте.
  */
-export async function hasServiceAccess(userId: string | null): Promise<boolean> {
-  if (!userId) return false;
+export interface AccountFacts {
+  serviceAccess: boolean;
+  emailVerified: boolean;
+}
+
+/** Аноним ничего не может: умолчание в сторону меньших прав. */
+const ANONYMOUS: AccountFacts = { serviceAccess: false, emailVerified: false };
+
+/**
+ * Роль и подтверждение почты одним запросом.
+ *
+ * Никаких умолчаний в сторону разрешения: несуществующий
+ * пользователь и ошибка чтения одинаково закрывают доступ,
+ * а не открывают его.
+ */
+export async function accountFacts(userId: string | null): Promise<AccountFacts> {
+  if (!userId) return ANONYMOUS;
 
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { role: true },
+    select: { role: true, emailVerifiedAt: true },
   });
 
-  return user?.role === UserRole.ADMIN;
+  if (!user) return ANONYMOUS;
+
+  return {
+    serviceAccess: user.role === UserRole.ADMIN,
+    emailVerified: user.emailVerifiedAt != null,
+  };
+}
+
+/**
+ * Имеет ли пользователь служебный доступ прямо сейчас.
+ *
+ * Оставлено для мест, где нужна только роль. Расчёт прав ходит
+ * через `accountFacts`: два вопроса к одной строке — один запрос.
+ */
+export async function hasServiceAccess(userId: string | null): Promise<boolean> {
+  return (await accountFacts(userId)).serviceAccess;
 }

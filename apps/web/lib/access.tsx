@@ -1,6 +1,14 @@
 'use client';
 
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import { api, ApiError } from './api';
 
 /**
@@ -49,7 +57,19 @@ export interface AccessState {
 
 interface AccessContext {
   access: AccessState | null;
+  /**
+   * Идёт самая первая загрузка: о человеке ещё ничего не известно.
+   *
+   * Отличается от фоновой перепроверки намеренно. Раньше был один
+   * признак на оба случая, и `RouteGuard` подменял страницу
+   * надписью «Проверяем доступ…» при каждом обновлении прав —
+   * даже когда права уже были известны и не менялись.
+   */
   loading: boolean;
+  /** Перепроверка поверх известного состояния. Интерфейс не прячется. */
+  revalidating: boolean;
+  /** Ответа нет дольше обычного: скорее всего, API просыпается. */
+  coldStart: boolean;
   /** Не авторизован. Отличается от «нет прав»: тут поможет вход. */
   anonymous: boolean;
   error: string | null;
@@ -60,42 +80,103 @@ interface AccessContext {
 const Ctx = createContext<AccessContext>({
   access: null,
   loading: true,
+  revalidating: false,
+  coldStart: false,
   anonymous: true,
   error: null,
   reload: async () => {},
   can: () => false,
 });
 
+/**
+ * Через сколько молчание считается холодным стартом.
+ *
+ * Бесплатный тариф Render усыпляет сервис после пятнадцати минут
+ * простоя, и первый запрос ждёт около полуминуты. Без отдельного
+ * состояния это выглядит как зависший интерфейс, и человек уходит
+ * за десять секунд до ответа.
+ */
+const COLD_START_HINT_MS = 2_500;
+
+/** Сколько ждать, прежде чем признать попытку неудачной. */
+const REQUEST_TIMEOUT_MS = 60_000;
+
 export function AccessProvider({ children }: { children: ReactNode }) {
   const [access, setAccess] = useState<AccessState | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [settled, setSettled] = useState(false);
+  const [revalidating, setRevalidating] = useState(false);
+  const [coldStart, setColdStart] = useState(false);
   const [anonymous, setAnonymous] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const reload = useCallback(async () => {
-    setLoading(true);
-    setError(null);
+  /**
+   * Запрос, который уже летит.
+   *
+   * Несколько компонентов зовут `reload` одновременно — после входа,
+   * после подтверждения почты, после активации периода. Без этого
+   * на сервер уходило бы три одинаковых запроса подряд, и каждый
+   * платил бы своей задержкой.
+   */
+  const inFlight = useRef<Promise<void> | null>(null);
 
-    try {
-      const res = await api<AccessState>('/access/me', { base: 'root' });
-      setAccess(res);
-      setAnonymous(false);
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 401) {
-        // Не ошибка, а состояние: человек просто не вошёл.
-        setAccess(null);
-        setAnonymous(true);
-      } else {
-        setError(e instanceof Error ? e.message : 'Не удалось получить права');
+  const reload = useCallback(async () => {
+    // Присоединяемся к уже летящему запросу вместо второго такого же.
+    if (inFlight.current) return inFlight.current;
+
+    const run = (async () => {
+      setRevalidating(true);
+      setError(null);
+
+      // Подсказка о холодном старте появляется не сразу: при быстром
+      // ответе она успела бы мигнуть и этим только помешала.
+      const hint = setTimeout(() => setColdStart(true), COLD_START_HINT_MS);
+
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error('Сервер не ответил вовремя')),
+          REQUEST_TIMEOUT_MS,
+        ),
+      );
+
+      try {
+        const res = await Promise.race([
+          api<AccessState>('/access/me', { base: 'root' }),
+          timeout,
+        ]);
+
+        setAccess(res);
+        setAnonymous(false);
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 401) {
+          // Не ошибка, а состояние: человек просто не вошёл.
+          setAccess(null);
+          setAnonymous(true);
+        } else {
+          // Прежнее состояние не стирается: у человека, чьи права
+          // уже известны, интерфейс не должен схлопываться из-за
+          // одной неудачной перепроверки.
+          setError(e instanceof Error ? e.message : 'Не удалось получить права');
+        }
+      } finally {
+        clearTimeout(hint);
+        setColdStart(false);
+        setRevalidating(false);
+        setSettled(true);
+        inFlight.current = null;
       }
-    } finally {
-      setLoading(false);
-    }
+    })();
+
+    inFlight.current = run;
+    return run;
   }, []);
 
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  // Загрузка — только пока ответа не было ни разу. Дальше любое
+  // обновление идёт фоном, поверх уже известного состояния.
+  const loading = !settled;
 
   const can = useCallback(
     (capability: string) => access?.capabilities.includes(capability) ?? false,
@@ -103,7 +184,9 @@ export function AccessProvider({ children }: { children: ReactNode }) {
   );
 
   return (
-    <Ctx.Provider value={{ access, loading, anonymous, error, reload, can }}>
+    <Ctx.Provider
+      value={{ access, loading, revalidating, coldStart, anonymous, error, reload, can }}
+    >
       {children}
     </Ctx.Provider>
   );

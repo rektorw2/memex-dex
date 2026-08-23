@@ -1,8 +1,20 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
-import { assessToken, SAFE_LEVELS, TRADEABLE_LEVELS, looksLikeAddress } from '@memex/core';
+import {
+  assessToken,
+  SAFE_LEVELS,
+  TRADEABLE_LEVELS,
+  looksLikeAddress,
+  effectiveLiquidityFloor,
+  chartState,
+  marketAge,
+  marketAgeLabel,
+  NEW_MARKET_MAX_AGE_MS,
+} from '@memex/core';
+import { env } from '../lib/env.js';
 import { prisma } from '../lib/prisma.js';
-import { SUPPORTED_INTERVALS } from '../services/market-data.js';
+import { SUPPORTED_INTERVALS, isMarketDataSupported } from '../services/market-data.js';
+import { requestCandlesSoon } from '../workers/candle-builder.js';
 import { serializeResearch } from '../services/research.js';
 import { RULES_VERSION } from '../workers/scam-checker.js';
 import { MARKET_DATA_SOURCE } from '../services/okx-market.js';
@@ -33,12 +45,31 @@ import { cached } from '../lib/cache.js';
  * определения быть не должно: карточка на первом экране и список
  * в терминале обязаны называть лидером одно и то же.
  */
+/**
+ * Отсечка для сортировок по изменению цены.
+ *
+ * В пуле на двадцать тысяч одна сделка на тысячу двигает цену
+ * на порядки, и «растущие» без строгого порога — это список мёртвых
+ * токенов с ростом на 120000%, а не рынок.
+ */
+const CHANGE_SORT_LIQUIDITY_FLOOR = 100_000;
+
 const SORTS = {
   volume: { volume24hUsd: 'desc' },
   liquidity: { liquidityUsd: 'desc' },
   gainers: { priceChange24h: 'desc' },
   losers: { priceChange24h: 'asc' },
-  new: { createdAt: 'desc' },
+  /*
+   * «Новые» — по возрасту рынка, а не по времени импорта.
+   *
+   * Раньше здесь стоял `createdAt`, то есть момент появления записи
+   * в нашей базе. Старый токен, впервые увиденный сегодня, попадал
+   * в новинки — а «новое» на этом рынке читается как «успей первым».
+   *
+   * Сортировка идёт по `poolCreatedAt`; записи без него отсекаются
+   * фильтром ниже и до сортировки не доходят.
+   */
+  new: { poolCreatedAt: 'desc' },
 } as const;
 
 /**
@@ -352,15 +383,40 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
       })
       // Заблокированные не показываем никогда: за них заплатили,
       // но продать их всё равно нельзя.
-      .filter((r) => r.riskLevel !== 'blocked')
-      .filter((r) => (q.safeOnly ? SAFE_LEVELS.includes(r.riskLevel as never) : true));
+      .filter((r) => r.riskLevel !== 'blocked');
+
+    /*
+     * Прошедшие проверку и ожидающие её — два разных списка.
+     *
+     * Раньше здесь стоял один фильтр по `safeOnly`, и при значении
+     * по умолчанию он удалял непроверенные молча. Комментарий рядом
+     * обещал показывать их честно; на деле человек при семнадцати
+     * ожидающих видел пустой экран и решал, что вкладка сломана.
+     *
+     * Теперь непроверенные возвращаются отдельным полем. Смешивать
+     * их с проверенными нельзя — `pending` не должен читаться как
+     * «проверено», — но и прятать незачем: это единственное, что
+     * на вкладке вообще есть в первые минуты после импорта.
+     */
+    const checked = rows.filter((r) => SAFE_LEVELS.includes(r.riskLevel as never));
+    const pending = rows.filter((r) => r.riskLevel == null);
+    const flagged = rows.filter(
+      (r) => r.riskLevel != null && !SAFE_LEVELS.includes(r.riskLevel as never),
+    );
 
     return {
       source: 'DexScreener',
       // Честное число: сколько в исходном списке и сколько дошло.
       total: filtered.length,
-      unchecked: filtered.length - known.filter((t) => t.riskLevel != null).length,
-      tokens: rows.slice(0, q.limit),
+      unchecked: pending.length,
+      // Прошедшие проверку первыми. Клиент при `safeOnly` показывает
+      // только их в основном списке, а ожидающих — отдельной секцией
+      // с заметным статусом и без торговых кнопок.
+      tokens: checked.slice(0, q.limit),
+      pending: pending.slice(0, q.limit),
+      // Замечания показываются, только когда человек сам снял
+      // строгий режим.
+      flagged: q.safeOnly ? [] : flagged.slice(0, q.limit),
     };
   }
 
@@ -418,6 +474,8 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
         includeBlocked: z.coerce.boolean().default(false),
         /** Только проверенные и чистые. */
         safeOnly: z.coerce.boolean().default(false),
+        /** Предельный возраст рынка в часах. Действует для sort=new. */
+        maxAgeHours: z.coerce.number().positive().max(24 * 30).optional(),
         limit: z.coerce.number().max(200).default(60),
       })
       .parse(req.query);
@@ -430,7 +488,34 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
      * относительно базового и требуем реальный дневной объём.
      */
     const isChangeSort = q.sort === 'gainers' || q.sort === 'losers';
-    const liquidityFloor = q.minLiquidity ?? (isChangeSort ? 100_000 : undefined);
+
+    /*
+     * Порог ликвидности применяется ко всем подборкам, а не только
+     * к сортировкам по изменению цены.
+     *
+     * Раньше он был `undefined` для `volume`, `liquidity` и `new`,
+     * то есть настройка `MIN_LIQUIDITY_USD` к витрине не применялась
+     * вовсе, и в списки попадали пулы на полдоллара — их нельзя
+     * продать, а стоят они рядом с настоящими рынками.
+     *
+     * Клиент может попросить строже, но не мягче: `minLiquidity=0`
+     * прежде отключал фильтр целиком, потому что проверялся
+     * на истинность.
+     */
+    const baseFloor = isChangeSort
+      ? Math.max(CHANGE_SORT_LIQUIDITY_FLOOR, env.MIN_LIQUIDITY_USD)
+      : env.MIN_LIQUIDITY_USD;
+
+    const liquidityFloor = effectiveLiquidityFloor(q.minLiquidity, baseFloor);
+
+    /*
+     * Возраст рынка для «Новых».
+     *
+     * Отсекается на сервере, а не сортировкой в браузере: без этого
+     * при пустой выборке свежих пулов список молча заполнялся бы
+     * самыми старыми записями, отсортированными по убыванию.
+     */
+    const maxAgeMs = q.maxAgeHours != null ? q.maxAgeHours * 3_600_000 : NEW_MARKET_MAX_AGE_MS;
 
     /**
      * Поиск по точному адресу — особый случай.
@@ -462,7 +547,16 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
         isHidden: false,
         ...(q.verifiedOnly ? { isVerified: true } : {}),
         ...(q.chain ? { chain: q.chain as never } : {}),
-        ...(liquidityFloor ? { liquidityUsd: { gte: liquidityFloor } } : {}),
+        // Сравнение с числом, а не проверка на истинность: порог
+        // в ноль — это тоже порог, и отключать фильтр он не должен.
+        liquidityUsd: { gte: liquidityFloor },
+        ...(q.sort === 'new'
+          ? {
+              // Возраст известен и не больше суток. Записи без времени
+              // пула сюда не попадают: неизвестный возраст — не малый.
+              poolCreatedAt: { not: null, gte: new Date(Date.now() - maxAgeMs) },
+            }
+          : {}),
         ...(isChangeSort
           ? {
               volume24hUsd: { gte: 50_000 },
@@ -511,6 +605,16 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
       priceChange24h: t.priceChange24h?.toString() ?? null,
       liquidityUsd: t.liquidityUsd?.toString() ?? null,
       volume24hUsd: t.volume24hUsd?.toString() ?? null,
+      // Возраст рынка и его источник. Интерфейс обязан различать
+      // «два часа» и «неизвестно»: второе не является малым числом.
+      ...(() => {
+        const age = marketAge({ poolCreatedAt: t.poolCreatedAt, firstSeenAt: t.firstSeenAt });
+        return {
+          marketAgeMs: age.ageMs,
+          marketAgeSource: age.source,
+          marketAgeLabel: marketAgeLabel(age),
+        };
+      })(),
       fdvUsd: t.fdvUsd?.toString() ?? null,
       riskScore: t.riskScore,
       hasChart: t.poolAddress != null,
@@ -693,21 +797,63 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
       });
     }
 
-    const candles = await prisma.candle.findMany({
-      where: { tokenId: id, interval: q.interval },
-      orderBy: { openTime: 'desc' },
-      take: q.limit,
+    const [token, candles] = await Promise.all([
+      prisma.token.findUnique({
+        where: { id },
+        select: { chain: true, poolAddress: true },
+      }),
+      prisma.candle.findMany({
+        where: { tokenId: id, interval: q.interval },
+        orderBy: { openTime: 'desc' },
+        take: q.limit,
+      }),
+    ]);
+
+    if (!token) return reply.code(404).send({ error: 'Токен не найден' });
+
+    /*
+     * Почему свечей нет — отдельный ответ, а не пустой массив.
+     *
+     * Прежде интерфейс на всё отвечал «не найден пул ликвидности»,
+     * и это врало чаще, чем говорило правду: сообщение видели
+     * у токена с пулом на 184 тысячи, потому что пул был, а свечей
+     * не было. Причины разные, и действия по ним разные.
+     */
+    const hasAnyCandles =
+      candles.length > 0 ||
+      (await prisma.candle.count({ where: { tokenId: id } })) > 0;
+
+    const state = chartState({
+      hasPool: token.poolAddress != null,
+      supported: isMarketDataSupported(token.chain),
+      candleCount: candles.length,
+      hasAnyCandles,
     });
 
-    // Формат lightweight-charts: время в секундах, значения числами.
-    return candles.reverse().map((c) => ({
-      time: Math.floor(c.openTime.getTime() / 1000),
-      open: Number(c.open),
-      high: Number(c.high),
-      low: Number(c.low),
-      close: Number(c.close),
-      volume: Number(c.volumeUsd),
-    }));
+    /*
+     * Открытый человеком токен просится в очередь вне общего круга.
+     *
+     * Обход воркера идёт по объёму и берёт триста штук: токен
+     * за их пределами не получил бы свечей никогда. Пометка ставится
+     * тихо и не задерживает ответ — она лишь двигает приоритет.
+     */
+    if (state === 'candles-queued' || state === 'empty-period') {
+      requestCandlesSoon(id);
+    }
+
+    return {
+      interval: q.interval,
+      state,
+      // Формат lightweight-charts: время в секундах, значения числами.
+      candles: candles.reverse().map((c) => ({
+        time: Math.floor(c.openTime.getTime() / 1000),
+        open: Number(c.open),
+        high: Number(c.high),
+        low: Number(c.low),
+        close: Number(c.close),
+        volume: Number(c.volumeUsd),
+      })),
+    };
   });
 
   /** Сводка по рынку — для шапки витрины. */
