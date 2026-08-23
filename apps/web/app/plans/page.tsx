@@ -1,15 +1,19 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import useSWR from 'swr';
 import Link from 'next/link';
 import {
   SELLABLE_PLANS,
+  loginHref,
   planCta,
   trialDaysLabel,
+  withNext,
   type SellablePlan,
 } from '@memex/core';
 import { rootFetcher } from '@/lib/api';
 import { useAccess, trialRemainingLabel, formatUntil } from '@/lib/access';
+import { useNextParam } from '@/lib/next-param';
 import { PlanCard } from '@/components/plans/PlanCard';
 import { PnlBlock } from '@/components/plans/PnlBlock';
 import { Comparison } from '@/components/plans/Comparison';
@@ -57,8 +61,18 @@ interface PaymentsStatus {
   sandbox: boolean;
 }
 
-export default function PlansPage() {
+export function PlansPageContent() {
   const { access, anonymous, loading: accessLoading } = useAccess();
+  const next = useNextParam();
+  const [hasLocalSession, setHasLocalSession] = useState<boolean | null>(null);
+
+  // Гостю не нужно ждать, пока проснётся API, чтобы увидеть регистрацию.
+  // Наличие сессии читается сразу после гидратации; права и тариф всё
+  // равно подтверждает сервер. Для вошедшего человека гостевые кнопки
+  // при этом не мигают во время холодного старта.
+  useEffect(() => {
+    setHasLocalSession(Boolean(sessionStorage.getItem('accessToken')));
+  }, []);
 
   // Три независимых запроса вместо одного Promise.all: ошибка одного
   // не должна оставлять страницу пустой. Каталог важнее остальных —
@@ -89,6 +103,9 @@ export default function PlansPage() {
 
   const trialActive = access?.effectivePlan === 'TRIAL';
   const serviceAccess = access?.serviceAccess ?? false;
+  const hasAccess =
+    !anonymous && access != null && (serviceAccess || access.effectivePlan !== 'EXPIRED');
+  const showGuestActions = accessLoading ? hasLocalSession === false : anonymous;
 
   return (
     <div className="mx-auto max-w-6xl pb-16">
@@ -107,6 +124,39 @@ export default function PlansPage() {
           контроля над одним и тем же терминалом. Начать можно с бесплатного периода
           и передумать в любой момент.
         </p>
+
+        {/* ─── Основные действия ─────────────────────────────────── */}
+        <div className="mt-7 flex flex-wrap items-center gap-3">
+          {showGuestActions && (
+            <>
+              <Link
+                href={loginHref(next, { register: true })}
+                className="btn-primary px-6 py-2.5 text-sm"
+              >
+                Начать бесплатно
+              </Link>
+              <Link href={loginHref(next)} className="btn-ghost px-5 py-2.5 text-sm">
+                Войти
+              </Link>
+            </>
+          )}
+
+          {!accessLoading && !anonymous && (
+            <Link
+              href={hasAccess ? (next ?? '/terminal') : withNext('/onboarding', next)}
+              className="btn-primary px-6 py-2.5 text-sm"
+            >
+              {hasAccess ? (next ? 'Продолжить' : 'В приложение') : 'Выбрать Pro'}
+            </Link>
+          )}
+
+          <Link
+            href="/terminal"
+            className="px-1 py-2.5 text-sm text-accent underline-offset-4 hover:underline"
+          >
+            Открыть терминал без регистрации →
+          </Link>
+        </div>
 
         {/* ─── Доверие ───────────────────────────────────────────── */}
         <ul className="mt-6 flex flex-wrap gap-x-6 gap-y-2 text-sm text-muted">
@@ -298,3 +348,5 @@ function CardSkeleton() {
     </div>
   );
 }
+
+export default PlansPageContent;

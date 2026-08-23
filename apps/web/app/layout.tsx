@@ -84,12 +84,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <div className="relative mx-auto flex h-header min-w-0 max-w-[1800px] items-center gap-2 px-4 sm:gap-4 sm:px-5">
             <MobileNav />
 
-            {/* Логотип — единственный путь на терминал. Отдельного
-                пункта в навигации нет: он вёл бы в тот же адрес,
-                что и логотип рядом с ним. */}
+            {/* Логотип ведёт на публичную витрину. Терминал вынесен
+                отдельным пунктом меню и остаётся доступен гостю. */}
             <Link
-              href="/terminal"
-              aria-label="Терминал"
+              href="/"
+              aria-label="Главная"
               className="absolute left-1/2 -translate-x-1/2 rounded-md text-lg font-bold tracking-tight transition-opacity hover:opacity-80 md:static md:translate-x-0 md:shrink-0"
             >
               me<span className="text-accent">mex</span>

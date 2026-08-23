@@ -242,7 +242,9 @@ export function MobileNav() {
             на невысоких телефонах, а страница под панелью заблокирована. */}
         <nav className="scroll-y min-h-0 flex-1 py-2">
           <Item href="/terminal" label="Терминал" icon={TERMINAL_ICON} active={pathname === '/terminal'} />
-          {sections.map((s) => (
+          {/* Терминал уже стоит первым отдельной строкой с собственной
+              иконкой. В SECTIONS он нужен десктопной навигации. */}
+          {sections.filter((s) => s.href !== '/terminal').map((s) => (
             <Item
               key={s.href}
               href={s.href}

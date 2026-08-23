@@ -55,9 +55,14 @@ export function AuthNav() {
 
   if (!role) {
     return (
-      <Link href="/login" className="btn-primary tap text-sm">
-        Войти
-      </Link>
+      <div className="flex items-center gap-2">
+        <Link href="/login?mode=register" className="btn-ghost tap hidden text-sm sm:inline-flex">
+          Регистрация
+        </Link>
+        <Link href="/login" className="btn-primary tap text-sm">
+          Войти
+        </Link>
+      </div>
     );
   }
 
