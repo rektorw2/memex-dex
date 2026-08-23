@@ -57,6 +57,8 @@ interface Props {
    * сервер отклонит.
    */
   canTrade: boolean;
+  /** GEMS пока информационный независимо от тарифа пользователя. */
+  tradeDisabledReason?: 'gems';
 }
 
 export function SidePanel({
@@ -66,6 +68,7 @@ export function SidePanel({
   isLoading,
   anonymous,
   canTrade,
+  tradeDisabledReason,
 }: Props) {
   const isAuthed = !anonymous;
   const pnl = Number(portfolio?.unrealizedPnlUsd ?? 0);
@@ -138,6 +141,8 @@ export function SidePanel({
           <p className="text-sm text-muted">
             {!isAuthed
               ? 'Торговля после регистрации'
+              : tradeDisabledReason === 'gems'
+                ? 'Покупка GEMS появится позже'
               : !canTrade
                 ? 'Торговля на действующем плане'
                 : !token
@@ -148,6 +153,8 @@ export function SidePanel({
           <p className="max-w-[220px] text-xs leading-relaxed text-muted/70">
             {!isAuthed
               ? 'Ордера исполняются по реальным котировкам в бумажном режиме — деньги не задействованы'
+              : tradeDisabledReason === 'gems'
+                ? 'Сейчас эта вкладка показывает live-сигналы, цену и график без торговых действий'
               : !canTrade
                 ? 'Свои позиции видны, продать и вывести можно всегда. Для покупки включите бесплатный период'
                 : !token
@@ -161,7 +168,7 @@ export function SidePanel({
             </Link>
           )}
 
-          {isAuthed && !canTrade && (
+          {isAuthed && !canTrade && tradeDisabledReason !== 'gems' && (
             <Link href="/onboarding" className="btn-primary mt-1 text-sm">
               Включить доступ
             </Link>

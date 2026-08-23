@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   OKX_SIGNAL_CHANNEL,
+  okxSignalPerformance,
   parseOkxSignal,
   parseOkxSignalMessage,
   parseSignalWalletTypes,
@@ -102,5 +103,44 @@ describe('типы кошельков Signal', () => {
       'kol',
       'whale',
     ]);
+  });
+});
+
+describe('живой PnL сигнала', () => {
+  it('считает изменение цены и оценку результата суммы OKX', () => {
+    expect(okxSignalPerformance(0.001, 0.00125, 400)).toEqual({
+      multiple: 1.25,
+      priceChangePct: 25,
+      pnlUsd: 100,
+    });
+  });
+
+  it('сохраняет отрицательный результат и полную потерю', () => {
+    expect(okxSignalPerformance(2, 1, 80)).toEqual({
+      multiple: 0.5,
+      priceChangePct: -50,
+      pnlUsd: -40,
+    });
+    expect(okxSignalPerformance(2, 0, 80)).toEqual({
+      multiple: 0,
+      priceChangePct: -100,
+      pnlUsd: -80,
+    });
+  });
+
+  it('не выдумывает результат из отсутствующих или неверных цен', () => {
+    expect(okxSignalPerformance(null, 1, 100)).toBeNull();
+    expect(okxSignalPerformance(0, 1, 100)).toBeNull();
+    expect(okxSignalPerformance(1, Number.NaN, 100)).toBeNull();
+    expect(okxSignalPerformance(1, -1, 100)).toBeNull();
+  });
+
+  it('оставляет долларовый PnL пустым без настоящей суммы сигнала', () => {
+    expect(okxSignalPerformance(1, 2, null)).toEqual({
+      multiple: 2,
+      priceChangePct: 100,
+      pnlUsd: null,
+    });
+    expect(okxSignalPerformance(1, 2, -10)?.pnlUsd).toBeNull();
   });
 });

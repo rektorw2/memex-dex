@@ -39,8 +39,13 @@ const rows = [
     token: {
       id: 'token-1',
       priceUsd: { toString: () => '0.0012' },
+      priceChange24h: { toString: () => '20' },
+      priceUpdatedAt: new Date('2026-08-23T05:00:03.000Z'),
       fdvUsd: { toString: () => '96000' },
+      volume24hUsd: { toString: () => '15000' },
       holders: 450,
+      poolAddress: 'pool-1',
+      isVerified: false,
       isHidden: true,
       riskLevel: 'blocked',
       liquidityUsd: null,
@@ -79,11 +84,13 @@ vi.mock('../lib/logger.js', () => ({
 vi.mock('../services/okx-market.js', () => ({ MARKET_DATA_SOURCE: 'OKX OnchainOS' }));
 
 const { tokenRoutes } = await import('./tokens.js');
+const { isHot, resetHotTokensForTests } = await import('../workers/hot-tokens.js');
 
 let app: FastifyInstance;
 
 beforeEach(async () => {
   query = null;
+  resetHotTokensForTests();
   app = Fastify();
   // В настоящем сервере Zod преобразуется в 400 общим обработчиком.
   // Плагин в тесте поднимается отдельно, поэтому воспроизводим ровно
@@ -114,8 +121,17 @@ describe('публичная лента GEMS', () => {
     expect(body.signals[0]).toMatchObject({
       id: 'signal-1',
       signalMarketCapUsd: '80000',
-      token: { id: 'token-1', symbol: 'GEM', marketCapUsd: '96000' },
+      token: {
+        id: 'token-1',
+        symbol: 'GEM',
+        priceUsd: '0.0012',
+        priceChange24h: '20',
+        marketCapUsd: '96000',
+        volume24hUsd: '15000',
+        hasChart: true,
+      },
     });
+    expect(isHot('token-1')).toBe(true);
   });
 
   it('не применяет risk, hidden, liquidity или chain where-фильтры', async () => {
@@ -127,7 +143,20 @@ describe('публичная лента GEMS', () => {
       select: {
         id: true,
         providerKey: true,
-        token: { select: { id: true, priceUsd: true, fdvUsd: true, holders: true } },
+        token: {
+          select: {
+            id: true,
+            priceUsd: true,
+            priceChange24h: true,
+            priceUpdatedAt: true,
+            fdvUsd: true,
+            liquidityUsd: true,
+            volume24hUsd: true,
+            holders: true,
+            poolAddress: true,
+            isVerified: true,
+          },
+        },
       },
     });
     expect(query).not.toHaveProperty('where');

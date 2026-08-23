@@ -5,6 +5,7 @@ import { AuthNav } from '@/components/AuthNav';
 import { MainNav } from '@/components/MainNav';
 import { MobileNav } from '@/components/MobileNav';
 import { FavoritesProvider } from '@/lib/favorites';
+import { TokenFavoritesProvider } from '@/lib/token-favorites';
 import { AccessProvider } from '@/lib/access';
 import { AccessBanner } from '@/components/AccessBanner';
 import { RouteGuard } from '@/components/RouteGuard';
@@ -64,6 +65,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             расходятся ровно в момент нажатия. */}
         <AccessProvider>
         <FavoritesProvider>
+        <TokenFavoritesProvider>
         {/*
           Шапка устроена по-разному на телефоне и на десктопе.
 
@@ -123,6 +125,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             удерживается при выходе из позиции.
           </p>
         </footer>
+        </TokenFavoritesProvider>
         </FavoritesProvider>
         </AccessProvider>
       </body>

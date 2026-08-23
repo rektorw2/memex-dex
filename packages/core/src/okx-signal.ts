@@ -33,6 +33,45 @@ export interface OkxSignal {
   soldRatioPct: number | null;
 }
 
+/**
+ * Живой результат сигнала, а не результат портфеля пользователя.
+ *
+ * `pnlUsd` — оценка того, как изменилась бы указанная OKX сумма
+ * входа. Она не доказывает, что пользователь покупал токен, поэтому
+ * наружу всегда должна выходить с подписью «PnL сигнала».
+ */
+export interface OkxSignalPerformance {
+  multiple: number;
+  priceChangePct: number;
+  pnlUsd: number | null;
+}
+
+export function okxSignalPerformance(
+  signalPriceUsd: number | null | undefined,
+  currentPriceUsd: number | null | undefined,
+  amountUsd?: number | null,
+): OkxSignalPerformance | null {
+  if (
+    signalPriceUsd == null ||
+    currentPriceUsd == null ||
+    !Number.isFinite(signalPriceUsd) ||
+    !Number.isFinite(currentPriceUsd) ||
+    signalPriceUsd <= 0 ||
+    currentPriceUsd < 0
+  ) {
+    return null;
+  }
+
+  const multiple = currentPriceUsd / signalPriceUsd;
+  const priceChangePct = (multiple - 1) * 100;
+  const pnlUsd =
+    amountUsd != null && Number.isFinite(amountUsd) && amountUsd >= 0
+      ? amountUsd * (multiple - 1)
+      : null;
+
+  return { multiple, priceChangePct, pnlUsd };
+}
+
 /** Типы приходят и кодами, и именами — поддерживаем официальный словарь обоих ответов. */
 export function parseSignalWalletTypes(raw: unknown): OkxWalletCategory[] {
   if (raw == null) return [];

@@ -2,7 +2,7 @@
 
 import useSWR from 'swr';
 import { Suspense, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { fetcher, fmtUsd, fmtPrice, fmtPct } from '@/lib/api';
 import { useAccess } from '@/lib/access';
 import { shouldRequestPrivateData, tradePanelState } from '@memex/core';
@@ -12,7 +12,7 @@ import { ChartPanel } from '@/components/terminal/ChartPanel';
 import { SidePanel } from '@/components/terminal/SidePanel';
 import { CHAIN_LABEL, SORT_OPTIONS, QUICK_FILTERS, type Token } from '@/components/terminal/types';
 import { DexScreenerList } from '@/components/terminal/DexScreenerList';
-import { GemsList } from '@/components/terminal/GemsList';
+import { GemsList, type GemToken } from '@/components/terminal/GemsList';
 
 type MarketSource = 'own' | 'gems' | 'dexscreener';
 
@@ -52,7 +52,12 @@ function Terminal() {
   // Токен может прийти адресом: карточка лидера на первом экране
   // ведёт сюда с уже выбранным токеном, и ссылкой можно поделиться.
   const searchParams = useSearchParams();
+  const router = useRouter();
   const [selectedId, setSelectedId] = useState<string | null>(searchParams.get('token'));
+  // GEMS содержит токены, намеренно скрытые из обычной витрины.
+  // Поэтому выбранную карточку держим отдельно: искать её в `tokens`
+  // означало бы после клика открыть график первого обычного токена.
+  const [selectedGem, setSelectedGem] = useState<Token | null>(null);
   const [tab, setTab] = useState<'market' | 'chart' | 'portfolio'>('market');
   // По умолчанию показываем только прошедшие проверку. Витрина, где
   // безопасное и сомнительное лежат вперемешку, перекладывает разбор
@@ -88,7 +93,10 @@ function Terminal() {
   }>('/tokens/check-status', fetcher, { refreshInterval: 30_000 });
 
   const active =
-    tokens?.find((t) => t.id === selectedId) ?? tokens?.find((t) => !t.isQuote) ?? null;
+    (selectedGem?.id === selectedId ? selectedGem : null) ??
+    tokens?.find((t) => t.id === selectedId) ??
+    tokens?.find((t) => !t.isQuote) ??
+    null;
 
   /*
    * Свечи запрашиваются всегда, когда токен выбран.
@@ -125,8 +133,19 @@ function Terminal() {
 
   /** Выбор токена на телефоне сразу открывает график. */
   function selectToken(t: Token) {
+    setSelectedGem(null);
     setSelectedId(t.id);
     setTab('chart');
+  }
+
+  /** Карточка GEMS сразу переводит фокус на график и сохраняет ссылку. */
+  function openGemChart(gem: GemToken) {
+    if (!gem.id) return;
+    const token = terminalTokenFromGem(gem);
+    setSelectedGem(token);
+    setSelectedId(token.id);
+    setTab('chart');
+    router.replace(`/terminal?token=${encodeURIComponent(token.id)}`, { scroll: false });
   }
 
   /**
@@ -195,11 +214,14 @@ function Terminal() {
                 <TokenList
                   tokens={tokens}
                   activeId={active?.id ?? null}
-                  onSelect={(t) => setSelectedId(t.id)}
+                  onSelect={(t) => {
+                    setSelectedGem(null);
+                    setSelectedId(t.id);
+                  }}
                   isLoading={isLoading}
                 />
               ) : source === 'gems' ? (
-                <GemsList />
+                <GemsList onOpenChart={openGemChart} />
               ) : (
                 <div className="p-3">
                   <DexScreenerList chain={chain} safeOnly={safeOnly} />
@@ -228,7 +250,8 @@ function Terminal() {
               portfolio={portfolio}
               isLoading={portfolioLoading}
               anonymous={anonymous}
-              canTrade={panel === 'trade'}
+              canTrade={panel === 'trade' && selectedGem == null}
+              tradeDisabledReason={selectedGem ? 'gems' : undefined}
             />
           </aside>
         </div>
@@ -257,7 +280,7 @@ function Terminal() {
                   />
                 </>
               ) : source === 'gems' ? (
-                <GemsList />
+                <GemsList onOpenChart={openGemChart} />
               ) : (
                 <div className="p-3">
                   <DexScreenerList chain={chain} safeOnly={safeOnly} />
@@ -281,13 +304,18 @@ function Terminal() {
                 showHeader={false}
               />
             </div>
-            {active && (
+            {active && selectedGem == null && (
               <button
                 onClick={() => setTab('portfolio')}
                 className="btn-primary w-full tap text-sm"
               >
                 Купить / Продать
               </button>
+            )}
+            {active && selectedGem != null && (
+              <div className="rounded-lg border border-border bg-raised/50 px-3 py-2 text-center text-xs text-muted">
+                Покупка токенов GEMS появится позже
+              </div>
             )}
           </>
         )}
@@ -299,7 +327,8 @@ function Terminal() {
             portfolio={portfolio}
             isLoading={portfolioLoading}
             anonymous={anonymous}
-            canTrade={panel === 'trade'}
+            canTrade={panel === 'trade' && selectedGem == null}
+            tradeDisabledReason={selectedGem ? 'gems' : undefined}
           />
         )}
 
@@ -614,6 +643,33 @@ function MobileTokenHeader({ token, onBack }: { token: Token; onBack: () => void
       </div>
     </div>
   );
+}
+
+/**
+ * Минимальная рыночная карточка GEMS в форму центрального терминала.
+ * Risk-поля здесь намеренно пусты: вкладка показывает прямой сигнал
+ * OKX и не выдаёт отсутствие нашей проверки за безопасный вердикт.
+ */
+function terminalTokenFromGem(gem: GemToken): Token {
+  if (!gem.id) throw new Error('У сигнала ещё нет токена для графика');
+
+  return {
+    id: gem.id,
+    symbol: gem.symbol,
+    name: gem.name,
+    chain: gem.chain,
+    address: gem.address,
+    priceUsd: gem.priceUsd,
+    priceChange24h: gem.priceChange24h,
+    liquidityUsd: gem.liquidityUsd,
+    volume24hUsd: gem.volume24hUsd,
+    fdvUsd: gem.marketCapUsd,
+    riskScore: null,
+    logoUrl: gem.logoUrl,
+    isVerified: gem.isVerified,
+    hasChart: gem.hasChart,
+    isQuote: false,
+  };
 }
 
 export default function TerminalPage() {

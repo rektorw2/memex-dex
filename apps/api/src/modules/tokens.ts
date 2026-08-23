@@ -856,12 +856,26 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
           select: {
             id: true,
             priceUsd: true,
+            priceChange24h: true,
+            priceUpdatedAt: true,
             fdvUsd: true,
+            liquidityUsd: true,
+            volume24hUsd: true,
             holders: true,
+            poolAddress: true,
+            isVerified: true,
           },
         },
       },
     });
+
+    // Лента опрашивается каждые три секунды, а горячий ценовой цикл
+    // идёт раз в четыре. Продлеваем метку только первым видимым
+    // токенам: так карточки действительно live, но одна публичная
+    // вкладка не может заставить провайдера обновлять все сто строк.
+    markHotFromList(
+      signals.flatMap((signal) => (signal.token?.id ? [signal.token.id] : [])),
+    );
 
     // Двухсекундный браузерный кэш сглаживает несколько одновременно
     // открытых вкладок, но не превращает живой поток в минутную ленту.
@@ -889,9 +903,15 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
           name: signal.name,
           logoUrl: signal.logoUrl,
           priceUsd: signal.token?.priceUsd?.toString() ?? signal.priceUsd?.toString() ?? null,
+          priceChange24h: signal.token?.priceChange24h?.toString() ?? null,
+          priceUpdatedAt: signal.token?.priceUpdatedAt ?? null,
           marketCapUsd:
             signal.token?.fdvUsd?.toString() ?? signal.marketCapUsd?.toString() ?? null,
+          liquidityUsd: signal.token?.liquidityUsd?.toString() ?? null,
+          volume24hUsd: signal.token?.volume24hUsd?.toString() ?? null,
           holders: signal.token?.holders ?? signal.holders,
+          hasChart: signal.token?.poolAddress != null,
+          isVerified: signal.token?.isVerified ?? false,
         },
       })),
     };
