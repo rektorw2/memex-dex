@@ -111,7 +111,10 @@ describe('импорт OKX Signal', () => {
       providerKey: signal.providerKey,
       tokenId: 'token-created',
       source: 'okx_websocket',
+      peakPriceUsd: expect.anything(),
+      peakObservedAt: signal.signaledAt,
     });
+    expect(createdSignals[0]?.peakPriceUsd.toNumber()).toBe(signal.priceUsd);
     expect(markedHot).toEqual(['token-created']);
   });
 

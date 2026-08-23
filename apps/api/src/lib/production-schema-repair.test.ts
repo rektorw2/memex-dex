@@ -12,6 +12,8 @@ import {
   MARKET_AGE_MIGRATION,
   MARKET_AGE_TOKEN_COLUMNS,
   OKX_SIGNAL_MIGRATION,
+  OKX_SIGNAL_ATH_MIGRATION,
+  OKX_SIGNAL_ATH_COLUMNS,
   OKX_SIGNAL_TABLES,
   planProductionSchemaRepair,
   type ProductionSchemaSnapshot,
@@ -35,6 +37,7 @@ function legacySnapshot(): ProductionSchemaSnapshot {
   return {
     userColumns: [...BASE_USER_COLUMNS],
     tokenColumns: ['id', 'chain', 'address'],
+    okxSignalColumns: [],
     tables: ['User', 'Token', 'WalletActivity'],
     enums: ['UserRole'],
     appliedMigrations: null,
@@ -47,6 +50,7 @@ function accessOnlySnapshot(): ProductionSchemaSnapshot {
   return {
     userColumns: [...BASE_USER_COLUMNS, ...ACCESS_USER_COLUMNS],
     tokenColumns: ['id', 'chain', 'address'],
+    okxSignalColumns: [],
     tables: ['User', 'Token', ...ACCESS_TABLES],
     enums: [...ACCESS_ENUMS],
     appliedMigrations: [BASELINE_MIGRATION, ACCESS_MIGRATION],
@@ -59,6 +63,7 @@ function readySnapshot(): ProductionSchemaSnapshot {
   const s = accessOnlySnapshot();
   s.tokenColumns = [...s.tokenColumns, ...MARKET_AGE_TOKEN_COLUMNS, ...CHECK_QUEUE_TOKEN_COLUMNS];
   s.tables = [...s.tables, ...OKX_SIGNAL_TABLES];
+  s.okxSignalColumns = [...OKX_SIGNAL_ATH_COLUMNS];
   s.appliedMigrations = [...KNOWN_MIGRATIONS];
   return s;
 }
@@ -91,6 +96,7 @@ describe('готовая база', () => {
     ];
     after.appliedMigrations = [...KNOWN_MIGRATIONS];
     after.tables = [...after.tables, ...OKX_SIGNAL_TABLES];
+    after.okxSignalColumns = [...OKX_SIGNAL_ATH_COLUMNS];
 
     expect(planProductionSchemaRepair(after)).toEqual({ action: 'ready' });
   });
@@ -101,7 +107,13 @@ describe('переход с прежней схемы', () => {
     expect(planProductionSchemaRepair(legacySnapshot())).toEqual({
       action: 'apply-migrations',
       resolveBaseline: true,
-      pending: [ACCESS_MIGRATION, MARKET_AGE_MIGRATION, CHECK_QUEUE_MIGRATION, OKX_SIGNAL_MIGRATION],
+      pending: [
+        ACCESS_MIGRATION,
+        MARKET_AGE_MIGRATION,
+        CHECK_QUEUE_MIGRATION,
+        OKX_SIGNAL_MIGRATION,
+        OKX_SIGNAL_ATH_MIGRATION,
+      ],
     });
   });
 
@@ -120,7 +132,12 @@ describe('переход с прежней схемы', () => {
     expect(planProductionSchemaRepair(accessOnlySnapshot())).toEqual({
       action: 'apply-migrations',
       resolveBaseline: false,
-      pending: [MARKET_AGE_MIGRATION, CHECK_QUEUE_MIGRATION, OKX_SIGNAL_MIGRATION],
+      pending: [
+        MARKET_AGE_MIGRATION,
+        CHECK_QUEUE_MIGRATION,
+        OKX_SIGNAL_MIGRATION,
+        OKX_SIGNAL_ATH_MIGRATION,
+      ],
     });
   });
 });
@@ -187,6 +204,16 @@ describe('отказ при неожиданном состоянии', () => {
     expect(planProductionSchemaRepair(snapshot)).toEqual({
       action: 'refuse',
       reason: 'OKX_SIGNAL_HISTORY_CONTRADICTS_SCHEMA',
+    });
+  });
+
+  it.each([...OKX_SIGNAL_ATH_COLUMNS])('только колонка ATH %s из двух', (column) => {
+    const snapshot = readySnapshot();
+    snapshot.okxSignalColumns = [column];
+
+    expect(planProductionSchemaRepair(snapshot)).toEqual({
+      action: 'refuse',
+      reason: 'PARTIAL_OKX_SIGNAL_ATH_MIGRATION',
     });
   });
 

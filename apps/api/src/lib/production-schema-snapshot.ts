@@ -63,9 +63,10 @@ export async function readProductionSchemaSnapshot(
 ): Promise<ProductionSchemaSnapshot> {
   const names = (rows: { name: string }[]) => rows.map((row) => row.name);
 
-  const [userColumns, tokenColumns, tables, enums] = await Promise.all([
+  const [userColumns, tokenColumns, okxSignalColumns, tables, enums] = await Promise.all([
     query(COLUMNS_OF, ['User']),
     query(COLUMNS_OF, ['Token']),
+    query(COLUMNS_OF, ['OkxSignal']),
     query(TABLES, []),
     query(ENUMS, []),
   ]);
@@ -82,6 +83,7 @@ export async function readProductionSchemaSnapshot(
   return {
     userColumns: names(userColumns),
     tokenColumns: names(tokenColumns),
+    okxSignalColumns: names(okxSignalColumns),
     tables: names(tables),
     enums: names(enums),
     appliedMigrations: hasHistory ? names(await query(APPLIED, [])) : null,

@@ -33,6 +33,8 @@ const rows = [
     soldRatioPct: null,
     priceUsd: { toString: () => '0.001' },
     marketCapUsd: { toString: () => '80000' },
+    peakPriceUsd: { toString: () => '0.025' },
+    peakObservedAt: new Date('2026-08-23T05:08:00.000Z'),
     holders: 420,
     // Этот токен намеренно скрыт и заблокирован в нашей витрине.
     // GEMS обязан показать само событие независимо от этих полей.
@@ -121,6 +123,8 @@ describe('публичная лента GEMS', () => {
     expect(body.signals[0]).toMatchObject({
       id: 'signal-1',
       signalMarketCapUsd: '80000',
+      peakPriceUsd: '0.025',
+      peakObservedAt: '2026-08-23T05:08:00.000Z',
       token: {
         id: 'token-1',
         symbol: 'GEM',
@@ -143,6 +147,8 @@ describe('публичная лента GEMS', () => {
       select: {
         id: true,
         providerKey: true,
+        peakPriceUsd: true,
+        peakObservedAt: true,
         token: {
           select: {
             id: true,

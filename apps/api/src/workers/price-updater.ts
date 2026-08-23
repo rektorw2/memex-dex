@@ -11,6 +11,7 @@ import { prisma } from '../lib/prisma.js';
 import { getAdapter } from '../chains/index.js';
 import { logger } from '../lib/logger.js';
 import { fetchPriceInfo } from '../services/okx-market.js';
+import { recordOkxSignalLivePeak } from '../services/okx-signal-ath.js';
 import { hotTokens } from './hot-tokens.js';
 
 /**
@@ -328,6 +329,11 @@ async function writePrice(id: string, price: number, observedAt: Date): Promise<
       data: { peakPriceUsd: decimal },
     })
     .catch(() => undefined);
+
+  // GEMS хранит максимум для каждого отдельного события Signal.
+  // Ошибка этой производной статистики не откатывает настоящую цену
+  // токена: следующий live-тик попробует продлить пик ещё раз.
+  await recordOkxSignalLivePeak(id, price, observedAt).catch(() => undefined);
 
   return true;
 }

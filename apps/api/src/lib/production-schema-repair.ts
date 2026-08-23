@@ -22,6 +22,7 @@ export const ACCESS_MIGRATION = '20260821120000_add_subscriptions_and_trial';
 export const MARKET_AGE_MIGRATION = '20260823040000_add_token_market_age';
 export const CHECK_QUEUE_MIGRATION = '20260823120000_add_check_queue_and_price_age';
 export const OKX_SIGNAL_MIGRATION = '20260823170000_add_okx_signals';
+export const OKX_SIGNAL_ATH_MIGRATION = '20260823180000_add_okx_signal_ath';
 
 /**
  * Миграции, которые загрузчику разрешено применять.
@@ -36,6 +37,7 @@ export const KNOWN_MIGRATIONS = [
   MARKET_AGE_MIGRATION,
   CHECK_QUEUE_MIGRATION,
   OKX_SIGNAL_MIGRATION,
+  OKX_SIGNAL_ATH_MIGRATION,
 ] as const;
 
 export const BASE_USER_COLUMNS = ['id', 'email', 'passwordHash'] as const;
@@ -79,6 +81,9 @@ export const CHECK_QUEUE_TOKEN_COLUMNS = [
 /** История официального Signal — одна новая таблица без изменения старых. */
 export const OKX_SIGNAL_TABLES = ['OkxSignal'] as const;
 
+/** Накопленный пик каждого события Signal. Обе колонки появляются вместе. */
+export const OKX_SIGNAL_ATH_COLUMNS = ['peakPriceUsd', 'peakObservedAt'] as const;
+
 export interface ProductionSchemaSnapshot {
   userColumns: string[];
   /**
@@ -88,6 +93,8 @@ export interface ProductionSchemaSnapshot {
    * Prisma Client ждёт `poolCreatedAt`, которого в базе нет.
    */
   tokenColumns: string[];
+  /** Колонки события Signal нужны для отдельной следующей миграции. */
+  okxSignalColumns: string[];
   tables: string[];
   enums: string[];
   /** null означает, что таблицы истории Prisma ещё нет. */
@@ -177,6 +184,7 @@ export function planProductionSchemaRepair(
 ): ProductionSchemaPlan {
   const user = new Set(snapshot.userColumns);
   const token = new Set(snapshot.tokenColumns ?? []);
+  const okxSignal = new Set(snapshot.okxSignalColumns ?? []);
   const tables = new Set(snapshot.tables);
   const enums = new Set(snapshot.enums);
   const applied = new Set(snapshot.appliedMigrations ?? []);
@@ -263,6 +271,15 @@ export function planProductionSchemaRepair(
         partial: 'PARTIAL_OKX_SIGNAL_MIGRATION',
         historyAhead: 'OKX_SIGNAL_HISTORY_CONTRADICTS_SCHEMA',
         schemaAhead: 'OKX_SIGNAL_SCHEMA_AHEAD_OF_HISTORY',
+      },
+    },
+    {
+      name: OKX_SIGNAL_ATH_MIGRATION,
+      presence: presenceOf(OKX_SIGNAL_ATH_COLUMNS.map((column) => okxSignal.has(column))),
+      reasons: {
+        partial: 'PARTIAL_OKX_SIGNAL_ATH_MIGRATION',
+        historyAhead: 'OKX_SIGNAL_ATH_HISTORY_CONTRADICTS_SCHEMA',
+        schemaAhead: 'OKX_SIGNAL_ATH_SCHEMA_AHEAD_OF_HISTORY',
       },
     },
   ];

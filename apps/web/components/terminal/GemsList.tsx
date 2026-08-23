@@ -2,7 +2,7 @@
 
 import { useMemo, useState, type KeyboardEvent, type MouseEvent } from 'react';
 import useSWR from 'swr';
-import { okxSignalPerformance } from '@memex/core';
+import { okxSignalAth, okxSignalPerformance } from '@memex/core';
 import { TokenLogo } from '@/components/TokenLogo';
 import { fetcher, fmtPct, fmtPrice, fmtUsd } from '@/lib/api';
 import { chainLabel } from '@/lib/chains';
@@ -37,8 +37,12 @@ interface GemSignal {
   soldRatioPct: string | null;
   signalPriceUsd: string | null;
   signalMarketCapUsd: string | null;
+  peakPriceUsd: string | null;
+  peakObservedAt: string | null;
   token: GemToken;
 }
+
+type GemSort = 'ath' | 'newest' | 'current';
 
 interface Props {
   /** Открыть этот токен в центральном графике терминала. */
@@ -74,22 +78,25 @@ export function GemsList({ onOpenChart }: Props) {
   const [chain, setChain] = useState('');
   const [lowCapOnly, setLowCapOnly] = useState(false);
   const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const [sort, setSort] = useState<GemSort>('ath');
 
   const signals = data?.signals ?? [];
   const chains = useMemo(
     () => [...new Set(signals.map((signal) => signal.token.chain))].sort(),
     [signals],
   );
-  const visible = signals.filter((signal) => {
-    const token = signal.token;
-    if (chain && token.chain !== chain) return false;
-    if (lowCapOnly) {
-      const cap = numberOf(token.marketCapUsd);
-      if (cap == null || cap >= LOW_CAP_CEILING_USD) return false;
-    }
-    if (favoritesOnly && !isFavorite(token.chain, token.address)) return false;
-    return true;
-  });
+  const visible = signals
+    .filter((signal) => {
+      const token = signal.token;
+      if (chain && token.chain !== chain) return false;
+      if (lowCapOnly) {
+        const cap = numberOf(token.marketCapUsd);
+        if (cap == null || cap >= LOW_CAP_CEILING_USD) return false;
+      }
+      if (favoritesOnly && !isFavorite(token.chain, token.address)) return false;
+      return true;
+    })
+    .sort((a, b) => compareSignals(a, b, sort));
 
   const hasFilters = Boolean(chain || lowCapOnly || favoritesOnly);
 
@@ -122,7 +129,7 @@ export function GemsList({ onOpenChart }: Props) {
         <select
           value={chain}
           onChange={(event) => setChain(event.target.value)}
-          className="input col-span-2 font-sans text-xs"
+          className="input font-sans text-xs"
           aria-label="Сеть GEMS"
         >
           <option value="">Все сети</option>
@@ -131,6 +138,17 @@ export function GemsList({ onOpenChart }: Props) {
               {chainLabel(value)}
             </option>
           ))}
+        </select>
+
+        <select
+          value={sort}
+          onChange={(event) => setSort(event.target.value as GemSort)}
+          className="input font-sans text-xs"
+          aria-label="Сортировка GEMS"
+        >
+          <option value="ath">По ATH</option>
+          <option value="newest">Сначала новые</option>
+          <option value="current">По росту сейчас</option>
         </select>
 
         <button
@@ -212,6 +230,11 @@ function GemCard({
     numberOf(t.priceUsd),
     numberOf(signal.amountUsd),
   );
+  const ath = okxSignalAth(
+    numberOf(signal.signalPriceUsd),
+    numberOf(signal.peakPriceUsd),
+    numberOf(signal.signalMarketCapUsd),
+  );
   const initialCap = numberOf(signal.signalMarketCapUsd);
   const currentCap = numberOf(t.marketCapUsd);
   const capDirection =
@@ -276,13 +299,17 @@ function GemCard({
 
         <div className="shrink-0 text-right">
           <div className="text-[11px] font-medium text-up">{relativeTime(signal.signaledAt)}</div>
-          {performance && (
+          {ath && (
             <div
-              className={`num mt-0.5 text-xs font-semibold ${
-                performance.priceChangePct >= 0 ? 'text-up' : 'text-down'
-              }`}
+              className="num mt-1 rounded-md border border-warn/35 bg-warn/15 px-1.5 py-0.5 text-xs font-bold text-warn"
+              title={`Максимальная наблюдавшаяся цена после сигнала: ${fmtPrice(ath.peakPriceUsd)}`}
             >
-              {formatMultiple(performance.multiple)}
+              ATH {formatMultiple(ath.multiple)}
+            </div>
+          )}
+          {performance && (
+            <div className={`num mt-1 text-[10px] ${toneClass(performance.priceChangePct)}`}>
+              сейчас {formatMultiple(performance.multiple)}
             </div>
           )}
         </div>
@@ -311,6 +338,16 @@ function GemCard({
           label="MCap сейчас"
           value={fmtUsd(t.marketCapUsd)}
           tone={toneOf(capDirection ?? undefined)}
+        />
+        <Metric
+          label="Цена ATH"
+          value={ath ? fmtPrice(ath.peakPriceUsd) : '—'}
+          title="Максимальная наблюдавшаяся цена после этого сигнала"
+        />
+        <Metric
+          label="MCap на ATH"
+          value={ath?.peakMarketCapUsd == null ? '—' : fmtUsd(ath.peakMarketCapUsd)}
+          title="Оценка капитализации при ATH с неизменным предложением токена"
         />
       </div>
 
@@ -406,8 +443,46 @@ function numberOf(value: string | number | null | undefined): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function signalSortValue(signal: GemSignal, sort: GemSort): number {
+  if (sort === 'newest') return new Date(signal.signaledAt).getTime();
+
+  const signalPrice = numberOf(signal.signalPriceUsd);
+  if (sort === 'ath') {
+    return (
+      okxSignalAth(
+        signalPrice,
+        numberOf(signal.peakPriceUsd),
+        numberOf(signal.signalMarketCapUsd),
+      )?.multiple ?? Number.NEGATIVE_INFINITY
+    );
+  }
+
+  return (
+    okxSignalPerformance(signalPrice, numberOf(signal.token.priceUsd))?.multiple ??
+    Number.NEGATIVE_INFINITY
+  );
+}
+
+function compareSignals(a: GemSignal, b: GemSignal, sort: GemSort): number {
+  const aValue = signalSortValue(a, sort);
+  const bValue = signalSortValue(b, sort);
+  if (aValue !== bValue) {
+    if (aValue === Number.NEGATIVE_INFINITY) return 1;
+    if (bValue === Number.NEGATIVE_INFINITY) return -1;
+    return bValue - aValue;
+  }
+
+  // Равные и неизвестные значения всегда упорядочены свежестью:
+  // список не прыгает произвольно при каждом трёхсекундном ответе.
+  return new Date(b.signaledAt).getTime() - new Date(a.signaledAt).getTime();
+}
+
 function toneOf(value: number | null | undefined): 'up' | 'down' | undefined {
   return value == null || value === 0 ? undefined : value > 0 ? 'up' : 'down';
+}
+
+function toneClass(value: number): string {
+  return value > 0 ? 'text-up' : value < 0 ? 'text-down' : 'text-muted';
 }
 
 function signedUsd(value: number): string {

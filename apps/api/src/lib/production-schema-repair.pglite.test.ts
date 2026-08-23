@@ -8,6 +8,7 @@ import {
   CHECK_QUEUE_MIGRATION,
   MARKET_AGE_MIGRATION,
   OKX_SIGNAL_MIGRATION,
+  OKX_SIGNAL_ATH_MIGRATION,
   planProductionSchemaRepair,
 } from './production-schema-repair.js';
 import { readProductionSchemaSnapshot, type RawQuery } from './production-schema-snapshot.js';
@@ -87,7 +88,13 @@ describe('загрузчик на настоящей схеме', () => {
     expect(await planOf(db), 'на прежней схеме нужны все миграции').toEqual({
       action: 'apply-migrations',
       resolveBaseline: true,
-      pending: [ACCESS_MIGRATION, MARKET_AGE_MIGRATION, CHECK_QUEUE_MIGRATION, OKX_SIGNAL_MIGRATION],
+      pending: [
+        ACCESS_MIGRATION,
+        MARKET_AGE_MIGRATION,
+        CHECK_QUEUE_MIGRATION,
+        OKX_SIGNAL_MIGRATION,
+        OKX_SIGNAL_ATH_MIGRATION,
+      ],
     });
 
     // Шаг 1. `migrate resolve --applied 0_baseline`.
@@ -102,7 +109,12 @@ describe('загрузчик на настоящей схеме', () => {
     expect(await planOf(db), 'остаётся возраст рынка и очередь').toEqual({
       action: 'apply-migrations',
       resolveBaseline: false,
-      pending: [MARKET_AGE_MIGRATION, CHECK_QUEUE_MIGRATION, OKX_SIGNAL_MIGRATION],
+      pending: [
+        MARKET_AGE_MIGRATION,
+        CHECK_QUEUE_MIGRATION,
+        OKX_SIGNAL_MIGRATION,
+        OKX_SIGNAL_ATH_MIGRATION,
+      ],
     });
 
     // Шаг 3. Возраст рынка — та миграция, которую прежний
@@ -113,7 +125,7 @@ describe('загрузчик на настоящей схеме', () => {
     expect(await planOf(db), 'остаётся очередь проверки и Signal').toEqual({
       action: 'apply-migrations',
       resolveBaseline: false,
-      pending: [CHECK_QUEUE_MIGRATION, OKX_SIGNAL_MIGRATION],
+      pending: [CHECK_QUEUE_MIGRATION, OKX_SIGNAL_MIGRATION, OKX_SIGNAL_ATH_MIGRATION],
     });
 
     // Шаг 4. Очередь проверки и возраст цены.
@@ -123,16 +135,26 @@ describe('загрузчик на настоящей схеме', () => {
     expect(await planOf(db), 'остаётся Signal').toEqual({
       action: 'apply-migrations',
       resolveBaseline: false,
-      pending: [OKX_SIGNAL_MIGRATION],
+      pending: [OKX_SIGNAL_MIGRATION, OKX_SIGNAL_ATH_MIGRATION],
     });
 
     // Шаг 5. История официального OKX Signal.
     await db.exec(sqlOf(OKX_SIGNAL_MIGRATION));
     await markApplied(db, OKX_SIGNAL_MIGRATION);
 
+    expect(await planOf(db), 'остаётся накопление ATH').toEqual({
+      action: 'apply-migrations',
+      resolveBaseline: false,
+      pending: [OKX_SIGNAL_ATH_MIGRATION],
+    });
+
+    // Шаг 6. Пик после каждого события Signal.
+    await db.exec(sqlOf(OKX_SIGNAL_ATH_MIGRATION));
+    await markApplied(db, OKX_SIGNAL_ATH_MIGRATION);
+
     expect(await planOf(db), 'схема сошлась').toEqual({ action: 'ready' });
 
-    // Шаг 6. Следующий деплой ничего не делает.
+    // Шаг 7. Следующий деплой ничего не делает.
     expect(await planOf(db)).toEqual({ action: 'ready' });
 
     await db.close();

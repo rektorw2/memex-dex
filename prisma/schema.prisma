@@ -396,6 +396,11 @@ model OkxSignal {
 
   priceUsd       Decimal? @db.Decimal(38, 18)
   marketCapUsd   Decimal? @db.Decimal(24, 8)
+  // Максимальная наблюдавшаяся цена после этого конкретного сигнала.
+  // Это не lifetime ATH токена: два сигнала одного токена имеют
+  // разные точки отсчёта и независимо накапливают свой пик.
+  peakPriceUsd   Decimal? @db.Decimal(38, 18)
+  peakObservedAt DateTime?
   holders        Int?
   top10HolderPct Decimal? @db.Decimal(8, 4)
 

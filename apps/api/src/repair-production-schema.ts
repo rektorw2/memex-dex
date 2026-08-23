@@ -8,6 +8,7 @@ import {
   BASE_USER_COLUMNS,
   CHECK_QUEUE_TOKEN_COLUMNS,
   MARKET_AGE_TOKEN_COLUMNS,
+  OKX_SIGNAL_ATH_COLUMNS,
   planProductionSchemaRepair,
   type ProductionSchemaSnapshot,
 } from './lib/production-schema-repair.js';
@@ -78,6 +79,7 @@ function describeExpectedState(): string {
     ...ACCESS_USER_COLUMNS.map((name) => `User.${name}`),
     ...MARKET_AGE_TOKEN_COLUMNS.map((name) => `Token.${name}`),
     ...CHECK_QUEUE_TOKEN_COLUMNS.map((name) => `Token.${name}`),
+    ...OKX_SIGNAL_ATH_COLUMNS.map((name) => `OkxSignal.${name}`),
     ...ACCESS_TABLES,
     ...ACCESS_ENUMS,
   ].join(', ');

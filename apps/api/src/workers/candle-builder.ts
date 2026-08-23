@@ -4,6 +4,7 @@ import { prisma } from '../lib/prisma.js';
 import { logger } from '../lib/logger.js';
 import { fetchOhlcv, isMarketDataSupported } from '../services/market-data.js';
 import { fetchTokenCandles, isOkxSupported } from '../services/okx-market.js';
+import { recordOkxSignalCandlePeaks } from '../services/okx-signal-ath.js';
 
 /**
  * Загрузка свечей для графиков.
@@ -270,6 +271,12 @@ export async function syncCandlesBatch(): Promise<number> {
           }),
         ),
       );
+
+      // Свечи восстанавливают ATH для старых событий, которые были
+      // импортированы из REST уже после того, как цена успела сходить
+      // к пику и вернуться. Ошибка производного показателя не мешает
+      // сохранить сам график.
+      await recordOkxSignalCandlePeaks(token.id, candles).catch(() => undefined);
 
       lastFetchedAt.set(key, Date.now());
       processed++;

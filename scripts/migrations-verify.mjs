@@ -61,6 +61,12 @@ const okxSignals = fs.readFileSync(
   'utf8',
 );
 
+/** Накопленный ATH каждого события Signal. */
+const okxSignalAth = fs.readFileSync(
+  `${R}/prisma/migrations/20260823180000_add_okx_signal_ath/migration.sql`,
+  'utf8',
+);
+
 // ── Проверяется ли вообще то, что лежит в репозитории ──────────────
 /*
  * Файл называет миграции поимённо, и это его слабое место: миграция
@@ -78,6 +84,7 @@ const KNOWN = [
   '20260823040000_add_token_market_age',
   '20260823120000_add_check_queue_and_price_age',
   '20260823170000_add_okx_signals',
+  '20260823180000_add_okx_signal_ath',
 ];
 
 const onDisk = fs
@@ -696,14 +703,30 @@ check('таблица OkxSignal создана', tables.includes('OkxSignal'));
 
 await clean.exec(`
   INSERT INTO "OkxSignal"
-    ("id","providerKey","chain","address","tokenId","symbol","name","signaledAt","walletTypes","source")
+    ("id","providerKey","chain","address","tokenId","symbol","name","signaledAt","priceUsd","walletTypes","source")
   VALUES
-    ('sig-1','provider-1','SOLANA','SignalAddress111111111111111111111111111','t-queue','GEM','Gem',NOW(),ARRAY['smart_money'],'okx_websocket');
+    ('sig-1','provider-1','SOLANA','SignalAddress111111111111111111111111111','t-queue','GEM','Gem',NOW(),0.001,ARRAY['smart_money'],'okx_websocket');
 `);
 
-const signalRows = await clean.query(`SELECT "tokenId","walletTypes" FROM "OkxSignal" WHERE id='sig-1'`);
+// Миграция приходит поверх уже накопленных событий и обязана дать
+// им честную первую точку ATH, не меняя исходную цену сигнала.
+await clean.exec(okxSignalAth);
+
+const signalRows = await clean.query(`
+  SELECT "tokenId","walletTypes","priceUsd","peakPriceUsd","peakObservedAt"
+  FROM "OkxSignal" WHERE id='sig-1'
+`);
 check('сигнал связан с импортированным токеном', signalRows.rows[0]?.tokenId === 't-queue');
 check('типы кошельков сохраняются массивом', signalRows.rows[0]?.walletTypes?.[0] === 'smart_money');
+check('существующий сигнал начинает ATH со своей цены',
+  String(signalRows.rows[0]?.peakPriceUsd) === String(signalRows.rows[0]?.priceUsd));
+check('существующий сигнал получает время первого пика', signalRows.rows[0]?.peakObservedAt != null);
+
+const athColumns = (await clean.query(`
+  SELECT column_name FROM information_schema.columns
+  WHERE table_name='OkxSignal' AND column_name IN ('peakPriceUsd','peakObservedAt')
+`)).rows.map((row) => row.column_name);
+check('колонки ATH сигнала созданы вместе', athColumns.length === 2, athColumns.join(', '));
 
 let duplicateSignal = null;
 try {

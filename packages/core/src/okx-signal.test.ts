@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   OKX_SIGNAL_CHANNEL,
   okxSignalPerformance,
+  okxSignalAth,
   parseOkxSignal,
   parseOkxSignalMessage,
   parseSignalWalletTypes,
@@ -142,5 +143,32 @@ describe('живой PnL сигнала', () => {
       pnlUsd: null,
     });
     expect(okxSignalPerformance(1, 2, -10)?.pnlUsd).toBeNull();
+  });
+});
+
+describe('ATH после сигнала', () => {
+  it('считает максимальный рост и капитализацию от одной точки входа', () => {
+    expect(okxSignalAth(0.001, 0.025, 80_000)).toEqual({
+      peakPriceUsd: 0.025,
+      multiple: 25,
+      priceChangePct: 2_400,
+      peakMarketCapUsd: 2_000_000,
+    });
+  });
+
+  it('не показывает отрицательный ATH из старой неполной строки', () => {
+    expect(okxSignalAth(2, 1, 100)).toEqual({
+      peakPriceUsd: 2,
+      multiple: 1,
+      priceChangePct: 0,
+      peakMarketCapUsd: 100,
+    });
+  });
+
+  it('не выдумывает ATH без настоящей цены сигнала и пика', () => {
+    expect(okxSignalAth(null, 2, 100)).toBeNull();
+    expect(okxSignalAth(1, null, 100)).toBeNull();
+    expect(okxSignalAth(0, 2, 100)).toBeNull();
+    expect(okxSignalAth(1, Number.NaN, 100)).toBeNull();
   });
 });

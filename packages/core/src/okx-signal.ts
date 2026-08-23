@@ -46,6 +46,47 @@ export interface OkxSignalPerformance {
   pnlUsd: number | null;
 }
 
+/** Максимальный наблюдавшийся результат именно после одного сигнала. */
+export interface OkxSignalAth {
+  peakPriceUsd: number;
+  multiple: number;
+  priceChangePct: number;
+  /** Оценка капитализации при пике при неизменном предложении токена. */
+  peakMarketCapUsd: number | null;
+}
+
+export function okxSignalAth(
+  signalPriceUsd: number | null | undefined,
+  peakPriceUsd: number | null | undefined,
+  signalMarketCapUsd?: number | null,
+): OkxSignalAth | null {
+  if (
+    signalPriceUsd == null ||
+    peakPriceUsd == null ||
+    !Number.isFinite(signalPriceUsd) ||
+    !Number.isFinite(peakPriceUsd) ||
+    signalPriceUsd <= 0 ||
+    peakPriceUsd < 0
+  ) {
+    return null;
+  }
+
+  // ATH после сигнала не может быть ниже самой цены сигнала.
+  // Защита важна для старых строк, которые ещё не успели пройти
+  // исторический backfill свечами.
+  const peak = Math.max(signalPriceUsd, peakPriceUsd);
+  const multiple = peak / signalPriceUsd;
+  const priceChangePct = (multiple - 1) * 100;
+  const peakMarketCapUsd =
+    signalMarketCapUsd != null &&
+    Number.isFinite(signalMarketCapUsd) &&
+    signalMarketCapUsd >= 0
+      ? signalMarketCapUsd * multiple
+      : null;
+
+  return { peakPriceUsd: peak, multiple, priceChangePct, peakMarketCapUsd };
+}
+
 export function okxSignalPerformance(
   signalPriceUsd: number | null | undefined,
   currentPriceUsd: number | null | undefined,

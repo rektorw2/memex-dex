@@ -15,6 +15,7 @@ import { prisma } from '../lib/prisma.js';
 import { isOkxConfigured, fetchLatestSignals } from '../services/okx-market.js';
 import { OkxWalletWebSocketClient } from '../services/okx-ws-client.js';
 import { markHot } from './hot-tokens.js';
+import { requestCandlesSoon } from './candle-builder.js';
 
 export type SignalSource = 'okx_websocket' | 'okx_rest';
 export type SignalIngestResult = 'created' | 'duplicate' | 'failed';
@@ -53,7 +54,13 @@ export async function ingestOkxSignal(
     });
 
     if (already) {
-      if (already.tokenId) markHot(already.tokenId);
+      if (already.tokenId) {
+        markHot(already.tokenId);
+        // После рестарта REST-сверка встречает уже сохранённое
+        // событие. Его всё равно нужно поставить на исторический
+        // backfill: иначе ATH до момента нового деплоя потеряется.
+        requestCandlesSoon(already.tokenId, '5m');
+      }
       return 'duplicate';
     }
 
@@ -124,6 +131,8 @@ export async function ingestOkxSignal(
           signaledAt: signal.signaledAt,
           priceUsd: decimal(signal.priceUsd),
           marketCapUsd: decimal(signal.marketCapUsd),
+          peakPriceUsd: decimal(signal.priceUsd),
+          peakObservedAt: signal.priceUsd != null ? signal.signaledAt : null,
           holders: signal.holders,
           top10HolderPct: decimal(signal.top10HolderPct),
           walletTypes: signal.walletTypes,
@@ -140,6 +149,7 @@ export async function ingestOkxSignal(
     // Новая находка первой получает цену, свечи и место в очереди
     // проверки. Сам GEMS при этом уже доступен из записи выше.
     markHot(result);
+    requestCandlesSoon(result, '5m');
     return 'created';
   } catch (error: any) {
     // WebSocket и REST пересекаются штатно. Уникальный providerKey

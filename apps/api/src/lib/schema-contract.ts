@@ -111,6 +111,8 @@ export const REQUIRED_TABLES: Record<string, string[]> = {
     'symbol',
     'name',
     'signaledAt',
+    'peakPriceUsd',
+    'peakObservedAt',
     'walletTypes',
     'source',
   ],

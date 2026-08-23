@@ -17,6 +17,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 /** Аргументы запросов к базе — по ним и делаются утверждения. */
 let findManyArgs: Record<string, unknown>[] = [];
 let updateManyArgs: Record<string, unknown>[] = [];
+let signalPeakArgs: Record<string, unknown>[] = [];
 
 /** Что база отдаёт на запрос списка токенов. */
 let tokenRows: Record<string, unknown>[] = [];
@@ -37,6 +38,12 @@ vi.mock('../lib/prisma.js', () => ({
       },
     },
     call: { updateMany: async () => ({ count: 0 }) },
+    okxSignal: {
+      updateMany: async (args: Record<string, unknown>) => {
+        signalPeakArgs.push(args);
+        return { count: 1 };
+      },
+    },
     position: { findMany: async () => [] },
   },
   serializable: vi.fn(),
@@ -111,6 +118,7 @@ const token = (id: string, over: Record<string, unknown> = {}) => ({
 beforeEach(() => {
   findManyArgs = [];
   updateManyArgs = [];
+  signalPeakArgs = [];
   tokenRows = [];
   updateCount = 1;
   batchPrices = new Map();
@@ -285,6 +293,22 @@ describe('запись не затирает более свежее', () => {
     const data = updateManyArgs[0]!.data as Record<string, unknown>;
     expect(data).toHaveProperty('priceUpdatedAt');
     expect(data).toHaveProperty('priceUsd');
+  });
+
+  it('та же свежая цена продлевает ATH событий GEMS', async () => {
+    tokenRows = [token('a')];
+    rpcPrice = 2.5;
+
+    await updateColdPrices();
+
+    expect(signalPeakArgs).toHaveLength(1);
+    expect(signalPeakArgs[0]).toMatchObject({
+      where: {
+        tokenId: 'a',
+        OR: [{ peakPriceUsd: null }, { peakPriceUsd: { lt: expect.anything() } }],
+      },
+      data: { peakPriceUsd: expect.anything(), peakObservedAt: expect.any(Date) },
+    });
   });
 });
 

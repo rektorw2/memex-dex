@@ -872,6 +872,8 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
         soldRatioPct: true,
         priceUsd: true,
         marketCapUsd: true,
+        peakPriceUsd: true,
+        peakObservedAt: true,
         holders: true,
         token: {
           select: {
@@ -916,6 +918,8 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
         soldRatioPct: signal.soldRatioPct?.toString() ?? null,
         signalPriceUsd: signal.priceUsd?.toString() ?? null,
         signalMarketCapUsd: signal.marketCapUsd?.toString() ?? null,
+        peakPriceUsd: signal.peakPriceUsd?.toString() ?? signal.priceUsd?.toString() ?? null,
+        peakObservedAt: signal.peakObservedAt ?? signal.signaledAt,
         token: {
           id: signal.token?.id ?? null,
           chain: signal.chain,
@@ -934,7 +938,9 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
           liquidityUsd: signal.token?.liquidityUsd?.toString() ?? null,
           volume24hUsd: signal.token?.volume24hUsd?.toString() ?? null,
           holders: signal.token?.holders ?? signal.holders,
-          hasChart: signal.token?.poolAddress != null,
+          // OKX строит свечи прямо по адресу токена; poolAddress для
+          // GEMS больше не является условием существования графика.
+          hasChart: signal.token?.id != null,
           isVerified: signal.token?.isVerified ?? false,
         },
       })),

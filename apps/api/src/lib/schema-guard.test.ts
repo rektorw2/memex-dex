@@ -117,6 +117,15 @@ describe('неполная схема', () => {
     expect(compareSchema(snapshot)).toContain('OkxSignal (таблица отсутствует)');
   });
 
+  it('не считает GEMS готовым без накопленного ATH', () => {
+    const snapshot = fullSnapshot();
+    snapshot.tables.OkxSignal = snapshot.tables.OkxSignal!.filter(
+      (column) => column !== 'peakPriceUsd',
+    );
+
+    expect(compareSchema(snapshot)).toContain('OkxSignal.peakPriceUsd');
+  });
+
   it('отсутствие уникальности очереди — поломка, а не мелочь', () => {
     // Без неё два процесса создадут две задачи на один кошелёк
     // и будут пересчитывать его одновременно, получая разные
