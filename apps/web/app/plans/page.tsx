@@ -61,7 +61,7 @@ interface PaymentsStatus {
   sandbox: boolean;
 }
 
-export function PlansPageContent() {
+function PlansPageContent() {
   const { access, anonymous, loading: accessLoading } = useAccess();
   const next = useNextParam();
   const [hasLocalSession, setHasLocalSession] = useState<boolean | null>(null);
