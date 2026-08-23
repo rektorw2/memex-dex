@@ -272,6 +272,15 @@ export interface RiskAssessmentInput {
   securityChecked: boolean;
   /** Токен есть в подтверждённом реестре. */
   isVerifiedAsset: boolean;
+  /**
+   * Часть источников не ответила.
+   *
+   * Не оценка токена, а состояние проверки, и обращаться с ним надо
+   * соответственно: ни «безопасен», ни «заблокирован» на неполном
+   * опросе утверждать нельзя. Токен уходит в `pending` и вернётся
+   * в очередь.
+   */
+  providerError?: boolean;
   config?: RiskConfig;
 }
 
@@ -300,6 +309,25 @@ export function assessRisk(input: RiskAssessmentInput): RiskResult {
 
   if (hasCritical) {
     return { level: 'blocked', score: 100, reasons, codes };
+  }
+
+  /*
+   * Неполный опрос важнее хорошей оценки, но слабее найденного
+   * нарушения.
+   *
+   * Порядок именно такой. Найденный ханипот остаётся ханипотом,
+   * даже если параллельно отвалился DexScreener: факт установлен,
+   * и отменять его из-за чужого таймаута нельзя. А вот отсутствие
+   * замечаний при неполном опросе — это не «замечаний нет», это
+   * «мы не досмотрели».
+   */
+  if (input.providerError) {
+    return {
+      level: 'pending',
+      score: Math.min(100, reasons.reduce((s, r) => s + r.weight, 0)),
+      reasons,
+      codes,
+    };
   }
 
   if (!input.securityChecked) {

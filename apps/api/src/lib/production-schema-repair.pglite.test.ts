@@ -5,6 +5,7 @@ import { PGlite } from '@electric-sql/pglite';
 import {
   KNOWN_MIGRATIONS,
   ACCESS_MIGRATION,
+  CHECK_QUEUE_MIGRATION,
   MARKET_AGE_MIGRATION,
   planProductionSchemaRepair,
 } from './production-schema-repair.js';
@@ -82,10 +83,10 @@ describe('загрузчик на настоящей схеме', () => {
     // истории миграций нет вовсе.
     await db.exec(sqlOf('0_baseline'));
 
-    expect(await planOf(db), 'на прежней схеме нужны обе миграции').toEqual({
+    expect(await planOf(db), 'на прежней схеме нужны все миграции').toEqual({
       action: 'apply-migrations',
       resolveBaseline: true,
-      pending: [ACCESS_MIGRATION, MARKET_AGE_MIGRATION],
+      pending: [ACCESS_MIGRATION, MARKET_AGE_MIGRATION, CHECK_QUEUE_MIGRATION],
     });
 
     // Шаг 1. `migrate resolve --applied 0_baseline`.
@@ -97,10 +98,10 @@ describe('загрузчик на настоящей схеме', () => {
     await db.exec(sqlOf(ACCESS_MIGRATION));
     await markApplied(db, ACCESS_MIGRATION);
 
-    expect(await planOf(db), 'остаётся возраст рынка').toEqual({
+    expect(await planOf(db), 'остаётся возраст рынка и очередь').toEqual({
       action: 'apply-migrations',
       resolveBaseline: false,
-      pending: [MARKET_AGE_MIGRATION],
+      pending: [MARKET_AGE_MIGRATION, CHECK_QUEUE_MIGRATION],
     });
 
     // Шаг 3. Возраст рынка — та миграция, которую прежний
@@ -108,9 +109,19 @@ describe('загрузчик на настоящей схеме', () => {
     await db.exec(sqlOf(MARKET_AGE_MIGRATION));
     await markApplied(db, MARKET_AGE_MIGRATION);
 
+    expect(await planOf(db), 'остаётся очередь проверки').toEqual({
+      action: 'apply-migrations',
+      resolveBaseline: false,
+      pending: [CHECK_QUEUE_MIGRATION],
+    });
+
+    // Шаг 4. Очередь проверки и возраст цены.
+    await db.exec(sqlOf(CHECK_QUEUE_MIGRATION));
+    await markApplied(db, CHECK_QUEUE_MIGRATION);
+
     expect(await planOf(db), 'схема сошлась').toEqual({ action: 'ready' });
 
-    // Шаг 4. Следующий деплой ничего не делает.
+    // Шаг 5. Следующий деплой ничего не делает.
     expect(await planOf(db)).toEqual({ action: 'ready' });
 
     await db.close();

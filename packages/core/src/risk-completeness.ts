@@ -32,11 +32,11 @@ import type { ChainKey } from './token-registry.js';
  * не ответить, не поддерживать эту сеть или вернуть пустое поле;
  * во всех случаях мы не знаем ответа и обязаны это сказать.
  */
-export type CheckStatus = 'passed' | 'failed' | 'unknown';
+export type SignalStatus = 'passed' | 'failed' | 'unknown';
 
 export interface RiskSignal {
   code: string;
-  status: CheckStatus;
+  status: SignalStatus;
   /** Значение как его вернул источник. Для показа человеку. */
   value?: string | number | boolean | null;
   /** Кто ответил. Нужно, чтобы понять, чьи данные разошлись. */

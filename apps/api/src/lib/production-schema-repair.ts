@@ -20,6 +20,7 @@
 export const BASELINE_MIGRATION = '0_baseline';
 export const ACCESS_MIGRATION = '20260821120000_add_subscriptions_and_trial';
 export const MARKET_AGE_MIGRATION = '20260823040000_add_token_market_age';
+export const CHECK_QUEUE_MIGRATION = '20260823120000_add_check_queue_and_price_age';
 
 /**
  * Миграции, которые загрузчику разрешено применять.
@@ -32,6 +33,7 @@ export const KNOWN_MIGRATIONS = [
   BASELINE_MIGRATION,
   ACCESS_MIGRATION,
   MARKET_AGE_MIGRATION,
+  CHECK_QUEUE_MIGRATION,
 ] as const;
 
 export const BASE_USER_COLUMNS = ['id', 'email', 'passwordHash'] as const;
@@ -63,6 +65,14 @@ export const ACCESS_ENUMS = [
 
 /** Колонки возраста рынка. Обе появляются одной миграцией. */
 export const MARKET_AGE_TOKEN_COLUMNS = ['poolCreatedAt', 'firstSeenAt'] as const;
+
+/** Состояние очереди проверки и возраст котировки. */
+export const CHECK_QUEUE_TOKEN_COLUMNS = [
+  'scamCheckAttempts',
+  'scamCheckNextAt',
+  'scamProviderError',
+  'priceUpdatedAt',
+] as const;
 
 export interface ProductionSchemaSnapshot {
   userColumns: string[];
@@ -230,6 +240,15 @@ export function planProductionSchemaRepair(
         partial: 'PARTIAL_MARKET_AGE_MIGRATION',
         historyAhead: 'MARKET_AGE_HISTORY_CONTRADICTS_SCHEMA',
         schemaAhead: 'MARKET_AGE_SCHEMA_AHEAD_OF_HISTORY',
+      },
+    },
+    {
+      name: CHECK_QUEUE_MIGRATION,
+      presence: presenceOf(CHECK_QUEUE_TOKEN_COLUMNS.map((column) => token.has(column))),
+      reasons: {
+        partial: 'PARTIAL_CHECK_QUEUE_MIGRATION',
+        historyAhead: 'CHECK_QUEUE_HISTORY_CONTRADICTS_SCHEMA',
+        schemaAhead: 'CHECK_QUEUE_SCHEMA_AHEAD_OF_HISTORY',
       },
     },
   ];

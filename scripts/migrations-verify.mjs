@@ -49,6 +49,12 @@ const marketAge = fs.readFileSync(
   'utf8',
 );
 
+/** Очередь проверки и возраст котировки. Тоже только добавление. */
+const checkQueue = fs.readFileSync(
+  `${R}/prisma/migrations/20260823120000_add_check_queue_and_price_age/migration.sql`,
+  'utf8',
+);
+
 // ── Проверяется ли вообще то, что лежит в репозитории ──────────────
 /*
  * Файл называет миграции поимённо, и это его слабое место: миграция
@@ -64,6 +70,7 @@ const KNOWN = [
   '0_baseline',
   '20260821120000_add_subscriptions_and_trial',
   '20260823040000_add_token_market_age',
+  '20260823120000_add_check_queue_and_price_age',
 ];
 
 const onDisk = fs
@@ -84,6 +91,7 @@ const clean = await PGlite.create();
 await clean.exec(baseline);
 await clean.exec(feature);
 await clean.exec(marketAge);
+await clean.exec(checkQueue);
 
 const tables = (
   await clean.query(`SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY 1`)
@@ -347,6 +355,7 @@ const pay = await PGlite.create();
 await pay.exec(baseline);
 await pay.exec(feature);
 await pay.exec(marketAge);
+await pay.exec(checkQueue);
 await pay.exec(`
   INSERT INTO "User" ("id","email","passwordHash","emailVerifiedAt","updatedAt")
   VALUES ('pu1','pay@x.y','h',NOW(),NOW());
@@ -609,6 +618,67 @@ await clean.exec(`
 const aged = await clean.query(`SELECT "poolCreatedAt" p, "firstSeenAt" f FROM "Token" WHERE id='t-age'`);
 check('у новой строки возраст пуст, а не выдуман',
   aged.rows[0].p === null && aged.rows[0].f === null);
+
+// ───────────────────── Очередь проверки и возраст цены ─────────────────────
+
+console.log('\n=== Очередь проверки и возраст цены ===');
+
+const queueCols = (await clean.query(`
+  SELECT column_name, is_nullable, column_default, data_type
+  FROM information_schema.columns
+  WHERE table_name='Token'
+    AND column_name IN ('scamCheckAttempts','scamCheckNextAt','scamProviderError','priceUpdatedAt')
+  ORDER BY 1
+`)).rows;
+
+const q = Object.fromEntries(queueCols.map((c) => [c.column_name, c]));
+
+check('все четыре колонки добавлены', queueCols.length === 4,
+  queueCols.map((c) => c.column_name).join(', '));
+
+// Счётчик и флаг обязаны иметь умолчание: полторы тысячи
+// существующих строк иначе получили бы NULL там, где код ждёт число.
+check('счётчик попыток начинается с нуля у существующих строк',
+  q.scamCheckAttempts?.column_default?.startsWith('0') === true,
+  q.scamCheckAttempts?.column_default ?? 'нет умолчания');
+
+check('флаг ошибки провайдера по умолчанию снят',
+  q.scamProviderError?.column_default === 'false',
+  q.scamProviderError?.column_default ?? 'нет умолчания');
+
+// А у времени умолчания быть не должно: now() объявил бы все
+// существующие цены свежими в момент миграции.
+check('у возраста цены умолчания нет: старые котировки не становятся свежими',
+  q.priceUpdatedAt?.column_default === null && q.priceUpdatedAt?.is_nullable === 'YES');
+
+check('время следующей попытки необязательно',
+  q.scamCheckNextAt?.is_nullable === 'YES' && q.scamCheckNextAt?.column_default === null);
+
+const queueIdx = (await clean.query(`
+  SELECT indexname FROM pg_indexes
+  WHERE tablename='Token' AND (indexname LIKE '%scamCheckNextAt%' OR indexname LIKE '%priceUpdatedAt%')
+  ORDER BY 1
+`)).rows.map((r) => r.indexname);
+
+check('индексы под отбор очереди и холодного цикла цен', queueIdx.length === 2,
+  queueIdx.join(', '));
+
+// Существующая строка переживает добавление колонок и получает
+// честные значения, а не выдуманные.
+await clean.exec(`
+  INSERT INTO "Token" ("id","chain","address","symbol","name","decimals")
+  VALUES ('t-queue','SOLANA','QueueTestAddress111111111111111111111111111','QQ','Queue',9);
+`);
+
+const qrow = (await clean.query(`
+  SELECT "scamCheckAttempts" a, "scamCheckNextAt" n, "scamProviderError" e, "priceUpdatedAt" p
+  FROM "Token" WHERE id='t-queue'
+`)).rows[0];
+
+check('новая строка: попыток ноль, ошибок нет, повтор не запланирован',
+  qrow.a === 0 && qrow.e === false && qrow.n === null);
+
+check('возраст цены пуст, а не выдуман', qrow.p === null);
 
 console.log(`\nИтог: ${failures === 0 ? 'все проверки пройдены' : failures + ' проверок не прошли'}`);
 process.exit(failures === 0 ? 0 : 1);

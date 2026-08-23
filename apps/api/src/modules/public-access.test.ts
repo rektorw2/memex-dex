@@ -49,6 +49,17 @@ const token = {
   poolCreatedAt: null,
   checkedAt: new Date('2026-08-22T00:00:00Z'),
   rulesVersion: 1,
+
+  // Поля состояния проверки и возраста котировки. Заготовка обязана
+  // повторять форму строки: без них ответ считал бы токен
+  // непроверенным, и тест проверял бы не то, что написано в названии.
+  riskCodes: [] as string[],
+  scamCheckedAt: new Date('2026-08-22T00:00:00Z'),
+  scamRulesVersion: 1,
+  scamCheckAttempts: 0,
+  scamCheckNextAt: null,
+  scamProviderError: false,
+  priceUpdatedAt: new Date('2026-08-22T00:00:00Z'),
 };
 
 vi.mock('../lib/prisma.js', () => ({
@@ -167,7 +178,6 @@ describe('гостю открыто чтение рынка', () => {
     ['/api/tokens/tok-1', 'карточка токена'],
     ['/api/tokens/tok-1/overview', 'обзор токена'],
     ['/api/tokens/tok-1/candles?interval=1h', 'свечи для графика'],
-    ['/api/tokens/risk-breakdown', 'разбор риска'],
     ['/api/market/summary', 'сводка рынка'],
     ['/api/tokens/check-status', 'состояние проверки витрины'],
   ])('%s — %s', async (url) => {
@@ -186,6 +196,12 @@ describe('гостю открыто чтение рынка', () => {
       const body = (await anon(url)).body;
       expect(body, url).not.toContain('UPGRADE_REQUIRED');
     }
+  });
+
+  it('внутреннее распределение правил не открыто гостю', async () => {
+    // Сводный check-status нужен интерфейсу, но карта конкретных
+    // защитных правил — административная диагностика.
+    expect((await anon('/api/tokens/risk-breakdown')).statusCode).toBe(401);
   });
 });
 

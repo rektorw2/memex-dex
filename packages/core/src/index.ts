@@ -76,6 +76,18 @@ export * from './route-access.js';
 export * from './api-base.js';
 export * from './discovery-filters.js';
 export * from './chart-state.js';
+
+// Веса вынесены из проверки: россыпью по коду их нельзя было
+// ни прочитать целиком, ни сложить в голове.
+export * from './risk-weights.js';
+
+// Что мы знаем о токене (статус проверки) и кого проверять
+// следующим (политика очереди).
+export * from './check-status.js';
+export * from './check-queue.js';
+
+// Чем закончился проход к провайдеру и стоит ли отступить.
+export * from './provider-cycle.js';
 export * from './plans-presentation.js';
 export * from './deposit.js';
 export * from './email-verification.js';

@@ -39,6 +39,10 @@ import {
   dedupeByAddress,
   RwaRegistry,
   EMPTY_RWA_REGISTRY,
+  EMPTY_PROVIDER_REPORT,
+  mergeReports,
+  parseRetryAfterMs,
+  type ProviderReport,
   type NormalizedToken,
   type ChainKey,
 } from '@memex/core';
@@ -99,6 +103,16 @@ function sign(timestamp: string, method: string, path: string, body = ''): strin
 
 interface OkxError extends Error {
   permanent?: boolean;
+  /**
+   * HTTP-код отказа.
+   *
+   * Раньше не сохранялся, и вызывающий не мог отличить 429
+   * от таймаута. Для воркера цен это была вся разница между
+   * «отступить» и «продолжать как обычно».
+   */
+  status?: number;
+  /** Сколько провайдер просил подождать. Его число важнее нашего. */
+  retryAfterMs?: number | null;
 }
 
 /**
@@ -134,6 +148,11 @@ async function call<T>(method: 'GET' | 'POST', path: string, body?: unknown): Pr
     const err: OkxError = new Error(`OKX ${res.status}`);
     // 4xx кроме 429 повторять бессмысленно.
     err.permanent = res.status >= 400 && res.status < 500 && res.status !== 429;
+    err.status = res.status;
+    // Просьба провайдера подождать. Читается только у 429: у прочих
+    // отказов заголовок означает другое.
+    err.retryAfterMs =
+      res.status === 429 ? parseRetryAfterMs(res.headers.get('retry-after')) : null;
     // В журнал идёт путь и код, но не заголовки: там ключ.
     logger.debug({ path, status: res.status }, 'OKX: запрос отклонён');
     throw err;
@@ -170,6 +189,56 @@ export async function safeCall<T>(
   } catch (e: any) {
     logger.debug({ path, err: e?.message }, 'OKX недоступен');
     return null;
+  }
+}
+
+/**
+ * Тот же запрос, но с сохранением причины неудачи.
+ *
+ * `safeCall` возвращает `null` и на пустой ответ, и на отказ,
+ * и на 429 — то есть стирает ровно то различение, ради которого
+ * вызывающий и спрашивает. Пока это было единственным способом
+ * обратиться к провайдеру, воркер цен не мог отличить полный отказ
+ * от прохода без котировок и не отступал никогда.
+ *
+ * Прежний `safeCall` оставлен как есть: его вызывают там, где
+ * причина неудачи действительно не нужна.
+ */
+export interface CallOutcome<T> {
+  value: T | null;
+  kind: 'ok' | 'empty' | 'transient' | 'rate-limit' | 'permanent';
+  retryAfterMs: number | null;
+}
+
+export async function reportedCall<T>(
+  method: 'GET' | 'POST',
+  path: string,
+  body?: unknown,
+): Promise<CallOutcome<T>> {
+  try {
+    /*
+     * Здесь намеренно нет локального retry.
+     *
+     * Структурированный исход нужен фоновому планировщику, который
+     * назначает одну общую паузу hot/cold циклам. Три мгновенных
+     * повтора 429 до передачи `Retry-After` наверх уже были бы тем
+     * самым штормом, от которого эта ветка защищает. Старый safeCall
+     * сохраняет локальные повторы для обычных одиночных запросов.
+     */
+    const value = await pool.run(() => call<T>(method, path, body));
+
+    return { value, kind: value == null ? 'empty' : 'ok', retryAfterMs: null };
+  } catch (e: unknown) {
+    const err = e as OkxError;
+
+    const kind: CallOutcome<T>['kind'] =
+      err?.status === 429 ? 'rate-limit' : err?.permanent === true ? 'permanent' : 'transient';
+
+    // Журнал один на запрос, а не на токен: сто токенов одной пачки
+    // дали бы сто одинаковых строк об одной и той же беде.
+    logger.debug({ path, kind, status: err?.status }, 'OKX: запрос не удался');
+
+    return { value: null, kind, retryAfterMs: err?.retryAfterMs ?? null };
   }
 }
 
@@ -403,14 +472,38 @@ export interface PriceInfo {
   txs24h: number | null;
 }
 
+/**
+ * Пакетный запрос цен — с отчётом о том, как он прошёл.
+ *
+ * Отчёт обязателен. Прежде функция возвращала только карту, и пустая
+ * карта означала одновременно «таких цен нет» и «провайдер отказал».
+ * Воркер цен на этом и сломался: полный 429 выглядел как успешный
+ * проход без котировок, отступ не включался, и мы продолжали стучаться
+ * каждые тридцать секунд.
+ */
+export interface PriceInfoResult {
+  prices: Map<string, PriceInfo>;
+  report: ProviderReport;
+}
+
 /** Подробности для страницы токена. Пакетный запрос до ста адресов. */
 export async function fetchPriceInfo(
   tokens: Array<{ chain: ChainKey; address: string }>,
-): Promise<Map<string, PriceInfo>> {
-  const out = new Map<string, PriceInfo>();
-  if (!isOkxConfigured() || tokens.length === 0) return out;
+  opts: { fresh?: boolean } = {},
+): Promise<PriceInfoResult> {
+  const prices = new Map<string, PriceInfo>();
+  const reports: ProviderReport[] = [];
 
-  const supported = tokens.filter((t) => isOkxSupported(t.chain));
+  const supported = isOkxConfigured() ? tokens.filter((t) => isOkxSupported(t.chain)) : [];
+
+  /*
+   * Ненастроенный или неподдерживающий сеть провайдер — не сбой.
+   * Считать его отказом значило бы отступать вечно там, где ключей
+   * попросту нет.
+   */
+  if (supported.length === 0) {
+    return { prices, report: { ...EMPTY_PROVIDER_REPORT } };
+  }
 
   for (let i = 0; i < supported.length; i += 100) {
     const batch = supported.slice(i, i + 100);
@@ -423,22 +516,59 @@ export async function fetchPriceInfo(
 
     const key = `okx:price:${batch.map((t) => `${t.chain}:${t.address}`).join(',')}`;
 
-    const hit = await cached(
-      key,
-      async () => {
-        const data = await safeCall<unknown>('POST', '/api/v6/dex/market/price-info', body);
-        return asArray(data);
-      },
-      { ttlMs: TTL.priceInfo, staleMs: 5 * 60_000 },
-    ).catch(() => null);
+    /*
+     * Исход запроса протаскивается через кеш.
+     *
+     * Кешируется только успешный ответ: положить в кеш отказ значило бы
+     * повторять его следующие полминуты, уже не спрашивая провайдера.
+     */
+    let outcome: CallOutcome<unknown> = { value: null, kind: 'empty', retryAfterMs: null };
 
-    for (const raw of hit?.value ?? []) {
+    const load = async () => {
+      outcome = await reportedCall<unknown>('POST', '/api/v6/dex/market/price-info', body);
+      if (outcome.kind !== 'ok' && outcome.kind !== 'empty') throw outcome;
+      return asArray(outcome.value);
+    };
+
+    /*
+     * Воркер цен просит только свежий ответ.
+     *
+     * SWR-кеш полезен странице: лучше сразу показать котировку
+     * двадцатисекундной давности и обновить её в фоне. Для воркера
+     * это недопустимо: он записал бы старое значение с новым
+     * `priceUpdatedAt`, после чего интерфейс называл бы его свежим.
+     * Кроме того, фоновая ошибка кеша не дошла бы до общего backoff.
+     */
+    const rows = opts.fresh
+      ? await load().catch(() => null)
+      : await cached(key, load, { ttlMs: TTL.priceInfo, staleMs: 5 * 60_000 })
+          .then((hit) => hit.value)
+          .catch(() => null);
+
+    let fetched = 0;
+    for (const raw of rows ?? []) {
       const info = parsePriceInfo(raw);
-      if (info) out.set(`${info.chain}:${info.address}`, info);
+      if (info) {
+        prices.set(`${info.chain}:${info.address}`, info);
+        fetched++;
+      }
     }
+
+    const failed = outcome.kind === 'rate-limit' || outcome.kind === 'transient';
+
+    reports.push({
+      requested: batch.length,
+      fetched,
+      // Отказ не считается отсутствием котировок: мы про них
+      // ничего не узнали.
+      missing: failed ? 0 : batch.length - fetched,
+      transient: outcome.kind === 'transient' || outcome.kind === 'permanent' ? batch.length : 0,
+      rateLimited: outcome.kind === 'rate-limit' ? batch.length : 0,
+      retryAfterMs: outcome.retryAfterMs,
+    });
   }
 
-  return out;
+  return { prices, report: mergeReports(...reports) };
 }
 
 function parsePriceInfo(raw: unknown): PriceInfo | null {

@@ -6,6 +6,7 @@ import {
   ACCESS_TABLES,
   ACCESS_USER_COLUMNS,
   BASE_USER_COLUMNS,
+  CHECK_QUEUE_TOKEN_COLUMNS,
   MARKET_AGE_TOKEN_COLUMNS,
   planProductionSchemaRepair,
   type ProductionSchemaSnapshot,
@@ -76,6 +77,7 @@ function describeExpectedState(): string {
     ...BASE_USER_COLUMNS.map((name) => `User.${name}`),
     ...ACCESS_USER_COLUMNS.map((name) => `User.${name}`),
     ...MARKET_AGE_TOKEN_COLUMNS.map((name) => `Token.${name}`),
+    ...CHECK_QUEUE_TOKEN_COLUMNS.map((name) => `Token.${name}`),
     ...ACCESS_TABLES,
     ...ACCESS_ENUMS,
   ].join(', ');

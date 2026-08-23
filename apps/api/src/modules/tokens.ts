@@ -7,6 +7,10 @@ import {
   looksLikeAddress,
   effectiveLiquidityFloor,
   chartState,
+  checkStatus,
+  CHECK_STATUSES,
+  CHECK_STATUS_TEXT,
+  DEFAULT_BACKOFF,
   marketAge,
   marketAgeLabel,
   NEW_MARKET_MAX_AGE_MS,
@@ -15,6 +19,13 @@ import { env } from '../lib/env.js';
 import { prisma } from '../lib/prisma.js';
 import { SUPPORTED_INTERVALS, isMarketDataSupported } from '../services/market-data.js';
 import { requestCandlesSoon } from '../workers/candle-builder.js';
+import { markHot, markHotFromList, hotCount, hotTokens } from '../workers/hot-tokens.js';
+import {
+  PRICE_STALE_AFTER_MS,
+  COLD_BATCH,
+  COLD_INTERVAL_MS,
+  priceMetrics,
+} from '../workers/price-updater.js';
 import { serializeResearch } from '../services/research.js';
 import { RULES_VERSION } from '../workers/scam-checker.js';
 import { MARKET_DATA_SOURCE } from '../services/okx-market.js';
@@ -53,6 +64,63 @@ import { cached } from '../lib/cache.js';
  * токенов с ростом на 120000%, а не рынок.
  */
 const CHANGE_SORT_LIQUIDITY_FLOOR = 100_000;
+
+/** Предел попыток очереди. Берётся из политики, а не дублируется числом. */
+const MAX_CHECK_ATTEMPTS = DEFAULT_BACKOFF.maxAttempts;
+
+/**
+ * Состояние проверки для ответа.
+ *
+ * Одна функция на все маршруты: список, карточка и разбор обязаны
+ * называть одно и то же состояние одним словом, иначе человек видит
+ * «Проверен» в списке и «Ожидает проверки» в карточке того же токена.
+ */
+function checkStatusOf(t: {
+  riskLevel?: string | null;
+  scamCheckedAt?: Date | null;
+  scamRulesVersion?: number | null;
+  scamProviderError?: boolean | null;
+  riskCodes?: string[] | null;
+}) {
+  /*
+   * Отсутствующие поля читаются как «ничего не известно», а не роняют
+   * ответ. Витрина публичная и должна отдаваться даже над строкой,
+   * которая старше последней миграции: пятисотая на списке токенов
+   * хуже, чем честное «ожидает проверки».
+   */
+  const status = checkStatus({
+    riskLevel: t.riskLevel ?? null,
+    checkedAt: t.scamCheckedAt ?? null,
+    rulesVersion: t.scamRulesVersion ?? null,
+    currentRulesVersion: RULES_VERSION,
+    providerError: t.scamProviderError ?? false,
+    // Проверка прошла, но ни один источник безопасности не ответил.
+    // От сбоя отличается тем, что ожидание не поможет.
+    insufficientData: (t.riskCodes ?? []).includes('SECURITY_DATA_UNAVAILABLE'),
+  });
+
+  return { checkStatus: status, checkStatusText: CHECK_STATUS_TEXT[status] };
+}
+
+/**
+ * Возраст котировки.
+ *
+ * Отдаётся всегда, включая `null`. Пустое значение означает «цена
+ * ни разу не обновлялась после импорта», и это не то же самое, что
+ * «обновлена только что»: интерфейс обязан различать их, иначе
+ * покажет вчерашнее число как текущее.
+ */
+function priceFreshness(priceUpdatedAt: Date | null) {
+  const ageMs = priceUpdatedAt == null ? null : Date.now() - priceUpdatedAt.getTime();
+
+  return {
+    priceUpdatedAt,
+    priceAgeMs: ageMs,
+    // Неизвестный возраст считается устаревшим: отсутствие сведений
+    // о свежести — не сведения о свежести.
+    priceStale: ageMs == null || ageMs > PRICE_STALE_AFTER_MS,
+  };
+}
 
 const SORTS = {
   volume: { volume24hUsd: 'desc' },
@@ -145,13 +213,119 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
          * «успели столько».
          */
         budgetSeconds: z.number().int().min(5).max(30).default(20),
+        /**
+         * Сбросить состояние повторов у исчерпавших попытки.
+         *
+         * Без этого маршрут не мог сделать ровно то, ради чего его
+         * зовут вручную. Токен, шесть раз подряд уронивший проверку,
+         * выпадает из очереди совсем, а `checkBatch` берёт кандидатов
+         * по той же политике — то есть исчерпанные записи не проверял
+         * и ручной вызов.
+         *
+         * По умолчанию выключено, и это не осторожность ради
+         * осторожности: сброс стирает след того, что запись стабильно
+         * не проверяется, и делать это молча нельзя.
+         */
+        apply: z.boolean().default(false),
       })
       .parse(req.body ?? {});
 
     const { checkBatch } = await import('../workers/scam-checker.js');
+
+    /*
+     * Кого сбрасывать.
+     *
+     * Выборка ограничена тем же лимитом, что и проход: сбросить
+     * тысячу записей одной командой значит вернуть в очередь тысячу
+     * заведомо проблемных токенов и выесть ими всю пропускную
+     * способность.
+     */
+    const exhausted = await prisma.token.findMany({
+      where: { isQuote: false, scamCheckAttempts: { gte: MAX_CHECK_ATTEMPTS } },
+      orderBy: [{ scamCheckedAt: { sort: 'asc', nulls: 'first' } }, { id: 'asc' }],
+      select: { id: true, riskLevel: true },
+      take: body.limit,
+    });
+
+    const totalExhausted = await prisma.token.count({
+      where: { isQuote: false, scamCheckAttempts: { gte: MAX_CHECK_ATTEMPTS } },
+    });
+
+    if (!body.apply) {
+      /*
+       * Пробный прогон ничего не меняет и ничего не запускает.
+       *
+       * Смысл именно в этом: показать, что произойдёт, до того как
+       * оно произойдёт. Проход проверки здесь не запускается тоже —
+       * иначе «пробный» означало бы «частично настоящий».
+       */
+      return {
+        mode: 'dry-run' as const,
+        wouldReset: exhausted.length,
+        totalExhausted,
+        blockedAmongThem: exhausted.filter((t) => t.riskLevel === 'blocked').length,
+        note:
+          totalExhausted === 0
+            ? 'Исчерпавших попытки записей нет: очередь разбирает всё сама.'
+            : `Будет сброшено ${exhausted.length} из ${totalExhausted}. ` +
+              'Повторите с apply: true. Сброс касается только счётчика попыток: ' +
+              'блокировки, коды причин и скрытие остаются как есть, ' +
+              'до нового успешного вердикта.',
+      };
+    }
+
+    /*
+     * Сбрасывается ровно состояние повторов.
+     *
+     * Ни `riskLevel`, ни `riskCodes`, ни `isHidden` здесь не трогаются
+     * намеренно. Сброс попыток — это разрешение попробовать ещё раз,
+     * а не отмена вердикта: заблокированный токен остаётся
+     * заблокированным, пока новая проверка не скажет иного.
+     *
+     * Операция идемпотентна: повторный вызов над теми же записями
+     * запишет те же значения.
+     */
+    const reset = await prisma.$transaction(async (tx) => {
+      const updated = await tx.token.updateMany({
+        where: { id: { in: exhausted.map((t) => t.id) } },
+        data: {
+          scamCheckAttempts: 0,
+          scamCheckNextAt: null,
+          scamProviderError: false,
+          /*
+           * `checkBatch` выбирает никогда не проверенные, устаревшие
+           * или проверенные по прежней версии правил. Одного сброса
+           * попыток недостаточно: свежая неудача иначе останется вне
+           * выборки до следующего планового окна. null возвращает её
+           * в очередь немедленно, не отменяя сохранённый вердикт.
+           */
+          scamCheckedAt: null,
+        },
+      });
+
+      await tx.auditLog.create({
+        data: {
+          actorId: req.user.sub,
+          action: 'tokens.recheck.reset',
+          entity: 'Token',
+          entityId: null,
+          // Идентификаторы токенов — не персональные данные, и без них
+          // журнал не отвечает на вопрос «что именно трогали».
+          before: { exhausted: totalExhausted } as never,
+          after: { reset: updated.count, ids: exhausted.map((t) => t.id) } as never,
+          ip: req.ip,
+        },
+      });
+
+      return updated;
+    });
+
     const result = await checkBatch(body.limit, { budgetMs: body.budgetSeconds * 1000 });
 
     return {
+      mode: 'applied' as const,
+      reset: reset.count,
+      totalExhausted,
       ...result,
       note: result.timedOut
         ? `Проход остановлен по времени: разобрано ${result.checked}, ` +
@@ -164,25 +338,206 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
     };
   });
 
+  /**
+   * Сколько токенов в каком состоянии проверки.
+   *
+   * Считается перебором строк, а не набором `count` с условиями,
+   * и это осознанный размен. Условия пришлось бы писать вторым
+   * выражением той же классификации — то есть сверять её саму с собой,
+   * и любое расхождение проявилось бы как «проверено 148 из 152»
+   * при пустом списке проверенных.
+   *
+   * Колонок читается пять, строк — вся видимая витрина, результат
+   * живёт в кеше полминуты. Для диагностики этого достаточно.
+   */
   app.get('/tokens/check-status', async () => {
-    const base = { isQuote: false, isHidden: false } as const;
+    const value = await cached(
+      'tokens:check-status',
+      async () => {
+        const rows = await prisma.token.findMany({
+          where: { isQuote: false, isHidden: false },
+          select: {
+            riskLevel: true,
+            riskCodes: true,
+            scamCheckedAt: true,
+            scamRulesVersion: true,
+            scamProviderError: true,
+          },
+        });
 
-    const [total, ok, warn, blocked, unchecked, stale] = await Promise.all([
+        const byStatus: Record<string, number> = {};
+        for (const s of CHECK_STATUSES) byStatus[s] = 0;
+
+        for (const r of rows) byStatus[checkStatusOf(r).checkStatus]!++;
+
+        return {
+          total: rows.length,
+          byStatus,
+
+          /*
+           * Прежние имена оставлены: интерфейс читает их, и ломать
+           * его одним махом незачем. Значения теперь берутся
+           * из той же классификации, а не считаются отдельно.
+           */
+          ok: byStatus.SAFE!,
+          warn: byStatus.WARNING!,
+          blocked: byStatus.BLOCKED!,
+          unchecked: byStatus.PENDING! + byStatus.INSUFFICIENT_DATA!,
+          stale: byStatus.STALE! + byStatus.PROVIDER_ERROR!,
+        };
+      },
+      { ttlMs: 30_000, staleMs: 5 * 60_000 },
+    );
+
+    return value.value;
+  });
+
+  /**
+   * Здоровье очереди проверки.
+   *
+   * Отвечает на вопрос «почему витрина не обновляется», на который
+   * распределение по статусам не отвечает: статусы говорят, где мы
+   * находимся, а этот маршрут — движемся ли мы вообще.
+   *
+   * Только для администратора и только на чтение. Адресов, символов
+   * и чего-либо пользовательского здесь нет намеренно: это счётчики,
+   * а не выгрузка витрины.
+   */
+  app.get('/tokens/check-queue', { preHandler: app.requireAdmin }, async () => {
+    const base = { isQuote: false } as const;
+    const now = Date.now();
+
+    const [
+      total,
+      neverChecked,
+      outdatedRules,
+      waitingRetry,
+      exhausted,
+      providerErrors,
+      hiddenPending,
+      oldest,
+    ] = await Promise.all([
       prisma.token.count({ where: base }),
-      // «Прошли проверку» — это verified и low, а не всё, что не заблокировано.
-      prisma.token.count({ where: { ...base, riskLevel: { in: [...SAFE_LEVELS] } } }),
-      prisma.token.count({ where: { ...base, riskLevel: { in: ['medium', 'high'] } } }),
-      prisma.token.count({ where: { ...base, riskLevel: 'blocked' } }),
-      prisma.token.count({
-        where: { ...base, OR: [{ riskLevel: null }, { riskLevel: 'pending' }] },
-      }),
-      // Проверенные по устаревшим правилам. Их вердикт формально есть,
-      // но верить ему нельзя — считаем отдельно, иначе «проверено 148
-      // из 152» выглядит как готовность, которой нет.
+      prisma.token.count({ where: { ...base, scamCheckedAt: null } }),
       prisma.token.count({ where: { ...base, scamRulesVersion: { lt: RULES_VERSION } } }),
+      prisma.token.count({ where: { ...base, scamCheckNextAt: { gt: new Date(now) } } }),
+      // Токены, исчерпавшие попытки: они выпали из очереди совсем
+      // и без смены версии правил туда не вернутся.
+      prisma.token.count({ where: { ...base, scamCheckAttempts: { gte: MAX_CHECK_ATTEMPTS } } }),
+      prisma.token.count({ where: { ...base, scamProviderError: true } }),
+      // Находки DexScreener, ждущие проверки. Раньше они висели здесь
+      // вечно: проверка не брала скрытые вовсе.
+      prisma.token.count({ where: { ...base, isHidden: true, scamCheckedAt: null } }),
+      prisma.token.findFirst({
+        where: { ...base, scamCheckedAt: { not: null } },
+        orderBy: { scamCheckedAt: 'asc' },
+        select: { scamCheckedAt: true },
+      }),
     ]);
 
-    return { total, ok, warn, blocked, unchecked, stale };
+    return {
+      rulesVersion: RULES_VERSION,
+      total,
+      neverChecked,
+      outdatedRules,
+      waitingRetry,
+      exhausted,
+      providerErrors,
+      hiddenPending,
+      /**
+       * Возраст самой давней проверки.
+       *
+       * Главное число этого ответа. Если оно растёт от вызова
+       * к вызову, очередь не справляется, и никакая настройка
+       * порогов этого не исправит.
+       */
+      oldestCheckAgeMs:
+        oldest?.scamCheckedAt != null ? now - oldest.scamCheckedAt.getTime() : null,
+      hotTokens: hotCount(now),
+    };
+  });
+
+  /**
+   * Фактическая свежесть цен.
+   *
+   * Считается по базе, а не по настройкам воркера. Разница
+   * принципиальная: настройки говорят, как часто мы намереваемся
+   * обновлять, а `priceUpdatedAt` — как часто получилось. Заявлять
+   * первое вместо второго — это ровно та ошибка, из-за которой
+   * «цены обновляются раз в десять секунд» уживалось с тем, что
+   * они не обновлялись вовсе.
+   */
+  app.get('/admin/price-health', { preHandler: app.requireAdmin }, async () => {
+    const now = Date.now();
+    const hotIds = hotTokens(now);
+
+    const ageOf = (rows: { priceUpdatedAt: Date | null }[]) =>
+      rows
+        .map((r) => (r.priceUpdatedAt == null ? null : now - r.priceUpdatedAt.getTime()))
+        .filter((v): v is number => v != null)
+        .sort((a, b) => a - b);
+
+    const [hotRows, coldRows, neverPriced] = await Promise.all([
+      hotIds.length
+        ? prisma.token.findMany({
+            where: { id: { in: hotIds } },
+            select: { priceUpdatedAt: true },
+          })
+        : Promise.resolve([]),
+      prisma.token.findMany({
+        where: { isHidden: false, isQuote: false },
+        select: { priceUpdatedAt: true },
+      }),
+      prisma.token.count({
+        where: { isHidden: false, isQuote: false, priceUpdatedAt: null },
+      }),
+    ]);
+
+    /**
+     * Персентиль по возрасту.
+     *
+     * Именно p95, а не среднее: среднее прячет хвост, а вопрос
+     * ровно про хвост — сколько токенов показывают вчерашнюю цену.
+     */
+    const p = (sorted: number[], q: number): number | null =>
+      sorted.length === 0 ? null : sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * q))]!;
+
+    const hotAges = ageOf(hotRows);
+    const coldAges = ageOf(coldRows);
+
+    return {
+      hot: {
+        tracked: hotIds.length,
+        priceAgeP50Ms: p(hotAges, 0.5),
+        priceAgeP95Ms: p(hotAges, 0.95),
+        priceAgeMaxMs: hotAges.at(-1) ?? null,
+      },
+      cold: {
+        tracked: coldRows.length,
+        priceAgeP50Ms: p(coldAges, 0.5),
+        priceAgeP95Ms: p(coldAges, 0.95),
+        priceAgeMaxMs: coldAges.at(-1) ?? null,
+        /** Ни разу не обновлялись после импорта. */
+        neverPriced,
+      },
+      /**
+       * Расчётная длительность полного круга.
+       *
+       * Отдаётся рядом с измеренной намеренно: расхождение между ними
+       * означает, что круг идёт не так, как задумано, и это первое,
+       * что стоит заметить.
+       */
+      cycle: {
+        batch: COLD_BATCH,
+        intervalMs: COLD_INTERVAL_MS,
+        expectedFullCycleMs:
+          coldRows.length > 0
+            ? Math.ceil(coldRows.length / COLD_BATCH) * COLD_INTERVAL_MS
+            : 0,
+        measuredFullCycleMs: priceMetrics().lastFullCycleMs,
+      },
+      provider: priceMetrics(),
+    };
   });
 
   /**
@@ -195,14 +550,18 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
    * на трёх четвертях витрины, почти наверняка описывает норму
    * рынка, а не нарушение.
    */
-  app.get('/tokens/risk-breakdown', async (req, reply) => {
+  app.get('/tokens/risk-breakdown', { preHandler: app.requireAdmin }, async (req) => {
     /*
-     * Разбор токена — платная часть терминала.
+     * Только администратору.
      *
-     * Список токенов остаётся открытым: это витрина, по ней человек
-     * решает, стоит ли вообще заводить аккаунт. Закрыто то, ради чего
-     * платят, — разложенная по причинам оценка риска, история цены
-     * и сводка для решения о покупке.
+     * Это не витрина и не карточка токена, а карта нашей защиты:
+     * какое правило сработало сколько раз и на какой доле выдачи.
+     * По ней видно, какой признак дешевле всего обойти, чтобы попасть
+     * в списки, — и отдавать такое публично значит выдавать
+     * инструкцию тем, от кого мы защищаемся.
+     *
+     * Сводное состояние проверки (`/tokens/check-status`) остаётся
+     * открытым: оно нужно интерфейсу и не называет ни одного правила.
      */
     const q = z
       .object({ level: z.enum(['blocked', 'high', 'medium', 'all']).default('blocked') })
@@ -591,6 +950,17 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
       take: q.limit,
     });
 
+    /*
+     * Показанное человеку становится горячим.
+     *
+     * Помечается начало выдачи, а не вся страница: на экране
+     * помещается десяток, а ответ отдаёт до двухсот. Идентификаторы
+     * здесь наши собственные — только что прочитанные из базы,
+     * — поэтому ни несуществующих, ни скрытых среди них не бывает
+     * по построению.
+     */
+    markHotFromList(tokens.map((t) => t.id));
+
     return tokens.map((t) => ({
       id: t.id,
       chain: t.chain,
@@ -628,6 +998,13 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
       scamVerdict: t.scamVerdict,
       scamReasons: t.scamReasons,
       scamCheckedAt: t.scamCheckedAt,
+      // Состояние проверки одним словом. Уровень риска отвечает
+      // «насколько опасно», а человек, глядя на пустой список,
+      // спрашивает «почему здесь ничего нет».
+      ...checkStatusOf(t),
+      // Возраст котировки: без него интерфейс не может отличить
+      // цену минутной давности от вчерашней.
+      ...priceFreshness(t.priceUpdatedAt),
       buys24h: t.buys24h,
       sells24h: t.sells24h,
       socials: t.socials,
@@ -639,6 +1016,16 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
     const t = await prisma.token.findUnique({ where: { id } });
     if (!t || t.isHidden) return reply.code(404).send({ error: 'Токен не найден' });
 
+    /*
+     * Открытая карточка переводит токен в горячие.
+     *
+     * Обычный обход идёт по обороту и до хвоста витрины не доходит,
+     * а открывают чаще всего именно оттуда: по ссылке, из поиска,
+     * из радара. Без этой отметки человек смотрел бы на цену
+     * суточной давности, пока не закроет вкладку.
+     */
+    markHot(t.id);
+
     return {
       ...t,
       priceUsd: t.priceUsd?.toString() ?? null,
@@ -647,6 +1034,8 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
       volume24hUsd: t.volume24hUsd?.toString() ?? null,
       fdvUsd: t.fdvUsd?.toString() ?? null,
       hasChart: t.poolAddress != null,
+      ...checkStatusOf(t),
+      ...priceFreshness(t.priceUpdatedAt),
     };
   });
 

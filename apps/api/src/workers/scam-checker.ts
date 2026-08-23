@@ -9,12 +9,25 @@ import {
   concentrationRulesApply,
   assessRisk,
   DEFAULT_RISK_CONFIG,
+  CHECK_STALE_AFTER_MS,
+  DEV_RUG_HISTORY_FEW_WEIGHT,
+  DEV_RUG_HISTORY_MANY_WEIGHT,
+  DEV_SOLD_PARTIAL_WEIGHT,
+  HIGH_TOP10_CRITICAL_WEIGHT,
+  HOLDING_DOMINANT_WEIGHT,
+  CRITICAL_WEIGHT,
+  nextAttemptState,
+  nextBatch,
+  weightOf,
+  type CheckPriority,
   type ScamSignals,
+  type SourceOutcome,
   type SourceReading,
   type Reason,
   type ChainKey,
   type RwaRegistry,
 } from '@memex/core';
+import { hotTokens, isHot } from './hot-tokens.js';
 import { prisma } from '../lib/prisma.js';
 import { logger } from '../lib/logger.js';
 import { fetchSecurityFacts } from '../services/token-intel.js';
@@ -67,6 +80,17 @@ const BATCH = 8;
 const RECHECK_HOURS = 24;
 
 /**
+ * Сколько кандидатов читать из базы за проход.
+ *
+ * Больше, чем размер пачки, потому что отбор идёт в два шага: база
+ * отдаёт грубо отсортированный срез, а политика очереди выбирает
+ * из него по срочности и по честной доле старым. Читать всю витрину
+ * ради восьми записей незачем, но и брать ровно восемь нельзя —
+ * тогда политике не из чего выбирать.
+ */
+const CANDIDATE_POOL = 120;
+
+/**
  * Версия набора правил.
  *
  * Увеличивается при каждом изменении логики проверки. Токены, у которых
@@ -100,8 +124,22 @@ const RECHECK_HOURS = 24;
  *       ему понизили вес, но оставили в CRITICAL_CODES, где вес
  *       не значит ничего: правка выглядела осмысленной и не делала
  *       ничего. Метка стояла у 54% заблокированных.
+ *   9 — веса вынесены в `risk-weights.ts` и пересчитаны, а сбой
+ *       источника перестал быть приговором.
+ *
+ *       Первое: фильтр «Проверенные» был пуст не из-за проверок,
+ *       а из-за арифметики. Эмиссия не отозвана (25) и LP не залочен
+ *       (15) давали 40 при пороге 30 — то есть обычный мем-коин
+ *       объявлялся рискованнее среднего по рынку. Пороги калибровались
+ *       в версии 4, версии 5–8 добавили полтора десятка кодов,
+ *       а границу не сдвигали.
+ *
+ *       Второе: `.catch(() => null)` стирал разницу между «источник
+ *       ответил, токена не знает» и «источник не ответил». Правило
+ *       «ни один источник не знает токен» выдавало блокирующую
+ *       причину, и токен получал `blocked` за чужой таймаут.
  */
-export const RULES_VERSION = 8;
+export const RULES_VERSION = 9;
 
 let timer: NodeJS.Timeout | null = null;
 let running = false;
@@ -139,18 +177,66 @@ export interface CheckOptions {
   budgetMs?: number;
 }
 
+/**
+ * Результат одного обращения к источнику.
+ *
+ * Ради `outcome` всё и затевалось. Прежде каждый вызов оборачивался
+ * в `.catch(() => null)`, и «источник ответил, что такого токена нет»
+ * становилось неотличимо от «источник не ответил». Дальше правило
+ * «ни один источник не знает токен» выдавало блокирующую причину,
+ * и токен получал `blocked` за таймаут у DexScreener — до самой
+ * следующей смены версии правил.
+ */
+interface Attempt<T> {
+  outcome: SourceOutcome;
+  value: T | null;
+}
+
+/** Запрос к источнику с сохранением причины неудачи. */
+async function attempt<T>(fn: () => Promise<T | null>): Promise<Attempt<T>> {
+  try {
+    const value = await fn();
+    return { outcome: value == null ? 'empty' : 'ok', value };
+  } catch {
+    return { outcome: 'error', value: null };
+  }
+}
+
+/**
+ * То же, но источник может быть неприменим.
+ *
+ * `skipped` — не сбой и не пустой ответ. Ненастроенный OKX или сеть,
+ * которую источник не поддерживает, не должны ни повышать риск,
+ * ни считаться неудачной попыткой.
+ */
+function attemptIf<T>(applicable: boolean, fn: () => Promise<T | null>): Promise<Attempt<T>> {
+  return applicable ? attempt(fn) : Promise.resolve({ outcome: 'skipped', value: null });
+}
+
 export async function checkBatch(
   limit = BATCH,
   opts: CheckOptions = {},
 ): Promise<CheckResult> {
   const budgetMs = opts.budgetMs ?? DEFAULT_BUDGET_MS;
-  const deadline = Date.now() + budgetMs;
-  const stale = new Date(Date.now() - RECHECK_HOURS * 3_600_000);
+  const now = Date.now();
+  const deadline = now + budgetMs;
+  const stale = new Date(now - RECHECK_HOURS * 3_600_000);
 
-  const tokens = await prisma.token.findMany({
+  /*
+   * Кандидаты, из которых политика выберет пачку.
+   *
+   * `isHidden` больше не отсекается. Токены с вкладки DexScreener
+   * заводятся скрытыми, и прежний отбор их не видел вовсе: они
+   * никогда не проверялись, оставались с символом «???» и висели
+   * в «ожидает проверки» вечно — снять флаг мог только админ руками.
+   *
+   * Теперь скрытые проверяются наравне, а видимыми становятся только
+   * по результату. Порядок именно такой: сначала проверить, потом
+   * показать.
+   */
+  const candidateRows = await prisma.token.findMany({
     where: {
       isQuote: false,
-      isHidden: false,
       OR: [
         { scamCheckedAt: null },
         // Устаревшие правила важнее устаревшего времени: токен, проверенный
@@ -165,8 +251,48 @@ export async function checkBatch(
       { scamCheckedAt: { sort: 'asc', nulls: 'first' } },
       { volume24hUsd: 'desc' },
     ],
-    take: limit,
+    take: CANDIDATE_POOL,
   });
+
+  /*
+   * Открытые карточки добираются отдельным запросом.
+   *
+   * Иначе токен, который человек открыл сию секунду, не попал бы
+   * в срез вовсе: срез отсортирован по версии правил и возрасту,
+   * а свежепроверенный токен стоит в самом его конце.
+   */
+  const hotIds = hotTokens(now).filter((id) => !candidateRows.some((t) => t.id === id));
+
+  const hotRows = hotIds.length
+    ? await prisma.token.findMany({ where: { id: { in: hotIds }, isQuote: false } })
+    : [];
+
+  const rows = [...hotRows, ...candidateRows];
+  if (rows.length === 0) return { checked: 0, blocked: 0, warned: 0, ok: 0 };
+
+  const priorityOf = (t: (typeof rows)[number]): CheckPriority => {
+    if (isHot(t.id, now)) return 'opened';
+    // Скрытая находка DexScreener: показывать нечего, пока не проверим.
+    if (t.scamCheckedAt == null) return 'discovered';
+    if (t.scamRulesVersion < RULES_VERSION) return 'outdated-rules';
+    if (now - t.scamCheckedAt.getTime() > CHECK_STALE_AFTER_MS) return 'stale';
+    return 'routine';
+  };
+
+  const picked = nextBatch(
+    rows.map((t) => ({
+      id: t.id,
+      priority: priorityOf(t),
+      checkedAt: t.scamCheckedAt?.getTime() ?? null,
+      attempts: t.scamCheckAttempts,
+      nextAttemptAt: t.scamCheckNextAt?.getTime() ?? null,
+      volume24hUsd: t.volume24hUsd != null ? Number(t.volume24hUsd) : null,
+    })),
+    { now, limit },
+  );
+
+  const byId = new Map(rows.map((t) => [t.id, t]));
+  const tokens = picked.map((c) => byId.get(c.id)!).filter(Boolean);
 
   if (tokens.length === 0) return { checked: 0, blocked: 0, warned: 0, ok: 0 };
 
@@ -199,27 +325,43 @@ export async function checkBatch(
     try {
       const chain = token.chain as ChainKey;
 
-      const [security, pair, okx, advanced, honeypot, rug] = await Promise.all([
-        fetchSecurityFacts(token.chain, token.address).catch(() => null),
-        isDexScreenerSupported(token.chain)
-          ? fetchTokenPair(token.chain, token.address).catch(() => null)
-          : Promise.resolve(null),
-        isOkxConfigured() && isOkxSupported(token.chain)
-          ? fetchOkxTokenDetail(token.chain, token.address).catch(() => null)
-          : Promise.resolve(null),
+      const [securityR, pairR, okxR, advancedR, honeypotR, rugR] = await Promise.all([
+        attempt(() => fetchSecurityFacts(token.chain, token.address)),
+        attemptIf(isDexScreenerSupported(token.chain), () =>
+          fetchTokenPair(token.chain, token.address),
+        ),
+        attemptIf(isOkxConfigured() && isOkxSupported(token.chain), () =>
+          fetchOkxTokenDetail(token.chain, token.address),
+        ),
         // Расширенные сведения: доли insider/bundle/sniper, история
         // создателя, теги. Плановая проверка — как раз тот случай,
         // ради которого этот запрос и делается выборочно.
-        isOkxConfigured() && isOkxSupported(chain)
-          ? fetchAdvancedInfo(chain, token.address, safeCall).catch(() => null)
-          : Promise.resolve(null),
+        attemptIf(isOkxConfigured() && isOkxSupported(chain), () =>
+          fetchAdvancedInfo(chain, token.address, safeCall),
+        ),
         // Симуляция продажи. Единственная проверка, которая не спрашивает
         // мнения, а пробует продать.
-        isHoneypotSupported(chain)
-          ? checkHoneypot(chain, token.address).catch(() => null)
-          : Promise.resolve(null),
-        chain === 'SOLANA' ? checkRugcheck(token.address).catch(() => null) : Promise.resolve(null),
+        attemptIf(isHoneypotSupported(chain), () => checkHoneypot(chain, token.address)),
+        attemptIf(chain === 'SOLANA', () => checkRugcheck(token.address)),
       ]);
+
+      const security = securityR.value;
+      const pair = pairR.value;
+      const okx = okxR.value;
+      const advanced = advancedR.value;
+      const honeypot = honeypotR.value;
+      const rug = rugR.value;
+
+      /*
+       * Сбой источника безопасности.
+       *
+       * Считаются только те, кого мы действительно спрашивали.
+       * Неподдерживаемая сеть или ненастроенный ключ — не сбой,
+       * а отсутствие источника, и наказывать за это токен нельзя:
+       * это наш пробел, а не его свойство.
+       */
+      const securityAttempts = [securityR, advancedR, honeypotR, rugR];
+      const securityFailed = securityAttempts.some((a) => a.outcome === 'error');
 
       const tagReading = advanced ? readTags(advanced.tags) : null;
       const okxRisk = readOkxRisk(advanced?.riskControlLevel ?? null);
@@ -254,25 +396,32 @@ export async function checkBatch(
         },
       ];
 
-      if (isDexScreenerSupported(token.chain)) {
-        readings.push({
-          source: 'DexScreener',
-          live: true,
-          priceUsd: pair?.priceUsd ?? null,
-          liquidityUsd: pair?.liquidityUsd ?? null,
-          volume24hUsd: pair?.volume24hUsd ?? null,
-        });
-      }
+      /*
+       * Исход запроса едет вместе с числами.
+       *
+       * Источник, до которого мы не дозвонились, попадает в сверку
+       * с пометкой `error`, и правило присутствия про него молчит.
+       * Ненастроенный источник помечается `skipped` и не участвует
+       * даже в знаменателе: считать его «не знающим токен» значит
+       * записывать собственный пробел в минус токену.
+       */
+      readings.push({
+        source: 'DexScreener',
+        live: true,
+        outcome: pairR.outcome,
+        priceUsd: pair?.priceUsd ?? null,
+        liquidityUsd: pair?.liquidityUsd ?? null,
+        volume24hUsd: pair?.volume24hUsd ?? null,
+      });
 
-      if (isOkxConfigured() && isOkxSupported(token.chain)) {
-        readings.push({
-          source: 'OKX',
-          live: true,
-          priceUsd: okx?.priceUsd ?? null,
-          liquidityUsd: okx?.liquidityUsd ?? null,
-          volume24hUsd: okx?.volume24hUsd ?? null,
-        });
-      }
+      readings.push({
+        source: 'OKX',
+        live: true,
+        outcome: okxR.outcome,
+        priceUsd: okx?.priceUsd ?? null,
+        liquidityUsd: okx?.liquidityUsd ?? null,
+        volume24hUsd: okx?.volume24hUsd ?? null,
+      });
 
       const cross = crossCheck(readings, { poolAgeHours });
 
@@ -355,14 +504,14 @@ export async function checkBatch(
       const cfg = DEFAULT_RISK_CONFIG;
 
       if (auth.isImpersonation) {
-        reasons.push({ code: 'FAKE_SYMBOL', message: auth.reason!, weight: 100 });
+        reasons.push({ code: 'FAKE_SYMBOL', message: auth.reason!, weight: CRITICAL_WEIGHT });
       }
 
       // Подделка под биржевую бумагу. Блокируется полностью: человек,
       // покупающий «NVDA», рассчитывает на долю в NVIDIA, а не на мем-коин
       // с тем же тикером, и никакое предупреждение этого не исправит.
       if (rwa.isFakeRwa) {
-        reasons.push({ code: 'FAKE_RWA_TICKER', message: rwa.reason!, weight: 100 });
+        reasons.push({ code: 'FAKE_RWA_TICKER', message: rwa.reason!, weight: CRITICAL_WEIGHT });
       }
 
       // Претендует на бумагу, но списка подтверждённых у нас нет.
@@ -370,7 +519,7 @@ export async function checkBatch(
       // в безопасные такой токен не пустим: вес держит его вне
       // строгого режима.
       if (rwa.isUndetermined) {
-        reasons.push({ code: 'UNVERIFIED_RWA_CLAIM', message: rwa.reason!, weight: 40 });
+        reasons.push({ code: 'UNVERIFIED_RWA_CLAIM', message: rwa.reason!, weight: weightOf('UNVERIFIED_RWA_CLAIM') });
       }
 
       // ─── Приговор OKX ─────────────────────────────────────────────
@@ -378,16 +527,16 @@ export async function checkBatch(
       // полное скрытие; уровень 2 — повод для осторожности, а не
       // приговор; ноль не означает ничего.
       if (okxRisk.hardBlock) {
-        reasons.push({ code: 'OKX_HIGH_RISK', message: okxRisk.explanation, weight: 100 });
+        reasons.push({ code: 'OKX_HIGH_RISK', message: okxRisk.explanation, weight: CRITICAL_WEIGHT });
       } else if (okxRisk.band === 'caution') {
-        reasons.push({ code: 'OKX_CAUTION', message: okxRisk.explanation, weight: 20 });
+        reasons.push({ code: 'OKX_CAUTION', message: okxRisk.explanation, weight: weightOf('OKX_CAUTION') });
       }
 
       if (tagReading?.isHoneypot) {
         reasons.push({
           code: 'HONEYPOT',
           message: 'OKX пометил контракт как ловушку',
-          weight: 100,
+          weight: CRITICAL_WEIGHT,
         });
       }
 
@@ -400,21 +549,21 @@ export async function checkBatch(
           message: honeypot.reason
             ? `Симуляция продажи: ${honeypot.reason}`
             : 'Симуляция показала, что продать токен нельзя',
-          weight: 100,
+          weight: CRITICAL_WEIGHT,
         });
       }
       if (honeypot?.sellFailed) {
         reasons.push({
           code: 'SELL_FAILED',
           message: 'Симуляция продажи не прошла',
-          weight: 100,
+          weight: CRITICAL_WEIGHT,
         });
       }
       if (honeypot?.sellTaxPct != null && honeypot.sellTaxPct >= cfg.maxSellTaxPct) {
         reasons.push({
           code: 'HIGH_SELL_TAX',
           message: `Симуляция: налог на продажу ${honeypot.sellTaxPct.toFixed(0)}%`,
-          weight: 100,
+          weight: CRITICAL_WEIGHT,
         });
       }
 
@@ -431,7 +580,7 @@ export async function checkBatch(
           message: worst?.description
             ? `RugCheck: ${worst.description}`
             : `RugCheck: ${worst?.name ?? 'выход из позиции невозможен'}`,
-          weight: 100,
+          weight: CRITICAL_WEIGHT,
         });
       } else if (rug && rug.dangerCount > 0) {
         // Прочие находки уровня danger — повод для осторожности,
@@ -443,7 +592,7 @@ export async function checkBatch(
             .map((r) => r.name)
             .slice(0, 3)
             .join(', ')}`,
-          weight: Math.min(30, rug.dangerCount * 10),
+          weight: Math.min(weightOf('OKX_CAUTION'), rug.dangerCount * 10),
         });
       }
 
@@ -458,7 +607,10 @@ export async function checkBatch(
             (total ? ` из ${total} выпущенных` : ''),
           // Один брошенный токен может быть неудачей, три и больше —
           // это уже способ работы.
-          weight: advanced.devRugPullTokenCount >= 3 ? 100 : 45,
+          weight:
+            advanced.devRugPullTokenCount >= 3
+              ? DEV_RUG_HISTORY_MANY_WEIGHT
+              : DEV_RUG_HISTORY_FEW_WEIGHT,
         });
       }
 
@@ -466,7 +618,7 @@ export async function checkBatch(
         reasons.push({
           code: 'JUPITER_BANNED',
           message: 'Jupiter исключил токен из реестра',
-          weight: 100,
+          weight: CRITICAL_WEIGHT,
         });
       }
       if (jup?.isSuspicious) {
@@ -481,7 +633,7 @@ export async function checkBatch(
           //
           // Веса хватает, чтобы токен не попал в строгий режим,
           // но не хватает, чтобы исчезнуть совсем.
-          weight: 45,
+          weight: weightOf('JUPITER_SUSPICIOUS'),
         });
       }
 
@@ -489,28 +641,28 @@ export async function checkBatch(
         reasons.push({
           code: 'HONEYPOT',
           message: 'Продажа заблокирована контрактом',
-          weight: 100,
+          weight: CRITICAL_WEIGHT,
         });
       }
       if (security?.sellTaxPct != null && security.sellTaxPct >= cfg.maxSellTaxPct) {
         reasons.push({
           code: 'HIGH_SELL_TAX',
           message: `Налог на продажу ${security.sellTaxPct.toFixed(0)}%`,
-          weight: 100,
+          weight: CRITICAL_WEIGHT,
         });
       }
       if (security?.freezable === true) {
         reasons.push({
           code: 'FREEZE_AUTHORITY_ACTIVE',
           message: 'Токен можно заморозить на вашем кошельке',
-          weight: 100,
+          weight: CRITICAL_WEIGHT,
         });
       }
       if (security?.creatorPct != null && security.creatorPct > cfg.maxCreatorPct) {
         reasons.push({
           code: 'CREATOR_CONTROLS_SUPPLY',
           message: `У создателя ${security.creatorPct.toFixed(0)}% предложения`,
-          weight: 100,
+          weight: CRITICAL_WEIGHT,
         });
       }
       // Ноль — это не «неизвестно», а «пул пуст». Прежнее условие
@@ -524,14 +676,14 @@ export async function checkBatch(
         reasons.push({
           code: 'LOW_LIQUIDITY',
           message: `Ликвидность $${Math.round(liquidityUsd).toLocaleString('ru-RU')} — выйти без обвала нельзя`,
-          weight: 100,
+          weight: CRITICAL_WEIGHT,
         });
       }
       for (const s of sanity) {
-        reasons.push({ code: 'IMPLAUSIBLE_METRICS', message: s, weight: 100 });
+        reasons.push({ code: 'IMPLAUSIBLE_METRICS', message: s, weight: CRITICAL_WEIGHT });
       }
       for (const b of cross.blockers) {
-        reasons.push({ code: 'SOURCE_PRICE_MISMATCH', message: b, weight: 100 });
+        reasons.push({ code: 'SOURCE_PRICE_MISMATCH', message: b, weight: CRITICAL_WEIGHT });
       }
 
       // ─── Повышающие риск ──────────────────────────────────────────
@@ -539,26 +691,21 @@ export async function checkBatch(
         reasons.push({
           code: 'MINT_AUTHORITY_ACTIVE',
           message: 'Эмиссию можно допечатать',
-          // Серьёзно, но само по себе не должно прятать токен:
-          // у части живых мем-коинов эмиссия не отозвана, и в паре
-          // с чем-то ещё это уже средний риск.
-          weight: 25,
+          weight: weightOf('MINT_AUTHORITY_ACTIVE'),
         });
       }
       if (security?.lpLocked === false) {
         reasons.push({
           code: 'UNLOCKED_LIQUIDITY',
           message: 'Ликвидность не залочена',
-          // Настоящий риск, но на этом рынке повсеместный. Вес такой,
-          // чтобы он не перевешивал в одиночку.
-          weight: 15,
+          weight: weightOf('UNLOCKED_LIQUIDITY'),
         });
       }
       if (security?.ownerCanModify === true) {
         reasons.push({
           code: 'OWNER_CAN_MODIFY',
           message: 'Владелец может менять правила контракта',
-          weight: 15,
+          weight: weightOf('OWNER_CAN_MODIFY'),
         });
       }
       if (
@@ -569,7 +716,7 @@ export async function checkBatch(
         reasons.push({
           code: 'ELEVATED_SELL_TAX',
           message: `Налог на продажу ${security.sellTaxPct.toFixed(0)}%`,
-          weight: 10,
+          weight: weightOf('ELEVATED_SELL_TAX'),
         });
       }
 
@@ -586,10 +733,10 @@ export async function checkBatch(
           reasons.push({
             code: 'HIGH_TOP10_CONCENTRATION',
             message: `У топ-10 держателей ${top10.toFixed(0)}% предложения`,
-            // Половина предложения у топ-10 — для мем-коина обычное дело:
-            // пул и команда почти всегда там. Тревожно становится за 85%,
-            // где одна продажа обваливает всё.
-            weight: top10 > cfg.criticalConcentrationPct ? 25 : 10,
+            weight:
+              top10 > cfg.criticalConcentrationPct
+                ? HIGH_TOP10_CRITICAL_WEIGHT
+                : weightOf('HIGH_TOP10_CONCENTRATION'),
           });
         }
 
@@ -599,7 +746,10 @@ export async function checkBatch(
           reasons.push({
             code: 'HIGH_DEV_HOLDING',
             message: `У создателя ${advanced.devHoldingPct.toFixed(0)}% предложения`,
-            weight: advanced.devHoldingPct > 40 ? 100 : 35,
+            weight:
+              advanced.devHoldingPct > 40
+                ? HOLDING_DOMINANT_WEIGHT
+                : weightOf('HIGH_DEV_HOLDING'),
           });
         }
 
@@ -610,7 +760,10 @@ export async function checkBatch(
           reasons.push({
             code: 'HIGH_BUNDLE_HOLDING',
             message: `Связанные кошельки держат ${advanced.bundleHoldingPct.toFixed(0)}% предложения`,
-            weight: advanced.bundleHoldingPct > 50 ? 100 : 35,
+            weight:
+              advanced.bundleHoldingPct > 50
+                ? HOLDING_DOMINANT_WEIGHT
+                : weightOf('HIGH_BUNDLE_HOLDING'),
           });
         }
 
@@ -618,7 +771,10 @@ export async function checkBatch(
           reasons.push({
             code: 'SUSPICIOUS_HOLDERS',
             message: `Подозрительные адреса держат ${advanced.suspiciousHoldingPct.toFixed(0)}%`,
-            weight: advanced.suspiciousHoldingPct > 50 ? 100 : 30,
+            weight:
+              advanced.suspiciousHoldingPct > 50
+                ? HOLDING_DOMINANT_WEIGHT
+                : weightOf('SUSPICIOUS_HOLDERS'),
           });
         }
 
@@ -629,7 +785,7 @@ export async function checkBatch(
           reasons.push({
             code: 'HIGH_SNIPER_HOLDING',
             message: `Вошедшие в первом блоке держат ${advanced.sniperHoldingPct.toFixed(0)}%`,
-            weight: 20,
+            weight: weightOf('HIGH_SNIPER_HOLDING'),
           });
         }
       }
@@ -641,13 +797,13 @@ export async function checkBatch(
         reasons.push({
           code: 'DEV_SOLD_HOLDINGS',
           message: 'Создатель продал всю свою долю',
-          weight: 40,
+          weight: weightOf('DEV_SOLD_HOLDINGS'),
         });
       } else if (tagReading?.devSold) {
         reasons.push({
           code: 'DEV_SOLD_HOLDINGS',
           message: 'Создатель продал часть своей доли',
-          weight: 15,
+          weight: DEV_SOLD_PARTIAL_WEIGHT,
         });
       }
 
@@ -656,7 +812,7 @@ export async function checkBatch(
         reasons.push({
           code: 'FEW_HOLDERS',
           message: `Держателей всего ${holders}`,
-          weight: 10,
+          weight: weightOf('FEW_HOLDERS'),
         });
       }
 
@@ -669,7 +825,7 @@ export async function checkBatch(
         reasons.push({
           code: 'SUSPICIOUS_VOLUME',
           message: `Оборот в ${Math.round(volume24hUsd / liquidityUsd)} раз выше ликвидности`,
-          weight: 20,
+          weight: weightOf('SUSPICIOUS_VOLUME'),
         });
       }
 
@@ -683,7 +839,7 @@ export async function checkBatch(
               sells === 0
                 ? `${buys} покупок и ни одной продажи за сутки`
                 : `Покупок в ${(buys / sells).toFixed(0)} раз больше, чем продаж`,
-            weight: sells === 0 ? 35 : 25,
+            weight: weightOf('ONE_SIDED_TRADING'),
           });
         }
       }
@@ -692,9 +848,7 @@ export async function checkBatch(
         reasons.push({
           code: 'YOUNG_POOL',
           message: `Пулу ${poolAgeHours.toFixed(1)} ч — история не сложилась`,
-          // Молодость пула — свойство, а не порок: на вкладке «Новые»
-          // такие токены и ищут.
-          weight: 5,
+          weight: weightOf('YOUNG_POOL'),
         });
       }
 
@@ -709,23 +863,19 @@ export async function checkBatch(
           message: minor
             ? `Ещё ${clone.count - 1} токен(ов) с этим тикером, и этот не крупнейший`
             : `Токенов с тикером ${token.symbol}: ${clone.count}`,
-          weight: minor ? 30 : 10,
+          weight: minor ? weightOf('MINOR_CLONE') : weightOf('DUPLICATE_SYMBOL'),
         });
       }
 
       for (const w of cross.warnings) {
-        reasons.push({ code: 'SINGLE_SOURCE', message: w, weight: 10 });
+        reasons.push({ code: 'SINGLE_SOURCE', message: w, weight: weightOf('SINGLE_SOURCE') });
       }
 
       if (!security?.source) {
         reasons.push({
           code: 'SECURITY_DATA_UNAVAILABLE',
           message: 'Проверка контракта недоступна',
-          // Вес нулевой намеренно: отсутствие проверки уже переводит
-          // токен в pending отдельной веткой. Добавлять за это ещё
-          // и баллы значит наказывать дважды за одно и то же — токен
-          // получал high вместо честного «не проверен».
-          weight: 0,
+          weight: weightOf('SECURITY_DATA_UNAVAILABLE'),
         });
       }
 
@@ -737,7 +887,7 @@ export async function checkBatch(
       // Применяется только к тем, у кого нет критических причин —
       // тратить лимит на уже заблокированный токен незачем.
       let roundTrip: ReturnType<typeof judgeRoundTrip> | null = null;
-      const hasCriticalSoFar = reasons.some((r) => r.weight >= 100);
+      const hasCriticalSoFar = reasons.some((r) => r.weight >= CRITICAL_WEIGHT);
 
       if (!hasCriticalSoFar && isOkxConfigured() && isOkxSupported(token.chain)) {
         const rt = await checkRoundTrip(token.chain, token.address).catch(() => null);
@@ -749,13 +899,13 @@ export async function checkBatch(
             reasons.push({
               code: rt.canSell ? 'CANNOT_SELL_ALL' : 'SELL_FAILED',
               message: roundTrip.reason,
-              weight: 100,
+              weight: CRITICAL_WEIGHT,
             });
           } else if (roundTrip.verdict === 'WARN') {
             reasons.push({
               code: 'COSTLY_ROUND_TRIP',
               message: roundTrip.reason,
-              weight: 20,
+              weight: weightOf('COSTLY_ROUND_TRIP'),
             });
           }
         }
@@ -778,16 +928,60 @@ export async function checkBatch(
       // и подтверждённая токенизированная бумага. Признание сообществом
       // по версии OKX сюда не входит: это репутация, а не проверяемый
       // факт о контракте, и приравнивать её к записи в реестре нельзя.
+      /*
+       * Неполный опрос.
+       *
+       * Либо не ответил источник безопасности, либо сверка рынка
+       * осталась без живых данных. И то и другое — состояние проверки,
+       * а не свойство токена: вердикт откладывается, токен вернётся
+       * в очередь с задержкой.
+       */
+      const providerError = securityFailed || cross.incomplete;
+
       const risk = assessRisk({
         reasons,
         securityChecked,
         isVerifiedAsset: auth.isVerified || rwa.isGenuineRwa,
+        providerError,
       });
 
       // Совместимость со старым полем: часть запросов ещё смотрит
       // на scamVerdict, и оставлять его рассогласованным нельзя.
       const legacyVerdict =
         risk.level === 'blocked' ? 'BLOCK' : risk.level === 'verified' || risk.level === 'low' ? 'OK' : 'WARN';
+
+      /*
+       * Состояние попыток.
+       *
+       * Успех обнуляет счётчик — иначе токен, упавший пять раз
+       * за месяц и с тех пор проверяющийся нормально, однажды упрётся
+       * в предел и выпадет из очереди навсегда.
+       *
+       * Неполный опрос считается неудачей: вердикт не получен,
+       * и повторить надо, но не сразу.
+       */
+      const retry = nextAttemptState(
+        { attempts: token.scamCheckAttempts, nextAttemptAt: null },
+        { ok: !providerError, providerError },
+        Date.now(),
+      );
+
+      /*
+       * Открывать ли скрытый токен.
+       *
+       * Находки DexScreener заводятся скрытыми и до сих пор такими
+       * и оставались: проверка их не видела, символ так и стоял «???».
+       * Теперь порядок обратный — сначала проверить, потом показать.
+       *
+       * Открывается только чистый результат. Замечания оставляют токен
+       * скрытым: он попадёт в отдельный список на разбор, но в общую
+       * витрину непроверенным и сомнительным не выйдет.
+       *
+       * Обратного хода нет: спрятать вручную открытый админом токен
+       * этот код не имеет права, поэтому `isHidden: true` здесь
+       * не пишется никогда.
+       */
+      const unhide = token.isHidden && (risk.level === 'verified' || risk.level === 'low');
 
       await prisma.token.update({
         where: { id: token.id },
@@ -796,14 +990,18 @@ export async function checkBatch(
           riskCodes: risk.codes,
           isRegistered: auth.isVerified,
           scamVerdict: legacyVerdict,
+          scamCheckAttempts: retry.attempts,
+          scamCheckNextAt: retry.nextAttemptAt != null ? new Date(retry.nextAttemptAt) : null,
+          scamProviderError: providerError,
+          ...(unhide ? { isHidden: false } : {}),
           scamReasons: {
             level: risk.level,
             score: risk.score,
             reasons: risk.reasons.map((r) => ({ code: r.code, message: r.message })),
             // Старые поля оставлены: интерфейс переходит на новые
             // постепенно, и ломать его одним махом незачем.
-            blockers: risk.reasons.filter((r) => r.weight >= 100).map((r) => r.message),
-            warnings: risk.reasons.filter((r) => r.weight < 100).map((r) => r.message),
+            blockers: risk.reasons.filter((r) => r.weight >= CRITICAL_WEIGHT).map((r) => r.message),
+            warnings: risk.reasons.filter((r) => r.weight < CRITICAL_WEIGHT).map((r) => r.message),
             sources: {
               goplus: Boolean(security?.source),
               dexscreener: Boolean(pair),
@@ -912,13 +1110,32 @@ export async function checkBatch(
       // может быть как раз тем, который надо заблокировать.
       logger.warn({ err: e?.message, symbol: token.symbol }, 'проверка токена не удалась');
 
-      // Отметку времени ставим всё равно, иначе токен, который стабильно
-      // роняет проверку, будет вечно занимать место в очереди.
-      // Версию не проставляем: токен, который уронил проверку, должен
-      // попасть в неё снова при следующем изменении правил, а не считаться
-      // разобранным.
+      /*
+       * Отметку времени ставим всё равно, иначе токен, который стабильно
+       * роняет проверку, будет вечно занимать место в очереди.
+       * Версию не проставляем: токен, который уронил проверку, должен
+       * попасть в неё снова при следующем изменении правил, а не считаться
+       * разобранным.
+       *
+       * Счётчик попыток растёт, и это и есть защита от круга: после
+       * шести неудач подряд токен перестаёт браться в пачку вовсе —
+       * до смены версии правил или ручного запроса.
+       */
+      const retry = nextAttemptState(
+        { attempts: token.scamCheckAttempts, nextAttemptAt: null },
+        { ok: false },
+        Date.now(),
+      );
+
       await prisma.token
-        .update({ where: { id: token.id }, data: { scamCheckedAt: new Date() } })
+        .update({
+          where: { id: token.id },
+          data: {
+            scamCheckedAt: new Date(),
+            scamCheckAttempts: retry.attempts,
+            scamCheckNextAt: retry.nextAttemptAt != null ? new Date(retry.nextAttemptAt) : null,
+          },
+        })
         .catch(() => undefined);
     }
   }

@@ -16,7 +16,7 @@
  */
 
 import type { ChainKey } from './token-registry.js';
-import type { RiskSignal, CheckStatus } from './risk-completeness.js';
+import type { RiskSignal, SignalStatus } from './risk-completeness.js';
 
 /**
  * Что мы получили от источников.
@@ -62,7 +62,7 @@ export const MIN_HOLDERS_PASS = 25;
  * `true` у поля вида «это ханипот» означает провал, `false` —
  * прохождение, отсутствие — неизвестность. Три исхода, а не два.
  */
-function fromNegativeFlag(value: boolean | null | undefined): CheckStatus {
+function fromNegativeFlag(value: boolean | null | undefined): SignalStatus {
   if (value == null) return 'unknown';
   return value ? 'failed' : 'passed';
 }
@@ -71,7 +71,7 @@ function fromNegativeFlag(value: boolean | null | undefined): CheckStatus {
 function fromThreshold(
   value: number | null | undefined,
   fails: (v: number) => boolean,
-): CheckStatus {
+): SignalStatus {
   if (value == null || !Number.isFinite(value)) return 'unknown';
   return fails(value) ? 'failed' : 'passed';
 }
@@ -90,7 +90,7 @@ export function toRiskSignals(chain: ChainKey, facts: ProviderFacts): RiskSignal
 
   const add = (
     code: string,
-    status: CheckStatus,
+    status: SignalStatus,
     value: string | number | boolean | null | undefined,
     reason?: string,
   ) => {
@@ -124,7 +124,7 @@ export function toRiskSignals(chain: ChainKey, facts: ProviderFacts): RiskSignal
 
   // Замок ликвидности: подтверждается либо флагом, либо долей
   // сожжённого. Одно из двух, но не «нет данных — значит заперта».
-  const lpStatus: CheckStatus =
+  const lpStatus: SignalStatus =
     facts.lpLocked != null
       ? facts.lpLocked
         ? 'passed'

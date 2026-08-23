@@ -7,6 +7,8 @@ import {
   BASELINE_MIGRATION,
   BASE_USER_COLUMNS,
   KNOWN_MIGRATIONS,
+  CHECK_QUEUE_MIGRATION,
+  CHECK_QUEUE_TOKEN_COLUMNS,
   MARKET_AGE_MIGRATION,
   MARKET_AGE_TOKEN_COLUMNS,
   planProductionSchemaRepair,
@@ -53,7 +55,7 @@ function accessOnlySnapshot(): ProductionSchemaSnapshot {
 /** Всё применено. */
 function readySnapshot(): ProductionSchemaSnapshot {
   const s = accessOnlySnapshot();
-  s.tokenColumns = [...s.tokenColumns, ...MARKET_AGE_TOKEN_COLUMNS];
+  s.tokenColumns = [...s.tokenColumns, ...MARKET_AGE_TOKEN_COLUMNS, ...CHECK_QUEUE_TOKEN_COLUMNS];
   s.appliedMigrations = [...KNOWN_MIGRATIONS];
   return s;
 }
@@ -79,7 +81,11 @@ describe('готовая база', () => {
     expect(before.action).toBe('apply-migrations');
 
     const after = accessOnlySnapshot();
-    after.tokenColumns = [...after.tokenColumns, ...MARKET_AGE_TOKEN_COLUMNS];
+    after.tokenColumns = [
+      ...after.tokenColumns,
+      ...MARKET_AGE_TOKEN_COLUMNS,
+      ...CHECK_QUEUE_TOKEN_COLUMNS,
+    ];
     after.appliedMigrations = [...KNOWN_MIGRATIONS];
 
     expect(planProductionSchemaRepair(after)).toEqual({ action: 'ready' });
@@ -87,11 +93,11 @@ describe('готовая база', () => {
 });
 
 describe('переход с прежней схемы', () => {
-  it('база без доступа получает обе миграции', () => {
+  it('база без доступа получает все недостающие миграции', () => {
     expect(planProductionSchemaRepair(legacySnapshot())).toEqual({
       action: 'apply-migrations',
       resolveBaseline: true,
-      pending: [ACCESS_MIGRATION, MARKET_AGE_MIGRATION],
+      pending: [ACCESS_MIGRATION, MARKET_AGE_MIGRATION, CHECK_QUEUE_MIGRATION],
     });
   });
 
@@ -110,7 +116,7 @@ describe('переход с прежней схемы', () => {
     expect(planProductionSchemaRepair(accessOnlySnapshot())).toEqual({
       action: 'apply-migrations',
       resolveBaseline: false,
-      pending: [MARKET_AGE_MIGRATION],
+      pending: [MARKET_AGE_MIGRATION, CHECK_QUEUE_MIGRATION],
     });
   });
 });
@@ -227,7 +233,7 @@ describe('отказ при неожиданном состоянии', () => {
 
   it('пропавший файл нужной миграции останавливает загрузчик', () => {
     const snapshot = legacySnapshot();
-    snapshot.migrationsOnDisk = [BASELINE_MIGRATION, ACCESS_MIGRATION];
+    snapshot.migrationsOnDisk = [BASELINE_MIGRATION, ACCESS_MIGRATION, MARKET_AGE_MIGRATION];
 
     expect(planProductionSchemaRepair(snapshot)).toEqual({
       action: 'refuse',
@@ -250,6 +256,7 @@ describe('схема впереди истории', () => {
   it('колонки возраста есть, записи о миграции нет', () => {
     const snapshot = accessOnlySnapshot();
     snapshot.tokenColumns = [...snapshot.tokenColumns, ...MARKET_AGE_TOKEN_COLUMNS];
+    // Очередь ещё не применялась — до неё проверка просто не дойдёт.
 
     expect(planProductionSchemaRepair(snapshot)).toEqual({
       action: 'refuse',
@@ -259,7 +266,7 @@ describe('схема впереди истории', () => {
 
   it('артефакты доступа есть, записи о миграции нет', () => {
     const snapshot = readySnapshot();
-    snapshot.appliedMigrations = [BASELINE_MIGRATION, MARKET_AGE_MIGRATION];
+    snapshot.appliedMigrations = [BASELINE_MIGRATION, MARKET_AGE_MIGRATION, CHECK_QUEUE_MIGRATION];
 
     expect(planProductionSchemaRepair(snapshot)).toEqual({
       action: 'refuse',

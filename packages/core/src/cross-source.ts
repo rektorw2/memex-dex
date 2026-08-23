@@ -19,9 +19,39 @@
  * и различить их помогает возраст пула.
  */
 
+/**
+ * Чем закончился запрос к источнику.
+ *
+ * Различение обязательное, и его отсутствие стоило дорого. Раньше
+ * каждый вызов оборачивался в `.catch(() => null)`, и «источник
+ * ответил, что такого токена нет» становилось неотличимо от «источник
+ * не ответил». Дальше правило «ни один источник не знает этот токен»
+ * выдавало блокирующую причину — и токен получал `blocked` за то,
+ * что у DexScreener случился таймаут.
+ *
+ * Отказ сети — это факт о сети, а не о токене.
+ */
+export type SourceOutcome =
+  /** Источник ответил и знает токен. */
+  | 'ok'
+  /** Источник ответил и токена не знает. Это сведения. */
+  | 'empty'
+  /** Запрос не удался. Это отсутствие сведений. */
+  | 'error'
+  /** Источник не опрашивался: не настроен или не поддерживает сеть. */
+  | 'skipped';
+
 export interface SourceReading {
   /** Название источника для объяснения расхождения. */
   source: string;
+  /**
+   * Чем закончился запрос.
+   *
+   * Значение по умолчанию выводится из наличия чисел — так старые
+   * вызовы продолжают работать, — но полагаться на вывод не стоит:
+   * именно он и не различает пустой ответ и сбой.
+   */
+  outcome?: SourceOutcome;
   priceUsd: number | null;
   liquidityUsd: number | null;
   volume24hUsd: number | null;
@@ -45,6 +75,20 @@ export interface CrossSourceVerdict {
   known: number;
   /** Сколько источников опрашивалось. */
   queried: number;
+  /**
+   * Сколько живых источников не ответили.
+   *
+   * Пока это число больше нуля, отсутствие сведений о токене ничего
+   * о токене не значит, и блокирующей причины из него не выводится.
+   */
+  failed: number;
+  /**
+   * Опрос неполон: часть источников не ответила.
+   *
+   * Это не оценка токена, а состояние проверки. Вызывающий обязан
+   * перевести токен в «проверить позже», а не в «заблокирован».
+   */
+  incomplete: boolean;
   /** Наибольшее расхождение цены между источниками, доля. */
   priceSpread: number | null;
   /** То же по ликвидности. */
@@ -85,6 +129,16 @@ export const ABSURD_PRICE_SPREAD = 2;
 export const MAX_LIQUIDITY_SPREAD = 3;
 
 /**
+ * Сколько источников должны ответить, чтобы «никто не знает токен»
+ * стало выводом, а не совпадением.
+ *
+ * Двое. Один отрицательный ответ — это мнение одного источника,
+ * и превращать его в блокировку значит верить ему больше, чем
+ * мы верим любому положительному ответу.
+ */
+export const MIN_SOURCES_FOR_ABSENCE = 2;
+
+/**
  * Медиана вместо максимума.
  *
  * Максимум был прежним способом собрать значение из нескольких
@@ -116,11 +170,36 @@ export function crossCheck(
   const blockers: string[] = [];
   const warnings: string[] = [];
 
-  const queried = readings.length;
-  const present = readings.filter(
-    (r) => r.priceUsd != null || r.liquidityUsd != null,
+  const hasNumbers = (r: SourceReading) => r.priceUsd != null || r.liquidityUsd != null;
+
+  /** Исход запроса. Не указан — выводим из наличия чисел. */
+  const outcomeOf = (r: SourceReading): SourceOutcome =>
+    r.outcome ?? (hasNumbers(r) ? 'ok' : 'empty');
+
+  /*
+   * Кто считается источником.
+   *
+   * Не опрошенные не участвуют: делить на количество
+   * нерассмотренных вариантов бессмысленно.
+   *
+   * Наше сохранённое значение — тоже не источник. Оно помечено
+   * `live: false` и давно исключено из сравнения цен, но в счёте
+   * присутствия участвовало, и от этого правило одиночества
+   * срабатывало на ровном месте: при ненастроенном OKX «два
+   * источника» состояли из DexScreener и нашей же записи в базе,
+   * и токен получал замечание за то, что его знает единственный
+   * источник, который вообще был опрошен.
+   */
+  const considered = readings.filter(
+    (r) => r.live !== false && outcomeOf(r) !== 'skipped',
   );
+
+  const queried = considered.length;
+  const present = considered.filter(hasNumbers);
   const known = present.length;
+
+  const failedReadings = considered.filter((r) => outcomeOf(r) === 'error');
+  const failed = failedReadings.length;
 
   // Сверка идёт только между теми, кого спросили сейчас. Наше
   // сохранённое значение в расчёт разброса не входит: сравнивать
@@ -131,13 +210,25 @@ export function crossCheck(
   const priceSpread = spread(live.map((r) => r.priceUsd));
   const liquiditySpread = spread(live.map((r) => r.liquidityUsd));
 
+  /*
+   * Медиана считается по всем числам, включая сохранённое.
+   *
+   * Здесь сохранённое значение уместно, а в счёте присутствия — нет,
+   * и разница не косметическая. Согласованное значение — это ответ
+   * на вопрос «какое число писать в базу», и наша прошлая запись
+   * для него законный кандидат. Присутствие — ответ на вопрос
+   * «сколько посторонних подтверждают существование токена»,
+   * и собственная запись подтверждением не является.
+   */
+  const numbered = readings.filter((r) => outcomeOf(r) !== 'skipped' && hasNumbers(r));
+
   const agreed = {
-    priceUsd: median(present.map((r) => r.priceUsd).filter((v): v is number => v != null)),
+    priceUsd: median(numbered.map((r) => r.priceUsd).filter((v): v is number => v != null)),
     liquidityUsd: median(
-      present.map((r) => r.liquidityUsd).filter((v): v is number => v != null),
+      numbered.map((r) => r.liquidityUsd).filter((v): v is number => v != null),
     ),
     volume24hUsd: median(
-      present.map((r) => r.volume24hUsd).filter((v): v is number => v != null),
+      numbered.map((r) => r.volume24hUsd).filter((v): v is number => v != null),
     ),
   };
 
@@ -174,8 +265,44 @@ export function crossCheck(
   // ─── Присутствие ────────────────────────────────────────────────────
 
   if (known === 0) {
-    blockers.push('Ни один источник не знает этот токен');
-  } else if (known === 1 && queried > 1) {
+    /*
+     * Ключевая развилка.
+     *
+     * «Ни один источник не знает токен» — сильное утверждение,
+     * и делать его можно, только если источники действительно
+     * ответили. Если хоть один запрос не удался, мы не знаем ничего
+     * ни в ту, ни в другую сторону, и превращать собственный
+     * таймаут в приговор токену нельзя.
+     *
+     * Ровно так токен получал `blocked` за сбой сети и оставался
+     * заблокированным до следующей смены версии правил.
+     */
+    if (failed > 0) {
+      warnings.push(
+        `Опрос неполон: не ответили ${failedReadings.map((r) => r.source).join(', ')}`,
+      );
+    } else if (queried < MIN_SOURCES_FOR_ABSENCE) {
+      /*
+       * Один отрицательный ответ — не согласие источников.
+       *
+       * Правило писалось, когда опрашивались трое, и «никто не знает»
+       * означало сходство трёх мнений. При одном живом источнике
+       * оно означает, что один источник не знает токен, — а для свежей
+       * находки это норма: DexScreener отстаёт от собственного же
+       * списка продвигаемых на минуты.
+       *
+       * Блокировать по такому основанию нельзя: это то же самое
+       * «отсутствие данных как доказательство», от которого мы
+       * избавляемся выше, только в другой форме.
+       */
+      warnings.push(
+        `Токен не знает единственный опрошенный источник ` +
+          `(${considered[0]?.source ?? 'нет источников'}) — этого мало для вывода`,
+      );
+    } else {
+      blockers.push('Ни один источник не знает этот токен');
+    }
+  } else if (known === 1 && queried > 1 && failed === 0) {
     const ageHours = opts.poolAgeHours;
 
     // Молодой пул логично известен одному источнику: остальные
@@ -194,5 +321,15 @@ export function crossCheck(
     }
   }
 
-  return { known, queried, priceSpread, liquiditySpread, agreed, blockers, warnings };
+  return {
+    known,
+    queried,
+    failed,
+    incomplete: failed > 0,
+    priceSpread,
+    liquiditySpread,
+    agreed,
+    blockers,
+    warnings,
+  };
 }

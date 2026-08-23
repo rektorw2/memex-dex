@@ -10,6 +10,7 @@ import { radarPerformance } from '../workers/radar-tracker.js';
 import { downsample } from '@memex/core';
 import { riskStateFields } from './radar-risk-state.js';
 import { cached } from '../lib/cache.js';
+import { markHotFromList, LIST_HOT_LIMIT } from '../workers/hot-tokens.js';
 import {
   entitlementOfRequest,
   applyCacheHeaders,
@@ -118,6 +119,34 @@ async function computeRadarSummary(chain?: string) {
   };
 }
 
+/**
+ * Перевести находки радара в горячие токены.
+ *
+ * Ошибка глотается намеренно: это ускорение обновления цен,
+ * а не ответ человеку, и падать из-за него запрос не должен.
+ */
+export async function markRadarFindsHot(
+  events: { chain: string; address: string }[],
+): Promise<void> {
+  if (events.length === 0) return;
+
+  try {
+    const rows = await prisma.token.findMany({
+      where: {
+        isHidden: false,
+        isQuote: false,
+        OR: events.map((e) => ({ chain: e.chain as never, address: e.address })),
+      },
+      select: { id: true },
+      take: LIST_HOT_LIMIT,
+    });
+
+    markHotFromList(rows.map((r) => r.id));
+  } catch {
+    // Молча: горячий список — оптимизация, а не обязательство.
+  }
+}
+
 export const radarRoutes: FastifyPluginAsync = async (app) => {
   /**
    * Лента находок.
@@ -207,6 +236,20 @@ export const radarRoutes: FastifyPluginAsync = async (app) => {
       take: q.limit,
       skip: q.offset,
     });
+
+    /*
+     * Свежие находки тоже становятся горячими.
+     *
+     * Радар — про свежесть, и цена суточной давности рядом со словом
+     * «найдено минуту назад» обесценивает раздел целиком.
+     *
+     * Находка хранит сеть и адрес, а не идентификатор токена, поэтому
+     * нужен отдельный запрос. Он ограничен началом выдачи и идёт
+     * по уникальному индексу (chain, address); токены, которых у нас
+     * нет, просто не найдутся — проверять существование отдельно
+     * незачем.
+     */
+    void markRadarFindsHot(events.slice(0, LIST_HOT_LIMIT));
 
     return {
       sources: { okx: isOkxConfigured(), geckoterminal: true },
