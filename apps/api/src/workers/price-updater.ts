@@ -47,8 +47,8 @@ import { hotTokens } from './hot-tokens.js';
  * открытую карточку раз в минуту бессмысленно.
  */
 
-/** Открытая карточка обновляется почти в реальном времени. */
-const HOT_INTERVAL_MS = 4_000;
+/** Открытая карточка получает новый тик раз в секунду. */
+export const HOT_INTERVAL_MS = 1_000;
 
 /** Холодный круг: щадящий к провайдеру и всё же заметно живой. */
 export const COLD_INTERVAL_MS = 30_000;
@@ -94,7 +94,7 @@ let failures = 0;
  *
  * Пауза общая для горячего и холодного циклов, и это принципиально.
  * Провайдер один; если отступит только холодный, горячий продолжит
- * бить в него каждые четыре секунды — то есть отступа не будет вовсе,
+ * бить в него каждую секунду — то есть отступа не будет вовсе,
  * а будет шторм повторов с двух сторон.
  */
 let pausedUntil = 0;
@@ -193,7 +193,10 @@ interface FetchOutcome {
   report: ProviderReport;
 }
 
-async function fetchPrices(rows: PriceRow[]): Promise<FetchOutcome> {
+async function fetchPrices(
+  rows: PriceRow[],
+  opts: { rpcFallback?: boolean } = {},
+): Promise<FetchOutcome> {
   const prices = new Map<string, number>();
   if (rows.length === 0) return { prices, report: { ...EMPTY_PROVIDER_REPORT } };
 
@@ -227,6 +230,19 @@ async function fetchPrices(rows: PriceRow[]): Promise<FetchOutcome> {
   }
 
   const missing = rows.filter((r) => !prices.has(r.id));
+
+  /*
+   * Горячий секундный цикл не делает поштучный RPC-fallback.
+   *
+   * Один пакет OKX содержит до ста адресов и стоит один запрос.
+   * Превратить его отсутствие в пятьдесят отдельных RPC каждую
+   * секунду означало бы устроить собственный DDoS публичному узлу.
+   * Холодный круг сохраняет fallback: там важнее охват и он идёт
+   * раз в десятки секунд.
+   */
+  if (opts.rpcFallback === false) {
+    return { prices, report: batchReport };
+  }
 
   let rpcOk = 0;
   let rpcEmpty = 0;
@@ -337,9 +353,10 @@ async function applyPrices(
   rows: PriceRow[],
   observedAt: Date,
   failures: number,
+  opts: { rpcFallback?: boolean } = {},
 ): Promise<CycleResult> {
   const startedAt = Date.now();
-  const { prices, report } = await fetchPrices(rows);
+  const { prices, report } = await fetchPrices(rows, opts);
 
   let written = 0;
   let skipped = 0;
@@ -396,7 +413,7 @@ export async function updateHotPrices(): Promise<CycleResult> {
     select: { id: true, chain: true, address: true, symbol: true },
   });
 
-  const result = await applyPrices(rows, new Date(), failures);
+  const result = await applyPrices(rows, new Date(), failures, { rpcFallback: false });
   observeCycle('hot', result);
   return result;
 }

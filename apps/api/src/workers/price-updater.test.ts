@@ -304,6 +304,17 @@ describe('горячий цикл', () => {
     const where = (findManyArgs[0]?.where ?? {}) as { id?: { in?: string[] } };
     expect(where.id?.in).toContain('wif');
   });
+
+  it('не превращает отсутствующую пакетную цену в RPC-залп каждую секунду', async () => {
+    markHot('wif');
+    tokenRows = [token('wif')];
+    rpcPrice = 1;
+
+    await updateHotPrices();
+
+    expect(priceInfoCalls).toBe(1);
+    expect(rpcCalls).toEqual([]);
+  });
 });
 
 describe('общий backoff провайдера', () => {

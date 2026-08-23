@@ -78,6 +78,7 @@ export * from './route-access.js';
 export * from './api-base.js';
 export * from './discovery-filters.js';
 export * from './chart-state.js';
+export * from './chart-live.js';
 
 // Веса вынесены из проверки: россыпью по коду их нельзя было
 // ни прочитать целиком, ни сложить в голове.

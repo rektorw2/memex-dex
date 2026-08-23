@@ -1,11 +1,16 @@
 'use client';
 
 import useSWR from 'swr';
-import { Suspense, useState } from 'react';
+import { Suspense, useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { fetcher, fmtUsd, fmtPrice, fmtPct } from '@/lib/api';
 import { useAccess } from '@/lib/access';
-import { shouldRequestPrivateData, tradePanelState } from '@memex/core';
+import {
+  appendLivePrice,
+  shouldRequestPrivateData,
+  tradePanelState,
+  type LiveChartCandle,
+} from '@memex/core';
 import { TokenLogo } from '@/components/TokenLogo';
 import { TokenList } from '@/components/terminal/TokenList';
 import { ChartPanel } from '@/components/terminal/ChartPanel';
@@ -15,6 +20,21 @@ import { DexScreenerList } from '@/components/terminal/DexScreenerList';
 import { GemsList, type GemToken } from '@/components/terminal/GemsList';
 
 type MarketSource = 'own' | 'gems' | 'dexscreener';
+
+interface LivePrice {
+  priceUsd: string | null;
+  priceChange24h: string | null;
+  observedAt: string | null;
+  serverTime: string;
+  stale: boolean;
+}
+
+interface ChartResponse {
+  state?: string;
+  candles?: LiveChartCandle[];
+  livePriceUsd?: string | null;
+  liveAt?: string | null;
+}
 
 /**
  * Терминал.
@@ -113,11 +133,83 @@ function Terminal() {
   const {
     data: chart,
     mutate: reloadChart,
-  } = useSWR<{ state?: string; candles?: unknown[] }>(
+  } = useSWR<ChartResponse>(
     active ? `/tokens/${active.id}/candles?interval=${interval}` : null,
     fetcher,
     { refreshInterval: 15_000, keepPreviousData: false },
   );
+
+  /*
+   * Одна котировка вместо повторного чтения всей истории.
+   *
+   * Сервер отмечает выбранный токен горячим на каждом таком запросе,
+   * а ценовой воркер обновляет его раз в секунду. Если вкладка закрыта,
+   * запросы прекращаются и горячая метка сама истекает.
+   */
+  const { data: livePrice } = useSWR<LivePrice>(
+    active ? `/tokens/${active.id}/live-price` : null,
+    fetcher,
+    {
+      refreshInterval: 1_000,
+      dedupingInterval: 700,
+      keepPreviousData: false,
+      refreshWhenHidden: false,
+      revalidateOnFocus: true,
+    },
+  );
+
+  /** Секундные свечи существуют ровно пока открыт этот токен. */
+  const [secondSeries, setSecondSeries] = useState<{
+    tokenId: string | null;
+    candles: LiveChartCandle[];
+  }>({ tokenId: null, candles: [] });
+
+  const observedPrice = livePrice?.priceUsd ?? chart?.livePriceUsd ?? active?.priceUsd ?? null;
+  const observedAt = livePrice?.observedAt ?? chart?.liveAt ?? active?.priceUpdatedAt ?? null;
+  const activeId = active?.id ?? null;
+
+  useEffect(() => {
+    if (!activeId || observedPrice == null || observedAt == null) return;
+
+    setSecondSeries((previous) => {
+      const base = previous.tokenId === activeId ? previous.candles : [];
+      return {
+        tokenId: activeId,
+        // Пять минут секундных наблюдений достаточно для live-вида;
+        // долговременную историю дают старшие таймфреймы.
+        candles: appendLivePrice(base, observedPrice, observedAt, '1s', 300),
+      };
+    });
+  }, [activeId, observedAt, observedPrice]);
+
+  const displayedCandles = useMemo(() => {
+    const historical = Array.isArray(chart?.candles) ? chart.candles : [];
+    const base = interval === '1s'
+      ? secondSeries.tokenId === activeId && secondSeries.candles.length > 0
+        ? secondSeries.candles
+        : historical
+      : historical;
+
+    return appendLivePrice(base, observedPrice, observedAt, interval, 300);
+  }, [activeId, chart?.candles, interval, observedAt, observedPrice, secondSeries]);
+
+  const displayedChart: ChartResponse | undefined = active
+    ? {
+        ...chart,
+        state: displayedCandles.length > 0 ? 'ready' : chart?.state,
+        candles: displayedCandles,
+        liveAt: observedAt,
+      }
+    : undefined;
+
+  const displayedActive: Token | null = active
+    ? {
+        ...active,
+        priceUsd: livePrice?.priceUsd ?? active.priceUsd,
+        priceChange24h: livePrice?.priceChange24h ?? active.priceChange24h,
+        priceUpdatedAt: livePrice?.observedAt ?? active.priceUpdatedAt,
+      }
+    : null;
 
   // Ключ null отключает запрос целиком. Пока права ещё загружаются,
   // портфель тоже не спрашиваем: иначе при обновлении страницы
@@ -233,8 +325,8 @@ function Terminal() {
           {/* График */}
           <section className="panel min-h-0 overflow-hidden">
             <ChartPanel
-              token={active}
-              chart={chart}
+              token={displayedActive}
+              chart={displayedChart}
               onRetry={() => void reloadChart()}
               interval={interval}
               onInterval={setInterval}
@@ -245,7 +337,7 @@ function Terminal() {
           {/* Портфель и торговля */}
           <aside className="scroll-y min-h-0">
             <SidePanel
-              token={active}
+              token={displayedActive}
               quoteToken={quoteToken}
               portfolio={portfolio}
               isLoading={portfolioLoading}
@@ -292,12 +384,14 @@ function Terminal() {
 
         {tab === 'chart' && (
           <>
-            {active && <MobileTokenHeader token={active} onBack={() => setTab('market')} />}
+            {displayedActive && (
+              <MobileTokenHeader token={displayedActive} onBack={() => setTab('market')} />
+            )}
             <div className="panel overflow-hidden">
               <ChartPanel
-                token={active}
-                chart={chart}
-              onRetry={() => void reloadChart()}
+                token={displayedActive}
+                chart={displayedChart}
+                onRetry={() => void reloadChart()}
                 interval={interval}
                 onInterval={setInterval}
                 chartHeight={260}
@@ -322,7 +416,7 @@ function Terminal() {
 
         {tab === 'portfolio' && (
           <SidePanel
-            token={active}
+            token={displayedActive}
             quoteToken={quoteToken}
             portfolio={portfolio}
             isLoading={portfolioLoading}
@@ -660,6 +754,7 @@ function terminalTokenFromGem(gem: GemToken): Token {
     chain: gem.chain,
     address: gem.address,
     priceUsd: gem.priceUsd,
+    priceUpdatedAt: gem.priceUpdatedAt,
     priceChange24h: gem.priceChange24h,
     liquidityUsd: gem.liquidityUsd,
     volume24hUsd: gem.volume24hUsd,

@@ -14,10 +14,12 @@ import {
   marketAge,
   marketAgeLabel,
   NEW_MARKET_MAX_AGE_MS,
+  CHART_INTERVALS,
+  appendLivePrice,
 } from '@memex/core';
 import { env } from '../lib/env.js';
 import { prisma } from '../lib/prisma.js';
-import { SUPPORTED_INTERVALS, isMarketDataSupported } from '../services/market-data.js';
+import { isMarketDataSupported } from '../services/market-data.js';
 import { requestCandlesSoon } from '../workers/candle-builder.js';
 import { markHot, markHotFromList, hotCount, hotTokens } from '../workers/hot-tokens.js';
 import {
@@ -870,7 +872,7 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
     });
 
     // Лента опрашивается каждые три секунды, а горячий ценовой цикл
-    // идёт раз в четыре. Продлеваем метку только первым видимым
+    // идёт раз в секунду. Продлеваем метку только первым видимым
     // токенам: так карточки действительно live, но одна публичная
     // вкладка не может заставить провайдера обновлять все сто строк.
     markHotFromList(
@@ -904,7 +906,10 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
           logoUrl: signal.logoUrl,
           priceUsd: signal.token?.priceUsd?.toString() ?? signal.priceUsd?.toString() ?? null,
           priceChange24h: signal.token?.priceChange24h?.toString() ?? null,
-          priceUpdatedAt: signal.token?.priceUpdatedAt ?? null,
+          // Пока ценовой воркер ещё не сделал первый проход, время
+          // самого сигнала — честная отметка наблюдения для цены,
+          // которую OKX прислал вместе с этим событием.
+          priceUpdatedAt: signal.token?.priceUpdatedAt ?? signal.receivedAt,
           marketCapUsd:
             signal.token?.fdvUsd?.toString() ?? signal.marketCapUsd?.toString() ?? null,
           liquidityUsd: signal.token?.liquidityUsd?.toString() ?? null,
@@ -1264,6 +1269,46 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
     };
   });
 
+  /**
+   * Самая лёгкая котировка для живого графика.
+   *
+   * История свечей тяжёлая: читать её каждую секунду означало бы
+   * повторно сортировать сотни строк ради одного изменившегося числа.
+   * Этот маршрут читает одну строку по первичному ключу и одновременно
+   * продлевает горячую метку, поэтому фоновый цикл знает, что именно
+   * этот токен сейчас открыт у человека.
+   */
+  app.get('/tokens/:id/live-price', async (req, reply) => {
+    const { id } = z.object({ id: z.string() }).parse(req.params);
+    const token = await prisma.token.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        priceUsd: true,
+        priceChange24h: true,
+        priceUpdatedAt: true,
+        createdAt: true,
+      },
+    });
+
+    if (!token) return reply.code(404).send({ error: 'Токен не найден' });
+
+    markHot(token.id);
+    reply.header('Cache-Control', 'no-store');
+
+    return {
+      priceUsd: token.priceUsd?.toString() ?? null,
+      priceChange24h: token.priceChange24h?.toString() ?? null,
+      // Старые строки могут не иметь специальной отметки. createdAt
+      // не выдаётся за точность поставщика, но остаётся фактическим
+      // временем появления котировки и позволяет показать первую
+      // точку сразу.
+      observedAt: token.priceUpdatedAt ?? token.createdAt,
+      serverTime: new Date().toISOString(),
+      stale: priceFreshness(token.priceUpdatedAt).priceStale,
+    };
+  });
+
   app.get('/tokens/:id/candles', async (req, reply) => {
     /*
      * Разбор токена — платная часть терминала.
@@ -1281,16 +1326,22 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
       })
       .parse(req.query);
 
-    if (!SUPPORTED_INTERVALS.includes(q.interval)) {
+    if (!CHART_INTERVALS.includes(q.interval as (typeof CHART_INTERVALS)[number])) {
       return reply.code(400).send({
-        error: `Неподдерживаемый интервал. Доступны: ${SUPPORTED_INTERVALS.join(', ')}`,
+        error: `Неподдерживаемый интервал. Доступны: ${CHART_INTERVALS.join(', ')}`,
       });
     }
 
     const [token, candles] = await Promise.all([
       prisma.token.findUnique({
         where: { id },
-        select: { chain: true, poolAddress: true },
+        select: {
+          chain: true,
+          poolAddress: true,
+          priceUsd: true,
+          priceUpdatedAt: true,
+          createdAt: true,
+        },
       }),
       prisma.candle.findMany({
         where: { tokenId: id, interval: q.interval },
@@ -1313,9 +1364,11 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
       candles.length > 0 ||
       (await prisma.candle.count({ where: { tokenId: id } })) > 0;
 
-    const state = chartState({
-      hasPool: token.poolAddress != null,
-      supported: isMarketDataSupported(token.chain),
+    const historicalState = chartState({
+      // Секундный график строится по живой цене токена и не зависит
+      // от того, успел ли импортёр определить адрес пула.
+      hasPool: q.interval === '1s' || token.poolAddress != null,
+      supported: q.interval === '1s' || isMarketDataSupported(token.chain),
       candleCount: candles.length,
       hasAnyCandles,
     });
@@ -1327,22 +1380,42 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
      * за их пределами не получил бы свечей никогда. Пометка ставится
      * тихо и не задерживает ответ — она лишь двигает приоритет.
      */
-    if (state === 'candles-queued' || state === 'empty-period') {
+    if (
+      q.interval !== '1s' &&
+      (historicalState === 'candles-queued' || historicalState === 'empty-period')
+    ) {
       requestCandlesSoon(id, q.interval);
     }
+
+    markHot(id);
+
+    const stored = candles.reverse().map((c) => ({
+      time: Math.floor(c.openTime.getTime() / 1000),
+      open: Number(c.open),
+      high: Number(c.high),
+      low: Number(c.low),
+      close: Number(c.close),
+      volume: Number(c.volumeUsd),
+    }));
+    const observedAt = token.priceUpdatedAt ?? token.createdAt;
+    const displayed = appendLivePrice(
+      stored,
+      token.priceUsd?.toString() ?? null,
+      observedAt,
+      q.interval,
+      q.limit,
+    );
+    const state = displayed.length > 0 ? 'ready' : historicalState;
 
     return {
       interval: q.interval,
       state,
-      // Формат lightweight-charts: время в секундах, значения числами.
-      candles: candles.reverse().map((c) => ({
-        time: Math.floor(c.openTime.getTime() / 1000),
-        open: Number(c.open),
-        high: Number(c.high),
-        low: Number(c.low),
-        close: Number(c.close),
-        volume: Number(c.volumeUsd),
-      })),
+      // Даже до загрузки истории здесь есть последняя фактическая
+      // цена. Поэтому интерфейс рисует график сразу, а не показывает
+      // экран ожидания фонового импортёра.
+      candles: displayed,
+      livePriceUsd: token.priceUsd?.toString() ?? null,
+      liveAt: observedAt,
     };
   });
 
@@ -1374,7 +1447,7 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
       // должна смениться вместе с ним, а не остаться прежней.
       dataSource: MARKET_DATA_SOURCE,
       updatedAt: new Date().toISOString(),
-      intervals: SUPPORTED_INTERVALS,
+      intervals: CHART_INTERVALS,
     };
   });
 };

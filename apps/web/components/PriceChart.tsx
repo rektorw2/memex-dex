@@ -1,11 +1,20 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { createChart, type IChartApi, type CandlestickData } from 'lightweight-charts';
+import {
+  createChart,
+  type IChartApi,
+  type ISeriesApi,
+  type CandlestickData,
+} from 'lightweight-charts';
 
 interface Props {
   candles: CandlestickData[];
   height?: number;
+  /** Токен плюс таймфрейм. При его смене график подгоняет масштаб заново. */
+  resetKey?: string;
+  /** На секундном графике ось обязана показывать секунды, а не минуты. */
+  secondsVisible?: boolean;
 }
 
 /**
@@ -35,9 +44,11 @@ function priceFormatFor(candles: CandlestickData[]): { precision: number; minMov
   return { precision, minMove: 10 ** -precision };
 }
 
-export function PriceChart({ candles, height = 420 }: Props) {
+export function PriceChart({ candles, height = 420, resetKey = '', secondsVisible = false }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
+  const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
+  const previousRef = useRef<{ key: string; length: number; first: unknown } | null>(null);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -78,7 +89,7 @@ export function PriceChart({ candles, height = 420 }: Props) {
       borderVisible: false,
       wickUpColor: '#22C7B8',
       wickDownColor: '#FF5C6C',
-      priceFormat: { type: 'price', ...priceFormatFor(candles) },
+      priceFormat: { type: 'price', ...priceFormatFor([]) },
       // Линия последней цены: единственная горизонтальная отметка,
       // которую видно без курсора. Две конкурирующие «текущие цены»
       // на графике — верный способ запутать.
@@ -88,9 +99,8 @@ export function PriceChart({ candles, height = 420 }: Props) {
       lastValueVisible: true,
     });
 
-    series.setData(candles);
-    chart.timeScale().fitContent();
     chartRef.current = chart;
+    seriesRef.current = series;
 
     // ResizeObserver вместо события окна: панель меняет ширину и без
     // изменения размера окна — например, когда на мобильном
@@ -104,9 +114,51 @@ export function PriceChart({ candles, height = 420 }: Props) {
 
     return () => {
       ro.disconnect();
+      seriesRef.current = null;
+      chartRef.current = null;
+      previousRef.current = null;
       chart.remove();
     };
-  }, [candles, height]);
+  }, [height]);
+
+  /*
+   * Цена обновляется каждую секунду, но сам canvas не пересоздаётся.
+   *
+   * Прежний effect зависел от `candles`: каждое обновление удаляло
+   * график целиком, создавало новый и сбрасывало масштаб. В live-
+   * режиме это выглядело бы как мигание раз в секунду. Теперь новая
+   * последняя свеча идёт через `update`, а полная история — через
+   * `setData` только при смене токена/таймфрейма или появлении пачки.
+   */
+  useEffect(() => {
+    const chart = chartRef.current;
+    const series = seriesRef.current;
+    if (!chart || !series || candles.length === 0) return;
+
+    const previous = previousRef.current;
+    const first = candles[0]?.time;
+    const last = candles.at(-1)!;
+    const incremental =
+      previous != null &&
+      previous.key === resetKey &&
+      previous.first === first &&
+      candles.length >= previous.length &&
+      candles.length <= previous.length + 1;
+
+    series.applyOptions({
+      priceFormat: { type: 'price', ...priceFormatFor(candles) },
+    });
+    chart.timeScale().applyOptions({ timeVisible: true, secondsVisible });
+
+    if (incremental) {
+      series.update(last);
+    } else {
+      series.setData(candles);
+      chart.timeScale().fitContent();
+    }
+
+    previousRef.current = { key: resetKey, length: candles.length, first };
+  }, [candles, resetKey, secondsVisible]);
 
   return <div ref={containerRef} className="w-full" />;
 }

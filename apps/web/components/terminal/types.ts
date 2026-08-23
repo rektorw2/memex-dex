@@ -1,3 +1,5 @@
+import { CHART_INTERVALS, type ChartInterval } from '@memex/core';
+
 export interface Token {
   id: string;
   symbol: string;
@@ -5,6 +7,7 @@ export interface Token {
   chain: string;
   address: string;
   priceUsd: string | null;
+  priceUpdatedAt?: string | null;
   priceChange24h: string | null;
   liquidityUsd: string | null;
   volume24hUsd: string | null;
@@ -60,10 +63,17 @@ export const QUICK_FILTERS = [
 ] as const;
 
 /** Таймфреймы графика. */
-export const INTERVALS = [
-  ['5m', '5м'],
-  ['15m', '15м'],
-  ['1h', '1ч'],
-  ['4h', '4ч'],
-  ['1d', '1д'],
-] as const;
+const INTERVAL_LABEL: Readonly<Record<ChartInterval, string>> = {
+  '1s': '1с',
+  '5m': '5м',
+  '15m': '15м',
+  '1h': '1ч',
+  '4h': '4ч',
+  '1d': '1д',
+};
+
+// Список берётся из ядра, поэтому API и интерфейс не могут тихо
+// разойтись при следующем добавлении таймфрейма.
+export const INTERVALS = CHART_INTERVALS.map(
+  (value) => [value, INTERVAL_LABEL[value]] as const,
+);

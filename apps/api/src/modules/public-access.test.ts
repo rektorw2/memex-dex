@@ -177,7 +177,9 @@ describe('гостю открыто чтение рынка', () => {
     ['/api/tokens?sort=gainers', 'лидеры роста'],
     ['/api/tokens/tok-1', 'карточка токена'],
     ['/api/tokens/tok-1/overview', 'обзор токена'],
+    ['/api/tokens/tok-1/live-price', 'живая цена'],
     ['/api/tokens/tok-1/candles?interval=1h', 'свечи для графика'],
+    ['/api/tokens/tok-1/candles?interval=1s', 'секундный график'],
     ['/api/market/summary', 'сводка рынка'],
     ['/api/tokens/check-status', 'состояние проверки витрины'],
   ])('%s — %s', async (url) => {
@@ -196,6 +198,40 @@ describe('гостю открыто чтение рынка', () => {
       const body = (await anon(url)).body;
       expect(body, url).not.toContain('UPGRADE_REQUIRED');
     }
+  });
+
+  it('живая цена не кешируется и несёт фактическое время наблюдения', async () => {
+    const response = await anon('/api/tokens/tok-1/live-price');
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toBe('no-store');
+    expect(response.json()).toMatchObject({
+      priceUsd: '2.5',
+      priceChange24h: '42.5',
+      observedAt: token.priceUpdatedAt.toISOString(),
+    });
+  });
+
+  it('секундный график появляется сразу из текущей цены', async () => {
+    const response = await anon('/api/tokens/tok-1/candles?interval=1s');
+    const body = response.json();
+
+    expect(response.statusCode).toBe(200);
+    expect(body.state).toBe('ready');
+    expect(body.candles).toHaveLength(1);
+    expect(body.candles[0]).toMatchObject({
+      open: 2.5,
+      high: 2.5,
+      low: 2.5,
+      close: 2.5,
+    });
+  });
+
+  it('не принимает отсутствующий в интерфейсе минутный таймфрейм', async () => {
+    const response = await anon('/api/tokens/tok-1/candles?interval=1m');
+
+    expect(response.statusCode).toBe(400);
+    expect(response.body).toContain('1s, 5m, 15m, 1h, 4h, 1d');
   });
 
   it('внутреннее распределение правил не открыто гостю', async () => {

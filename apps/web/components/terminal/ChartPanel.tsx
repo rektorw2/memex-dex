@@ -8,7 +8,6 @@ import { fmtPrice, fmtUsd, fmtPct } from '@/lib/api';
 import {
   CHART_STATE_TEXT,
   chartStateRetryable,
-  chartStateWillResolve,
   type ChartState,
 } from '@memex/core';
 import { CHAIN_LABEL, INTERVALS, type Token } from './types';
@@ -26,7 +25,7 @@ import { ScamMark } from './TokenList';
 interface Props {
   token: Token | null;
   /** Ответ маршрута свечей целиком: свечи вместе с причиной их отсутствия. */
-  chart: { state?: string; candles?: unknown[] } | undefined;
+  chart: { state?: string; candles?: unknown[]; liveAt?: string | null } | undefined;
   /** Повторить загрузку. Показывается только при ошибке. */
   onRetry?: () => void;
   interval: string;
@@ -141,23 +140,39 @@ export function ChartPanel({
             {label}
           </button>
         ))}
+        {hasCandles && (
+          <span className="ml-auto inline-flex items-center gap-1.5 text-[10px] font-medium text-up">
+            <span className="relative flex h-1.5 w-1.5" aria-hidden>
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-up opacity-40 motion-reduce:animate-none" />
+              <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-up" />
+            </span>
+            LIVE
+          </span>
+        )}
       </div>
 
       {/* График занимает остаток высоты. */}
       <div className="min-h-0 flex-1 px-2 py-2">
         {hasCandles ? (
-          <PriceChart candles={candles as never} height={chartHeight} />
+          <PriceChart
+            candles={candles as never}
+            height={chartHeight}
+            resetKey={`${token.id}:${interval}`}
+            secondsVisible={interval === '1s'}
+          />
         ) : (
           <div
             style={{ height: chartHeight }}
             className="flex flex-col items-center justify-center gap-1.5 text-center"
           >
             <p className="text-sm text-muted">
-              {chartStateWillResolve(state) ? 'График готовится' : 'Графика нет'}
+              {state === 'failed' ? 'Не удалось загрузить график' : 'Текущая цена недоступна'}
             </p>
 
             <p className="max-w-[320px] text-xs leading-relaxed text-muted/70">
-              {CHART_STATE_TEXT[state]}
+              {state === 'pool-pending' || state === 'candles-queued'
+                ? 'Обновление произойдёт автоматически, как только поставщик отдаст цену.'
+                : CHART_STATE_TEXT[state]}
             </p>
 
             {chartStateRetryable(state) && onRetry && (
