@@ -6,6 +6,7 @@ import {
   type IChartApi,
   type ISeriesApi,
   type CandlestickData,
+  type LineData,
 } from 'lightweight-charts';
 
 interface Props {
@@ -47,7 +48,7 @@ function priceFormatFor(candles: CandlestickData[]): { precision: number; minMov
 export function PriceChart({ candles, height = 420, resetKey = '', secondsVisible = false }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
-  const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
+  const seriesRef = useRef<ISeriesApi<'Candlestick'> | ISeriesApi<'Line'> | null>(null);
   const previousRef = useRef<{ key: string; length: number; first: unknown } | null>(null);
 
   useEffect(() => {
@@ -69,7 +70,7 @@ export function PriceChart({ candles, height = 420, resetKey = '', secondsVisibl
       timeScale: {
         borderColor: '#252B35',
         timeVisible: true,
-        secondsVisible: false,
+        secondsVisible,
       },
       crosshair: {
         mode: 1,
@@ -83,21 +84,39 @@ export function PriceChart({ candles, height = 420, resetKey = '', secondsVisibl
       handleScale: { axisPressedMouseMove: { price: false } },
     });
 
-    const series = chart.addCandlestickSeries({
-      upColor: '#22C7B8',
-      downColor: '#FF5C6C',
-      borderVisible: false,
-      wickUpColor: '#22C7B8',
-      wickDownColor: '#FF5C6C',
-      priceFormat: { type: 'price', ...priceFormatFor([]) },
-      // Линия последней цены: единственная горизонтальная отметка,
-      // которую видно без курсора. Две конкурирующие «текущие цены»
-      // на графике — верный способ запутать.
-      priceLineVisible: true,
-      priceLineColor: '#8F98A7',
-      priceLineStyle: 2,
-      lastValueVisible: true,
-    });
+    /*
+     * Одна котировка в секунду не образует полноценную OHLC-свечу:
+     * open/high/low/close равны, и библиотека рисует короткую черту.
+     * Поэтому секундный режим — непрерывная линия последней цены,
+     * а интервалы от пяти минут — настоящие свечи из истории.
+     */
+    const series = secondsVisible
+      ? chart.addLineSeries({
+          color: '#22C7B8',
+          lineWidth: 2,
+          crosshairMarkerVisible: true,
+          crosshairMarkerRadius: 3,
+          priceFormat: { type: 'price', ...priceFormatFor([]) },
+          priceLineVisible: true,
+          priceLineColor: '#8F98A7',
+          priceLineStyle: 2,
+          lastValueVisible: true,
+        })
+      : chart.addCandlestickSeries({
+          upColor: '#22C7B8',
+          downColor: '#FF5C6C',
+          borderVisible: false,
+          wickUpColor: '#22C7B8',
+          wickDownColor: '#FF5C6C',
+          priceFormat: { type: 'price', ...priceFormatFor([]) },
+          // Линия последней цены: единственная горизонтальная отметка,
+          // которую видно без курсора. Две конкурирующие «текущие цены»
+          // на графике — верный способ запутать.
+          priceLineVisible: true,
+          priceLineColor: '#8F98A7',
+          priceLineStyle: 2,
+          lastValueVisible: true,
+        });
 
     chartRef.current = chart;
     seriesRef.current = series;
@@ -119,7 +138,7 @@ export function PriceChart({ candles, height = 420, resetKey = '', secondsVisibl
       previousRef.current = null;
       chart.remove();
     };
-  }, [height]);
+  }, [height, secondsVisible]);
 
   /*
    * Цена обновляется каждую секунду, но сам canvas не пересоздаётся.
@@ -137,7 +156,6 @@ export function PriceChart({ candles, height = 420, resetKey = '', secondsVisibl
 
     const previous = previousRef.current;
     const first = candles[0]?.time;
-    const last = candles.at(-1)!;
     const incremental =
       previous != null &&
       previous.key === resetKey &&
@@ -145,15 +163,30 @@ export function PriceChart({ candles, height = 420, resetKey = '', secondsVisibl
       candles.length >= previous.length &&
       candles.length <= previous.length + 1;
 
-    series.applyOptions({
-      priceFormat: { type: 'price', ...priceFormatFor(candles) },
-    });
-    chart.timeScale().applyOptions({ timeVisible: true, secondsVisible });
+    if (secondsVisible) {
+      const line = series as ISeriesApi<'Line'>;
+      const points: LineData[] = candles.map((candle) => ({
+        time: candle.time,
+        value: candle.close,
+      }));
 
-    if (incremental) {
-      series.update(last);
+      line.applyOptions({
+        priceFormat: { type: 'price', ...priceFormatFor(candles) },
+      });
+
+      if (incremental) line.update(points.at(-1)!);
+      else line.setData(points);
     } else {
-      series.setData(candles);
+      const candlesticks = series as ISeriesApi<'Candlestick'>;
+      candlesticks.applyOptions({
+        priceFormat: { type: 'price', ...priceFormatFor(candles) },
+      });
+
+      if (incremental) candlesticks.update(candles.at(-1)!);
+      else candlesticks.setData(candles);
+    }
+
+    if (!incremental) {
       chart.timeScale().fitContent();
     }
 

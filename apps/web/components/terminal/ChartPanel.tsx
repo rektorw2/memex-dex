@@ -25,7 +25,7 @@ import { ScamMark } from './TokenList';
 interface Props {
   token: Token | null;
   /** Ответ маршрута свечей целиком: свечи вместе с причиной их отсутствия. */
-  chart: { state?: string; candles?: unknown[]; liveAt?: string | null } | undefined;
+  chart: { state?: string; candles?: unknown[]; liveAt?: string | null; live?: boolean } | undefined;
   /** Повторить загрузку. Показывается только при ошибке. */
   onRetry?: () => void;
   interval: string;
@@ -140,7 +140,7 @@ export function ChartPanel({
             {label}
           </button>
         ))}
-        {hasCandles && (
+        {hasCandles && chart?.live === true && (
           <span className="ml-auto inline-flex items-center gap-1.5 text-[10px] font-medium text-up">
             <span className="relative flex h-1.5 w-1.5" aria-hidden>
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-up opacity-40 motion-reduce:animate-none" />

@@ -34,6 +34,7 @@ interface ChartResponse {
   candles?: LiveChartCandle[];
   livePriceUsd?: string | null;
   liveAt?: string | null;
+  live?: boolean;
 }
 
 /**
@@ -166,10 +167,14 @@ function Terminal() {
 
   const observedPrice = livePrice?.priceUsd ?? chart?.livePriceUsd ?? active?.priceUsd ?? null;
   const observedAt = livePrice?.observedAt ?? chart?.liveAt ?? active?.priceUpdatedAt ?? null;
+  // Для секундной линии важен момент показа последней известной цены,
+  // а не только момент, когда провайдер впервые прислал это значение.
+  // Иначе неизменившаяся цена оставляет на оси времени пустой разрыв.
+  const sampledAt = livePrice?.serverTime ?? observedAt;
   const activeId = active?.id ?? null;
 
   useEffect(() => {
-    if (!activeId || observedPrice == null || observedAt == null) return;
+    if (!activeId || observedPrice == null || sampledAt == null || livePrice?.stale === true) return;
 
     setSecondSeries((previous) => {
       const base = previous.tokenId === activeId ? previous.candles : [];
@@ -177,20 +182,20 @@ function Terminal() {
         tokenId: activeId,
         // Пять минут секундных наблюдений достаточно для live-вида;
         // долговременную историю дают старшие таймфреймы.
-        candles: appendLivePrice(base, observedPrice, observedAt, '1s', 300),
+        candles: appendLivePrice(base, observedPrice, sampledAt, '1s', 300),
       };
     });
-  }, [activeId, observedAt, observedPrice]);
+  }, [activeId, livePrice?.stale, observedPrice, sampledAt]);
 
   const displayedCandles = useMemo(() => {
     const historical = Array.isArray(chart?.candles) ? chart.candles : [];
-    const base = interval === '1s'
-      ? secondSeries.tokenId === activeId && secondSeries.candles.length > 0
+    if (interval === '1s') {
+      return secondSeries.tokenId === activeId && secondSeries.candles.length > 0
         ? secondSeries.candles
-        : historical
-      : historical;
+        : historical;
+    }
 
-    return appendLivePrice(base, observedPrice, observedAt, interval, 300);
+    return appendLivePrice(historical, observedPrice, observedAt, interval, 300);
   }, [activeId, chart?.candles, interval, observedAt, observedPrice, secondSeries]);
 
   const displayedChart: ChartResponse | undefined = active
@@ -199,6 +204,7 @@ function Terminal() {
         state: displayedCandles.length > 0 ? 'ready' : chart?.state,
         candles: displayedCandles,
         liveAt: observedAt,
+        live: livePrice != null && !livePrice.stale,
       }
     : undefined;
 
