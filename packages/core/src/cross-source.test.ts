@@ -117,10 +117,11 @@ describe('crossCheck — расхождения', () => {
 });
 
 describe('crossCheck — присутствие', () => {
-  it('неизвестный всем токен блокируется', () => {
+  it('неизвестный detail-индексам токен получает замечание, а не блокировку', () => {
     const r = crossCheck([gecko(null, null), dex(null, null)]);
     expect(r.known).toBe(0);
-    expect(r.blockers.some((b) => b.includes('Ни один источник'))).toBe(true);
+    expect(r.blockers).toEqual([]);
+    expect(r.warnings.some((w) => w.includes('detail-ответах'))).toBe(true);
   });
 
   it('молодой пул, известный одному источнику, только предупреждает', () => {

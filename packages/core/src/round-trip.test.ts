@@ -6,12 +6,6 @@ import {
 } from './round-trip.js';
 
 describe('judgeRoundTrip — блокировка', () => {
-  it('нет маршрута на покупку', () => {
-    const d = judgeRoundTrip({ canBuy: false, canSell: false, returnRatio: null });
-    expect(d.verdict).toBe('BLOCK');
-    expect(d.reason).toContain('торговать нечем');
-  });
-
   it('купить можно, продать нельзя — определение ловушки', () => {
     // Здесь не нужны ни списки безопасности, ни статистика сделок:
     // проверка выполнена напрямую.
@@ -78,6 +72,12 @@ describe('judgeRoundTrip — норма', () => {
 });
 
 describe('judgeRoundTrip — неизвестность', () => {
+  it('нет маршрута на покупку — замер не состоялся, а не продажа запрещена', () => {
+    const d = judgeRoundTrip({ canBuy: false, canSell: false, returnRatio: null });
+    expect(d.verdict).toBe('UNKNOWN');
+    expect(d.reason).toContain('замер выхода не выполнен');
+  });
+
   it('неудавшийся замер не выдаётся за проверку', () => {
     // «Не смогли проверить» и «проверили, всё хорошо» — разные вещи,
     // и путать их в этом месте дороже всего.

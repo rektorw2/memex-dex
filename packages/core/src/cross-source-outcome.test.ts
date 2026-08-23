@@ -55,16 +55,18 @@ describe('неответивший источник не обвиняет ток
     expect(v.warnings).toHaveLength(1);
   });
 
-  it('пустой ответ всех источников блокирующую причину даёт', () => {
-    // Здесь источники ответили. «Никто не знает этот токен» —
-    // сведения, и на них можно опираться.
+  it('пустой detail-ответ всех источников не доказывает вредоносность', () => {
+    // Импортёр мог получить токен из list-маршрута того же провайдера,
+    // пока detail-индекс отстаёт. Отсутствие записи — не свойство
+    // контракта и не должно становиться критической причиной.
     const v = crossCheck([
-      saved(null),
+      saved(1),
       live('DexScreener', 'empty'),
       live('OKX', 'empty'),
     ]);
 
-    expect(v.blockers).toHaveLength(1);
+    expect(v.blockers).toEqual([]);
+    expect(v.warnings.join(' ')).toContain('detail-ответах');
     expect(v.incomplete).toBe(false);
   });
 

@@ -65,7 +65,7 @@ let auditEntries: Record<string, unknown>[] = [];
 let checkBatchCalls = 0;
 
 vi.mock('../workers/scam-checker.js', () => ({
-  RULES_VERSION: 9,
+  RULES_VERSION: 10,
   checkBatch: async () => {
     checkBatchCalls++;
     return { checked: 1, blocked: 0, warned: 0, ok: 1, timedOut: false, remaining: 0 };
