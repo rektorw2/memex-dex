@@ -1,7 +1,9 @@
 import { Prisma as P } from '@prisma/client';
+import type { ChainKey } from '@memex/core';
 import { prisma } from '../lib/prisma.js';
 import { logger } from '../lib/logger.js';
 import { fetchOhlcv, isMarketDataSupported } from '../services/market-data.js';
+import { fetchTokenCandles, isOkxSupported } from '../services/okx-market.js';
 
 /**
  * Загрузка свечей для графиков.
@@ -142,14 +144,14 @@ export async function syncCandlesBatch(): Promise<number> {
   const [hotRows, tokens] = await Promise.all([
     wanted.length > 0
       ? prisma.token.findMany({
-          where: { id: { in: wanted }, poolAddress: { not: null } },
-          select: { id: true, chain: true, symbol: true, poolAddress: true },
+          where: { id: { in: wanted } },
+          select: { id: true, chain: true, address: true, symbol: true, poolAddress: true },
         })
       : Promise.resolve([]),
 
     prisma.token.findMany({
-      where: { poolAddress: { not: null }, isHidden: false },
-      select: { id: true, chain: true, symbol: true, poolAddress: true },
+      where: { isHidden: false },
+      select: { id: true, chain: true, address: true, symbol: true, poolAddress: true },
       orderBy: { volume24hUsd: 'desc' },
       take: 300,
     }),
@@ -170,7 +172,11 @@ export async function syncCandlesBatch(): Promise<number> {
   const seen = new Set(hot.map((t) => t.id));
   const rest = tokens.filter((t) => !seen.has(t.id));
 
-  const candidates = [...hot, ...rest].filter((t) => isMarketDataSupported(t.chain));
+  const candidates = [...hot, ...rest].filter(
+    (t) =>
+      isOkxSupported(t.chain as ChainKey) ||
+      (t.poolAddress != null && isMarketDataSupported(t.chain)),
+  );
   if (candidates.length === 0) return 0;
 
   let processed = 0;
@@ -213,7 +219,21 @@ export async function syncCandlesBatch(): Promise<number> {
         continue;
       }
 
-      const candles = await fetchOhlcv(token.chain, token.poolAddress!, interval, 300);
+      /*
+       * OKX строит OHLCV по адресу токена — это принципиально для GEMS,
+       * где mint известен из Signal сразу, а poolAddress ещё нет.
+       * GeckoTerminal остаётся резервом для уже найденного пула.
+       */
+      let candles = await fetchTokenCandles(
+        token.chain as ChainKey,
+        token.address,
+        interval,
+        299,
+      );
+
+      if (candles.length === 0 && token.poolAddress != null) {
+        candles = await fetchOhlcv(token.chain, token.poolAddress, interval, 300);
+      }
       if (candles.length === 0) continue;
 
       // Пишем одной транзакцией: частично записанный набор свечей

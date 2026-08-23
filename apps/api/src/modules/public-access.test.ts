@@ -25,6 +25,7 @@ import jwt from '@fastify/jwt';
  */
 
 const SECRET = 'тестовый-секрет-достаточной-длины-для-подписи';
+const fetchTokenCandles = vi.hoisted(() => vi.fn());
 
 const token = {
   id: 'tok-1',
@@ -86,7 +87,10 @@ vi.mock('../lib/logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
-vi.mock('../services/okx-market.js', () => ({ MARKET_DATA_SOURCE: 'okx' }));
+vi.mock('../services/okx-market.js', () => ({
+  MARKET_DATA_SOURCE: 'okx',
+  fetchTokenCandles,
+}));
 
 // Заглушки для зависимостей заявок: сюда запрос не доходит вовсе —
 // его отклоняют до исполнения, — но модуль их импортирует.
@@ -122,6 +126,26 @@ vi.mock('../services/service-access.js', () => ({
 let app: FastifyInstance;
 
 beforeEach(async () => {
+  fetchTokenCandles.mockReset();
+  fetchTokenCandles.mockResolvedValue([
+    {
+      openTime: new Date('2026-08-21T23:45:00Z'),
+      open: 2.1,
+      high: 2.3,
+      low: 2,
+      close: 2.2,
+      volumeUsd: 100,
+    },
+    {
+      openTime: new Date('2026-08-21T23:50:00Z'),
+      open: 2.2,
+      high: 2.6,
+      low: 2.1,
+      close: 2.5,
+      volumeUsd: 200,
+    },
+  ]);
+
   app = Fastify();
   await app.register(jwt, { secret: SECRET });
 
@@ -225,6 +249,20 @@ describe('гостю открыто чтение рынка', () => {
       low: 2.5,
       close: 2.5,
     });
+  });
+
+  it('старший таймфрейм получает настоящую историю по адресу без poolAddress', async () => {
+    const response = await anon('/api/tokens/tok-1/candles?interval=5m');
+    const body = response.json();
+
+    expect(response.statusCode).toBe(200);
+    expect(fetchTokenCandles).toHaveBeenCalledWith('SOLANA', token.address, '5m', 299);
+    expect(body.state).toBe('ready');
+    expect(body.candles.length).toBeGreaterThanOrEqual(2);
+    expect(body.candles.slice(0, 2)).toEqual([
+      expect.objectContaining({ open: 2.1, high: 2.3, low: 2, close: 2.2 }),
+      expect.objectContaining({ open: 2.2, high: 2.6, low: 2.1, close: 2.5 }),
+    ]);
   });
 
   it('не принимает отсутствующий в интерфейсе минутный таймфрейм', async () => {

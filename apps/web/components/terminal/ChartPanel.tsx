@@ -58,7 +58,12 @@ export function ChartPanel({
 
   const ch = token.priceChange24h == null ? null : Number(token.priceChange24h);
   const candles = chart?.candles;
-  const hasCandles = Array.isArray(candles) && candles.length > 0;
+  // Одна текущая цена на старшем интервале — ещё не график: она
+  // растягивается в ровную линию на всю ширину и выглядит поломкой.
+  // Для 1s одной точки достаточно, потому что следующие появляются
+  // каждую секунду; для OHLCV нужны хотя бы две фактические свечи.
+  const hasCandles =
+    Array.isArray(candles) && candles.length >= (interval === '1s' ? 1 : 2);
 
   /*
    * Причина приходит с сервера, а не выводится здесь.
@@ -166,7 +171,7 @@ export function ChartPanel({
             className="flex flex-col items-center justify-center gap-1.5 text-center"
           >
             <p className="text-sm text-muted">
-              {state === 'failed' ? 'Не удалось загрузить график' : 'Текущая цена недоступна'}
+              {state === 'failed' ? 'Не удалось загрузить график' : 'История цены недоступна'}
             </p>
 
             <p className="max-w-[320px] text-xs leading-relaxed text-muted/70">

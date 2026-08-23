@@ -67,6 +67,7 @@ export const MARKET_DATA_SOURCE = 'OKX Onchain OS';
 const TTL = {
   hotTokens: 20_000,
   priceInfo: 20_000,
+  candles: 15_000,
   basicInfo: 3 * 3_600_000,
   advancedInfo: 15 * 60_000,
   rwaList: 3 * 3_600_000,
@@ -654,6 +655,115 @@ function parsePriceInfo(raw: unknown): PriceInfo | null {
     },
     txs24h: okxInt(r.txs24H ?? r.txs),
   };
+}
+
+// ─────────────────────────────── Candles ──────────────────────────────────
+
+/** Нормализованная OHLCV-свеча по адресу токена, без зависимости от пула. */
+export interface OkxTokenCandle {
+  openTime: Date;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volumeUsd: number;
+}
+
+/** Имена интервалов в Market API чувствительны к регистру. */
+const CANDLE_BAR: Readonly<Record<string, string>> = {
+  '5m': '5m',
+  '15m': '15m',
+  '1h': '1H',
+  '4h': '4H',
+  // Дневная свеча начинается в UTC, а не в часовом поясе Гонконга.
+  '1d': '1Dutc',
+};
+
+/**
+ * Собрать подписываемый путь запроса свечей.
+ *
+ * Вынесено отдельно, чтобы контрактный тест ловил неверный регистр
+ * `1H`/`4H`, потерю регистра Solana mint и отсутствие ограничения 299.
+ */
+export function tokenCandlePath(
+  chain: ChainKey,
+  address: string,
+  interval: string,
+  limit = 299,
+): string | null {
+  const chainIndex = OKX_CHAIN_INDEX[chain];
+  const bar = CANDLE_BAR[interval];
+  if (!chainIndex || !bar || !address.trim()) return null;
+
+  const normalized = chain === 'SOLANA' ? address.trim() : address.trim().toLowerCase();
+  const params = new URLSearchParams({
+    chainIndex,
+    tokenContractAddress: normalized,
+    bar,
+    limit: String(Math.max(2, Math.min(299, Math.trunc(limit) || 299))),
+  });
+
+  return `/api/v6/dex/market/candles?${params}`;
+}
+
+/** Разобрать массивы `[ts,o,h,l,c,vol,volUsd,confirm]` и упорядочить по времени. */
+export function parseOkxTokenCandles(raw: unknown): OkxTokenCandle[] {
+  return asArray(raw)
+    .flatMap((row) => {
+      if (!Array.isArray(row) || row.length < 7) return [];
+
+      const timestamp = Number(row[0]);
+      const open = Number(row[1]);
+      const high = Number(row[2]);
+      const low = Number(row[3]);
+      const close = Number(row[4]);
+      const volumeUsd = Number(row[6]);
+
+      if (
+        !Number.isFinite(timestamp) ||
+        timestamp <= 0 ||
+        ![open, high, low, close].every((value) => Number.isFinite(value) && value > 0)
+      ) {
+        return [];
+      }
+
+      return [{
+        openTime: new Date(timestamp),
+        open,
+        high,
+        low,
+        close,
+        volumeUsd: Number.isFinite(volumeUsd) && volumeUsd >= 0 ? volumeUsd : 0,
+      }];
+    })
+    .sort((a, b) => a.openTime.getTime() - b.openTime.getTime());
+}
+
+/**
+ * Последние свечи напрямую по адресу токена.
+ *
+ * Это основной путь для GEMS: OKX Signal знает mint сразу, но адрес
+ * наиболее ликвидного пула может появиться у нас позднее. Кеш и общий
+ * лимитер не дают нескольким открытым вкладкам умножить один запрос.
+ */
+export async function fetchTokenCandles(
+  chain: ChainKey,
+  address: string,
+  interval: string,
+  limit = 299,
+): Promise<OkxTokenCandle[]> {
+  const path = tokenCandlePath(chain, address, interval, limit);
+  if (!path || !isOkxConfigured()) return [];
+
+  const bounded = Math.max(2, Math.min(299, Math.trunc(limit) || 299));
+  const key = `okx:candles:${chain}:${address}:${interval}:${bounded}`;
+  const hit = await cached(
+    key,
+    async () => parseOkxTokenCandles(await safeCall<unknown>('GET', path)),
+    { ttlMs: TTL.candles, staleMs: 5 * 60_000 },
+  );
+
+  return hit.value;
 }
 
 // ─────────────────────────── Пулы ликвидности ───────────────────────────────

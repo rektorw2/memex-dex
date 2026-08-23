@@ -16,6 +16,8 @@ import {
   NEW_MARKET_MAX_AGE_MS,
   CHART_INTERVALS,
   appendLivePrice,
+  OKX_CHAIN_INDEX,
+  type ChainKey,
 } from '@memex/core';
 import { env } from '../lib/env.js';
 import { prisma } from '../lib/prisma.js';
@@ -32,6 +34,23 @@ import { serializeResearch } from '../services/research.js';
 import { RULES_VERSION } from '../workers/scam-checker.js';
 import { MARKET_DATA_SOURCE } from '../services/okx-market.js';
 import { cached } from '../lib/cache.js';
+
+/**
+ * Получить историю напрямую по адресу токена.
+ *
+ * `typeof` нужен для изолированных HTTP-тестов, где модуль OKX
+ * подменён минимальной заглушкой только с названием источника.
+ */
+async function immediateTokenCandles(
+  chain: ChainKey,
+  address: string,
+  interval: string,
+  limit: number,
+) {
+  const provider = await import('../services/okx-market.js');
+  if (typeof provider.fetchTokenCandles !== 'function') return [];
+  return provider.fetchTokenCandles(chain, address, interval, limit);
+}
 
 /**
  * Рыночные данные публичны.
@@ -1337,6 +1356,7 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
         where: { id },
         select: {
           chain: true,
+          address: true,
           poolAddress: true,
           priceUsd: true,
           priceUpdatedAt: true,
@@ -1352,6 +1372,49 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
 
     if (!token) return reply.code(404).send({ error: 'Токен не найден' });
 
+    const stored = candles.reverse().map((c) => ({
+      time: Math.floor(c.openTime.getTime() / 1000),
+      open: Number(c.open),
+      high: Number(c.high),
+      low: Number(c.low),
+      close: Number(c.close),
+      volume: Number(c.volumeUsd),
+    }));
+
+    /*
+     * Холодная база не заставляет человека ждать фонового круга.
+     *
+     * OKX Market отдаёт до 299 настоящих OHLCV-свечей прямо по mint.
+     * Это особенно важно для GEMS: Signal уже знает адрес токена,
+     * хотя адрес пула у нас ещё не появился. Сохранённые свечи имеют
+     * приоритет при совпавшем времени, потому что могли обновиться
+     * позднее отдельным воркером.
+     */
+    const remote =
+      q.interval !== '1s' && stored.length < 20
+        ? await immediateTokenCandles(
+            token.chain as ChainKey,
+            token.address,
+            q.interval,
+            Math.min(q.limit, 299),
+          ).catch(() => [])
+        : [];
+
+    const history = [
+      ...new Map(
+        [...remote.map((c) => ({
+          time: Math.floor(c.openTime.getTime() / 1000),
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close,
+          volume: c.volumeUsd,
+        })), ...stored].map((candle) => [candle.time, candle]),
+      ).values(),
+    ]
+      .sort((a, b) => a.time - b.time)
+      .slice(-q.limit);
+
     /*
      * Почему свечей нет — отдельный ответ, а не пустой массив.
      *
@@ -1361,15 +1424,21 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
      * не было. Причины разные, и действия по ним разные.
      */
     const hasAnyCandles =
-      candles.length > 0 ||
+      history.length > 0 ||
       (await prisma.candle.count({ where: { tokenId: id } })) > 0;
+
+    const okxSupportsAddress = OKX_CHAIN_INDEX[token.chain as ChainKey] != null;
 
     const historicalState = chartState({
       // Секундный график строится по живой цене токена и не зависит
-      // от того, успел ли импортёр определить адрес пула.
-      hasPool: q.interval === '1s' || token.poolAddress != null,
-      supported: q.interval === '1s' || isMarketDataSupported(token.chain),
-      candleCount: candles.length,
+      // от того, успел ли импортёр определить адрес пула. Для старших
+      // интервалов OKX также умеет работать прямо по адресу токена.
+      hasPool: q.interval === '1s' || okxSupportsAddress || token.poolAddress != null,
+      supported:
+        q.interval === '1s' || okxSupportsAddress || isMarketDataSupported(token.chain),
+      // Одно значение — это текущая цена, но ещё не график. Готовым
+      // считаем ряд, по которому действительно можно увидеть движение.
+      candleCount: q.interval === '1s' || history.length >= 2 ? history.length : 0,
       hasAnyCandles,
     });
 
@@ -1389,30 +1458,24 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
 
     markHot(id);
 
-    const stored = candles.reverse().map((c) => ({
-      time: Math.floor(c.openTime.getTime() / 1000),
-      open: Number(c.open),
-      high: Number(c.high),
-      low: Number(c.low),
-      close: Number(c.close),
-      volume: Number(c.volumeUsd),
-    }));
     const observedAt = token.priceUpdatedAt ?? token.createdAt;
     const displayed = appendLivePrice(
-      stored,
+      history,
       token.priceUsd?.toString() ?? null,
       observedAt,
       q.interval,
       q.limit,
     );
-    const state = displayed.length > 0 ? 'ready' : historicalState;
+    const state =
+      q.interval === '1s'
+        ? displayed.length > 0 ? 'ready' : historicalState
+        : history.length >= 2 ? 'ready' : historicalState;
 
     return {
       interval: q.interval,
       state,
-      // Даже до загрузки истории здесь есть последняя фактическая
-      // цена. Поэтому интерфейс рисует график сразу, а не показывает
-      // экран ожидания фонового импортёра.
+      // OKX-история приходит в этом же ответе; последняя фактическая
+      // цена дополняет текущую формирующуюся свечу.
       candles: displayed,
       livePriceUsd: token.priceUsd?.toString() ?? null,
       liveAt: observedAt,
