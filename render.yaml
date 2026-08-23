@@ -107,3 +107,19 @@ services:
 
       - key: ZEROX_API_KEY
         sync: false
+
+      # OKX OnchainOS: рынок и живая вкладка GEMS. Секреты задаются
+      # только в Render; WebSocket даёт сигнал сразу, REST страхует
+      # перезапуск и обрыв соединения.
+      - key: OKX_API_KEY
+        sync: false
+      - key: OKX_API_SECRET
+        sync: false
+      - key: OKX_PASSPHRASE
+        sync: false
+      - key: OKX_PROJECT_ID
+        sync: false
+      - key: OKX_WS_ENABLED
+        value: 'true'
+      - key: OKX_SIGNAL_REST_FALLBACK_INTERVAL_MS
+        value: '60000'

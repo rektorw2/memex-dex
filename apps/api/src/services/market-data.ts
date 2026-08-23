@@ -41,32 +41,60 @@ export function isMarketDataSupported(chain: Chain): boolean {
  * Без него импортёр и построитель свечей начнут получать 429 и молча
  * оставят витрину пустой.
  */
-class RateLimiter {
-  private tokens: number;
-  private lastRefill = Date.now();
+export class PacedRateLimiter {
+  private nextAt = 0;
+  private blockedUntil = 0;
+  private tail: Promise<void> = Promise.resolve();
+  private readonly spacingMs: number;
 
-  constructor(private readonly capacity: number, private readonly perMs: number) {
-    this.tokens = capacity;
+  constructor(capacity: number, perMs: number) {
+    this.spacingMs = Math.ceil(perMs / capacity);
   }
 
-  async take(): Promise<void> {
-    for (;;) {
-      const now = Date.now();
-      const elapsed = now - this.lastRefill;
-      if (elapsed >= this.perMs) {
-        this.tokens = this.capacity;
-        this.lastRefill = now;
+  /**
+   * Выдать следующий слот без залпа.
+   *
+   * Прежний token bucket разрешал первые 25 запросов в одну
+   * миллисекунду. Формально минутный бюджет не превышался, но
+   * GeckoTerminal ограничивает и короткие всплески — именно поэтому
+   * в Render четыре OHLCV-запроса одновременно получили 429.
+   */
+  take(): Promise<void> {
+    const ticket = this.tail.then(async () => {
+      for (;;) {
+        const now = Date.now();
+        const target = Math.max(this.nextAt, this.blockedUntil);
+        if (target <= now) break;
+        await new Promise((resolve) => setTimeout(resolve, target - now));
       }
-      if (this.tokens > 0) {
-        this.tokens--;
-        return;
-      }
-      await new Promise((r) => setTimeout(r, this.perMs - elapsed + 50));
-    }
+      this.nextAt = Date.now() + this.spacingMs;
+    });
+
+    // Ошибка одного ожидающего не должна навсегда закрыть очередь.
+    this.tail = ticket.catch(() => undefined);
+    return ticket;
+  }
+
+  /** Остановить всю очередь после ответа 429. */
+  backoff(ms: number): void {
+    this.blockedUntil = Math.max(this.blockedUntil, Date.now() + Math.max(0, ms));
   }
 }
 
-const limiter = new RateLimiter(25, 60_000);
+/*
+ * Двадцать равномерных запросов в минуту вместо залпа из двадцати пяти.
+ * Запас нужен, потому что на Render лимит считается по исходящему IP,
+ * а во время деплоя старый и новый экземпляры могут коротко пересекаться.
+ */
+const limiter = new PacedRateLimiter(20, 60_000);
+
+function retryAfterMs(value: string | null): number | null {
+  if (!value) return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+  const date = Date.parse(value);
+  return Number.isFinite(date) ? Math.max(0, date - Date.now()) : null;
+}
 
 async function get<T>(path: string): Promise<T | null> {
   await limiter.take();
@@ -77,7 +105,9 @@ async function get<T>(path: string): Promise<T | null> {
     });
 
     if (res.status === 429) {
-      logger.warn({ path }, 'GeckoTerminal: превышен лимит запросов');
+      const waitMs = Math.max(60_000, retryAfterMs(res.headers.get('retry-after')) ?? 0);
+      limiter.backoff(waitMs);
+      logger.warn({ path, retryAfterMs: waitMs }, 'GeckoTerminal: превышен лимит запросов');
       return null;
     }
     if (!res.ok) {

@@ -21,6 +21,7 @@ export const BASELINE_MIGRATION = '0_baseline';
 export const ACCESS_MIGRATION = '20260821120000_add_subscriptions_and_trial';
 export const MARKET_AGE_MIGRATION = '20260823040000_add_token_market_age';
 export const CHECK_QUEUE_MIGRATION = '20260823120000_add_check_queue_and_price_age';
+export const OKX_SIGNAL_MIGRATION = '20260823170000_add_okx_signals';
 
 /**
  * Миграции, которые загрузчику разрешено применять.
@@ -34,6 +35,7 @@ export const KNOWN_MIGRATIONS = [
   ACCESS_MIGRATION,
   MARKET_AGE_MIGRATION,
   CHECK_QUEUE_MIGRATION,
+  OKX_SIGNAL_MIGRATION,
 ] as const;
 
 export const BASE_USER_COLUMNS = ['id', 'email', 'passwordHash'] as const;
@@ -73,6 +75,9 @@ export const CHECK_QUEUE_TOKEN_COLUMNS = [
   'scamProviderError',
   'priceUpdatedAt',
 ] as const;
+
+/** История официального Signal — одна новая таблица без изменения старых. */
+export const OKX_SIGNAL_TABLES = ['OkxSignal'] as const;
 
 export interface ProductionSchemaSnapshot {
   userColumns: string[];
@@ -249,6 +254,15 @@ export function planProductionSchemaRepair(
         partial: 'PARTIAL_CHECK_QUEUE_MIGRATION',
         historyAhead: 'CHECK_QUEUE_HISTORY_CONTRADICTS_SCHEMA',
         schemaAhead: 'CHECK_QUEUE_SCHEMA_AHEAD_OF_HISTORY',
+      },
+    },
+    {
+      name: OKX_SIGNAL_MIGRATION,
+      presence: presenceOf(OKX_SIGNAL_TABLES.map((table) => tables.has(table))),
+      reasons: {
+        partial: 'PARTIAL_OKX_SIGNAL_MIGRATION',
+        historyAhead: 'OKX_SIGNAL_HISTORY_CONTRADICTS_SCHEMA',
+        schemaAhead: 'OKX_SIGNAL_SCHEMA_AHEAD_OF_HISTORY',
       },
     },
   ];

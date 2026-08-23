@@ -56,9 +56,14 @@ export function AuthNav() {
   if (!role) {
     return (
       <div className="flex items-center gap-2">
-        <Link href="/login?mode=register" className="btn-ghost tap hidden text-sm sm:inline-flex">
-          Регистрация
-        </Link>
+        {/* Обёртка отвечает за responsive-видимость. `btn-ghost`
+            сам задаёт display и раньше перебивал `hidden`, из-за чего
+            «Регистрация» наезжала на центрированный логотип телефона. */}
+        <span className="hidden sm:inline-flex">
+          <Link href="/login?mode=register" className="btn-ghost tap text-sm">
+            Регистрация
+          </Link>
+        </span>
         <Link href="/login" className="btn-primary tap text-sm">
           Войти
         </Link>

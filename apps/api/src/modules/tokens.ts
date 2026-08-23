@@ -816,6 +816,87 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
       .catch(() => undefined);
   }
 
+  /**
+   * Живая лента OKX Signal для вкладки GEMS.
+   *
+   * У маршрута намеренно нет ни risk-, ни liquidity-, ни chain-фильтров.
+   * Он показывает события провайдера в том порядке, в котором они
+   * появились, включая токены, ещё скрытые в нашей обычной витрине.
+   * GEMS сейчас информационный: ответ не выдаёт торгового разрешения
+   * и не превращает сигнал в рекомендацию или возможность покупки.
+   */
+  app.get('/tokens/gems', async (req, reply) => {
+    const { limit } = z
+      .object({ limit: z.coerce.number().int().min(1).max(200).default(100) })
+      .parse(req.query);
+
+    const signals = await prisma.okxSignal.findMany({
+      orderBy: [{ signaledAt: 'desc' }, { id: 'desc' }],
+      take: limit,
+      // Не тянем JSON-разбор риска и остальные тяжёлые поля Token:
+      // GEMS их не показывает, а маршрут обновляется каждые три секунды.
+      select: {
+        id: true,
+        providerKey: true,
+        chain: true,
+        address: true,
+        symbol: true,
+        name: true,
+        logoUrl: true,
+        signaledAt: true,
+        receivedAt: true,
+        walletTypes: true,
+        triggerWalletCount: true,
+        amountUsd: true,
+        soldRatioPct: true,
+        priceUsd: true,
+        marketCapUsd: true,
+        holders: true,
+        token: {
+          select: {
+            id: true,
+            priceUsd: true,
+            fdvUsd: true,
+            holders: true,
+          },
+        },
+      },
+    });
+
+    // Двухсекундный браузерный кэш сглаживает несколько одновременно
+    // открытых вкладок, но не превращает живой поток в минутную ленту.
+    reply.header('Cache-Control', 'public, max-age=2, stale-while-revalidate=3');
+
+    return {
+      source: 'OKX Signal',
+      updatedAt: new Date().toISOString(),
+      signals: signals.map((signal) => ({
+        id: signal.id,
+        providerKey: signal.providerKey,
+        signaledAt: signal.signaledAt,
+        receivedAt: signal.receivedAt,
+        walletTypes: signal.walletTypes,
+        triggerWalletCount: signal.triggerWalletCount,
+        amountUsd: signal.amountUsd?.toString() ?? null,
+        soldRatioPct: signal.soldRatioPct?.toString() ?? null,
+        signalPriceUsd: signal.priceUsd?.toString() ?? null,
+        signalMarketCapUsd: signal.marketCapUsd?.toString() ?? null,
+        token: {
+          id: signal.token?.id ?? null,
+          chain: signal.chain,
+          address: signal.address,
+          symbol: signal.symbol,
+          name: signal.name,
+          logoUrl: signal.logoUrl,
+          priceUsd: signal.token?.priceUsd?.toString() ?? signal.priceUsd?.toString() ?? null,
+          marketCapUsd:
+            signal.token?.fdvUsd?.toString() ?? signal.marketCapUsd?.toString() ?? null,
+          holders: signal.token?.holders ?? signal.holders,
+        },
+      })),
+    };
+  });
+
   app.get('/tokens', async (req) => {
     const q = z
       .object({
@@ -1227,7 +1308,7 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
      * тихо и не задерживает ответ — она лишь двигает приоритет.
      */
     if (state === 'candles-queued' || state === 'empty-period') {
-      requestCandlesSoon(id);
+      requestCandlesSoon(id, q.interval);
     }
 
     return {

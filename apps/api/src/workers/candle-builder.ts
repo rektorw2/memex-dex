@@ -37,6 +37,49 @@ const INTERVAL_FRESHNESS_MS: Record<string, number> = {
   '1d': 6 * 60 * 60_000,
 };
 
+/** Размер самой свечи — отдельно от частоты её обновления. */
+const INTERVAL_MS: Record<string, number> = {
+  '5m': 5 * 60_000,
+  '15m': 15 * 60_000,
+  '1h': 60 * 60_000,
+  '4h': 4 * 60 * 60_000,
+  '1d': 24 * 60 * 60_000,
+};
+
+/** Когда этот процесс в последний раз успешно получил интервал. */
+const lastFetchedAt = new Map<string, number>();
+
+const freshnessKey = (tokenId: string, interval: string) => `${tokenId}:${interval}`;
+
+/**
+ * Нужен ли новый запрос свечей.
+ *
+ * Время открытия последней свечи нельзя использовать как время
+ * синхронизации. Дневная свеча открыта в полночь, поэтому прежняя
+ * проверка после 06:00 считала её устаревшей каждые двадцать секунд.
+ */
+export function candleRefreshDue(
+  interval: string,
+  newestOpenTime: Date | null,
+  fetchedAt: number | null,
+  now = Date.now(),
+): boolean {
+  const width = INTERVAL_MS[interval];
+  const freshness = INTERVAL_FRESHNESS_MS[interval];
+  if (!width || !freshness || newestOpenTime == null) return true;
+
+  // Внутри одного процесса истина — время успешного запроса. Это
+  // работает и у провайдера, который отдаёт только закрытые свечи.
+  if (fetchedAt != null) return now - fetchedAt >= freshness;
+
+  const currentBucket = Math.floor(now / width) * width;
+  if (newestOpenTime.getTime() < currentBucket) return true;
+
+  // После рестарта текущая свеча уже есть в базе. Принимаем момент
+  // старта за точку синхронизации и не устраиваем стартовый залп.
+  return false;
+}
+
 let running = false;
 /** Позиция в круговом обходе токенов. */
 let cursor = 0;
@@ -53,17 +96,21 @@ let cursor = 0;
  * к старым, потому что ждёт человек, открывший последним.
  */
 const PRIORITY_LIMIT = 25;
-const priority = new Set<string>();
+const priority = new Map<string, Set<string>>();
 
 /** Поставить токен в приоритет. Вызывается из маршрута свечей. */
-export function requestCandlesSoon(tokenId: string): void {
+export function requestCandlesSoon(tokenId: string, interval = '5m'): void {
+  if (!(interval in INTERVAL_FRESHNESS_MS)) return;
+
   // Повторное добавление двигает токен в конец: он снова самый
   // свежий запрос.
+  const intervals = priority.get(tokenId) ?? new Set<string>();
+  intervals.add(interval);
   priority.delete(tokenId);
-  priority.add(tokenId);
+  priority.set(tokenId, intervals);
 
   while (priority.size > PRIORITY_LIMIT) {
-    const oldest = priority.values().next().value as string | undefined;
+    const oldest = priority.keys().next().value as string | undefined;
     if (oldest == null) break;
     priority.delete(oldest);
   }
@@ -72,6 +119,7 @@ export function requestCandlesSoon(tokenId: string): void {
 /** Сброс очереди между тестами. */
 export function resetPriorityForTests(): void {
   priority.clear();
+  lastFetchedAt.clear();
   cursor = 0;
 }
 
@@ -80,10 +128,18 @@ export function priorityQueueSize(): number {
   return priority.size;
 }
 
-export async function syncCandlesBatch(): Promise<number> {
-  const wanted = [...priority];
+/** Какие интервалы ждут — только для контрактных тестов очереди. */
+export function priorityIntervalsForTests(tokenId: string): string[] {
+  return [...(priority.get(tokenId) ?? [])];
+}
 
-  const [hot, tokens] = await Promise.all([
+export async function syncCandlesBatch(): Promise<number> {
+  const wanted = [...priority.keys()];
+  const requestedIntervals = new Map(
+    wanted.map((id) => [id, new Set(priority.get(id) ?? [])]),
+  );
+
+  const [hotRows, tokens] = await Promise.all([
     wanted.length > 0
       ? prisma.token.findMany({
           where: { id: { in: wanted }, poolAddress: { not: null } },
@@ -98,6 +154,14 @@ export async function syncCandlesBatch(): Promise<number> {
       take: 300,
     }),
   ]);
+
+  // Последний открытый токен обслуживается первым, а не после тех,
+  // кто попал в очередь минуту назад.
+  const hotById = new Map(hotRows.map((token) => [token.id, token]));
+  const hot = [...wanted].reverse().flatMap((id) => {
+    const token = hotById.get(id);
+    return token ? [token] : [];
+  });
 
   // Открытые человеком идут первыми и по одному разу: дальше их
   // подхватит обычный круг, если они попадают в топ по объёму.
@@ -119,7 +183,17 @@ export async function syncCandlesBatch(): Promise<number> {
   for (let i = 0; i < BATCH_SIZE && i < candidates.length; i++) {
     const token = candidates[(start + i) % candidates.length]!;
 
-    for (const [interval, freshness] of Object.entries(INTERVAL_FRESHNESS_MS)) {
+    /*
+     * Открытая вкладка просит только выбранный интервал. Прежде один
+     * клик немедленно ставил в очередь все пять таймфреймов, и четыре
+     * из них тратили лимит до того, как человеку отдавался нужный.
+     * Фоновый круг по-прежнему постепенно наполняет остальные.
+     */
+    const intervals = requestedIntervals.get(token.id)
+      ? [...requestedIntervals.get(token.id)!]
+      : Object.keys(INTERVAL_FRESHNESS_MS);
+
+    for (const interval of intervals) {
       // Пропускаем интервалы, обновлённые недавно: лимит запросов дороже
       // лишней точности на дневном графике.
       const newest = await prisma.candle.findFirst({
@@ -128,7 +202,16 @@ export async function syncCandlesBatch(): Promise<number> {
         select: { openTime: true },
       });
 
-      if (newest && Date.now() - newest.openTime.getTime() < freshness) continue;
+      const key = freshnessKey(token.id, interval);
+      const now = Date.now();
+      const fetchedAt = lastFetchedAt.get(key) ?? null;
+      if (!candleRefreshDue(interval, newest?.openTime ?? null, fetchedAt, now)) {
+        // После рестарта в карте ещё нет времени, хотя текущая свеча
+        // уже лежит в базе. Запоминаем его, чтобы позже обновить
+        // формирующуюся свечу по обычной частоте.
+        if (fetchedAt == null) lastFetchedAt.set(key, now);
+        continue;
+      }
 
       const candles = await fetchOhlcv(token.chain, token.poolAddress!, interval, 300);
       if (candles.length === 0) continue;
@@ -168,6 +251,7 @@ export async function syncCandlesBatch(): Promise<number> {
         ),
       );
 
+      lastFetchedAt.set(key, Date.now());
       processed++;
       logger.debug({ symbol: token.symbol, interval, count: candles.length }, 'свечи обновлены');
     }

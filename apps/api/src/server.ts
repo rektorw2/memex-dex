@@ -214,26 +214,29 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     const { guardSchemaOnStartup } = await import('./lib/schema-guard.js');
     const schemaReady = await guardSchemaOnStartup();
 
-    let stopWalletWorkers: (() => void) | null = null;
+    let stopSchemaWorkers: (() => void) | null = null;
 
     if (schemaReady) {
-      const [pool, ledger, discovery, walletRisk] = await Promise.all([
+      const [pool, ledger, discovery, walletRisk, okxSignal] = await Promise.all([
         import('./services/okx-ws-pool.js'),
         import('./workers/wallet-ledger-sync.js'),
         import('./workers/wallet-discovery.js'),
         import('./workers/radar-risk.js'),
+        import('./workers/okx-signal-ingest.js'),
       ]);
 
       pool.startActivityIngest();
       ledger.startLedgerSync();
       discovery.startWalletDiscovery();
       walletRisk.startRadarRisk();
+      okxSignal.startOkxSignalIngest();
 
-      stopWalletWorkers = () => {
+      stopSchemaWorkers = () => {
         pool.stopActivityIngest();
         ledger.stopLedgerSync();
         discovery.stopWalletDiscovery();
         walletRisk.stopRadarRisk();
+        okxSignal.stopOkxSignalIngest();
       };
     } else {
       // Остальное API продолжает работать: недоступность одной
@@ -253,7 +256,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       wallets.stopWalletTracker();
       auto.stopAutoPublisher();
       scam.stopScamChecker();
-      stopWalletWorkers?.();
+      stopSchemaWorkers?.();
     };
 
     app.log.warn(

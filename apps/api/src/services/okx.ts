@@ -1,7 +1,10 @@
-import { createHmac } from 'node:crypto';
 import type { Chain } from '@prisma/client';
-import { env } from '../lib/env.js';
-import { logger } from '../lib/logger.js';
+import {
+  fetchHotTokens,
+  fetchPriceInfo,
+  isOkxConfigured as isOkxMarketConfigured,
+  safeCall,
+} from './okx-market.js';
 
 /**
  * Клиент официального Web3 API OKX.
@@ -17,8 +20,6 @@ import { logger } from '../lib/logger.js';
  * подпись считается от строки timestamp + METHOD + path + body.
  */
 
-const BASE = 'https://web3.okx.com';
-
 /** Идентификаторы сетей в OKX. Robinhood Chain пока не поддерживается. */
 const OKX_CHAIN: Record<Chain, string | null> = {
   ETHEREUM: '1',
@@ -29,53 +30,11 @@ const OKX_CHAIN: Record<Chain, string | null> = {
 };
 
 export function isOkxConfigured(): boolean {
-  return Boolean(env.OKX_API_KEY && env.OKX_API_SECRET && env.OKX_PASSPHRASE);
+  return isOkxMarketConfigured();
 }
 
 export function isOkxSupported(chain: Chain): boolean {
   return OKX_CHAIN[chain] !== null;
-}
-
-function sign(timestamp: string, method: string, path: string, body = ''): string {
-  return createHmac('sha256', env.OKX_API_SECRET ?? '')
-    .update(timestamp + method.toUpperCase() + path + body)
-    .digest('base64');
-}
-
-async function request<T>(path: string): Promise<T | null> {
-  if (!isOkxConfigured()) return null;
-
-  const timestamp = new Date().toISOString();
-
-  try {
-    const res = await fetch(`${BASE}${path}`, {
-      headers: {
-        'OK-ACCESS-KEY': env.OKX_API_KEY!,
-        'OK-ACCESS-SIGN': sign(timestamp, 'GET', path),
-        'OK-ACCESS-TIMESTAMP': timestamp,
-        'OK-ACCESS-PASSPHRASE': env.OKX_PASSPHRASE!,
-        ...(env.OKX_PROJECT_ID ? { 'OK-ACCESS-PROJECT': env.OKX_PROJECT_ID } : {}),
-        'content-type': 'application/json',
-      },
-      signal: AbortSignal.timeout(12_000),
-    });
-
-    if (!res.ok) {
-      logger.debug({ path, status: res.status }, 'OKX: запрос отклонён');
-      return null;
-    }
-
-    const json: any = await res.json();
-    // OKX отвечает кодом внутри тела: HTTP 200 не означает успех.
-    if (json.code && json.code !== '0') {
-      logger.warn({ path, code: json.code, msg: json.msg }, 'OKX вернул ошибку');
-      return null;
-    }
-    return json.data as T;
-  } catch (e: any) {
-    logger.debug({ path, err: e?.message }, 'OKX недоступен');
-    return null;
-  }
 }
 
 export interface OkxToken {
@@ -91,12 +50,6 @@ export interface OkxToken {
   logoUrl: string | null;
 }
 
-const num = (v: unknown): number | null => {
-  if (v == null || v === '') return null;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : null;
-};
-
 /**
  * Список токенов сети из агрегатора OKX.
  *
@@ -110,25 +63,26 @@ export async function fetchOkxTokens(chain: Chain): Promise<OkxToken[]> {
   const chainId = OKX_CHAIN[chain];
   if (!chainId) return [];
 
-  const data = await request<any[]>(
-    `/api/v5/dex/aggregator/all-tokens?chainIndex=${chainId}`,
-  );
-  if (!Array.isArray(data)) return [];
+  /*
+   * Старый `/api/v5/dex/aggregator/all-tokens` снят с поддержки.
+   * Для радара нужен не полный справочник из тысяч контрактов, а
+   * свежие торгуемые кандидаты, поэтому используем уже проверенный
+   * v6 market-клиент и его общий лимит запросов.
+   */
+  const data = await fetchHotTokens(chain as never, { limit: 100, liquidityMin: 0 });
 
-  return data
-    .filter((t) => t?.tokenContractAddress)
-    .map((t) => ({
-      chain,
-      address: String(t.tokenContractAddress),
-      symbol: String(t.tokenSymbol ?? '???').slice(0, 20),
-      name: String(t.tokenName ?? t.tokenSymbol ?? 'Unknown').slice(0, 80),
-      decimals: Number(t.decimals) || (chain === 'SOLANA' ? 9 : 18),
-      priceUsd: num(t.tokenUnitPrice),
-      liquidityUsd: null,
-      volume24hUsd: null,
-      fdvUsd: null,
-      logoUrl: typeof t.tokenLogoUrl === 'string' ? t.tokenLogoUrl : null,
-    }));
+  return data.map((t) => ({
+    chain,
+    address: t.address,
+    symbol: t.symbol,
+    name: t.name,
+    decimals: t.decimals ?? (chain === 'SOLANA' ? 9 : 18),
+    priceUsd: t.priceUsd,
+    liquidityUsd: t.liquidityUsd,
+    volume24hUsd: t.volume24hUsd,
+    fdvUsd: t.marketCapUsd,
+    logoUrl: t.logoUrl,
+  }));
 }
 
 /** Подробности по конкретному токену: цена, объём, ликвидность. */
@@ -139,16 +93,19 @@ export async function fetchOkxTokenDetail(
   const chainId = OKX_CHAIN[chain];
   if (!chainId) return null;
 
-  const data = await request<any[]>(
-    `/api/v5/dex/market/price-info?chainIndex=${chainId}&tokenContractAddress=${address}`,
+  // v6 принимает POST-пакет. Старый v5 GET отвечает
+  // `Request method GET not supported` и оставляет карточку без цены.
+  const result = await fetchPriceInfo([{ chain: chain as never, address }], { fresh: true });
+  const d = [...result.prices.values()].find(
+    (row) => row.chain === chain && row.address.toLowerCase() === address.toLowerCase(),
   );
-  const d = Array.isArray(data) ? data[0] : null;
   if (!d) return null;
 
   return {
-    priceUsd: num(d.price),
-    volume24hUsd: num(d.volume24H),
-    fdvUsd: num(d.marketCap),
+    priceUsd: d.priceUsd,
+    liquidityUsd: d.liquidityUsd,
+    volume24hUsd: d.volume.h24,
+    fdvUsd: d.marketCapUsd,
   };
 }
 
@@ -181,6 +138,28 @@ export interface RoundTripResult {
    */
   returnRatio: number | null;
   reason: string;
+}
+
+/**
+ * Актуальный v6-маршрут котировки.
+ *
+ * Вынесен в чистую функцию: версия и набор параметров являются
+ * контрактом с провайдером и должны проверяться без живого ключа.
+ */
+export function quotePath(
+  chainIndex: string,
+  fromTokenAddress: string,
+  toTokenAddress: string,
+  amount: string,
+): string {
+  const params = new URLSearchParams({
+    chainIndex,
+    fromTokenAddress,
+    toTokenAddress,
+    amount,
+    swapMode: 'exactIn',
+  });
+  return `/api/v6/dex/aggregator/quote?${params.toString()}`;
 }
 
 /**
@@ -219,9 +198,9 @@ export async function checkRoundTrip(
     ? String(Math.round(probeUsd * 1e9 / 150))   // ~SOL в лампортах
     : String(Math.round((probeUsd / 2500) * 1e18)); // ~ETH/BNB в wei
 
-  const buy = await request<any[]>(
-    `/api/v5/dex/aggregator/quote?chainIndex=${chainId}` +
-      `&fromTokenAddress=${native}&toTokenAddress=${tokenAddress}&amount=${probeAmount}`,
+  const buy = await safeCall<any[]>(
+    'GET',
+    quotePath(chainId, native, tokenAddress, probeAmount),
   );
 
   const buyOut = Number(buy?.[0]?.toTokenAmount);
@@ -235,9 +214,9 @@ export async function checkRoundTrip(
   }
 
   // Обратный обмен на то количество, которое реально получили бы.
-  const sell = await request<any[]>(
-    `/api/v5/dex/aggregator/quote?chainIndex=${chainId}` +
-      `&fromTokenAddress=${tokenAddress}&toTokenAddress=${native}&amount=${Math.floor(buyOut)}`,
+  const sell = await safeCall<any[]>(
+    'GET',
+    quotePath(chainId, tokenAddress, native, String(Math.floor(buyOut))),
   );
 
   const sellOut = Number(sell?.[0]?.toTokenAmount);

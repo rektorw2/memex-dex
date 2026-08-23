@@ -12,6 +12,9 @@ import { ChartPanel } from '@/components/terminal/ChartPanel';
 import { SidePanel } from '@/components/terminal/SidePanel';
 import { CHAIN_LABEL, SORT_OPTIONS, QUICK_FILTERS, type Token } from '@/components/terminal/types';
 import { DexScreenerList } from '@/components/terminal/DexScreenerList';
+import { GemsList } from '@/components/terminal/GemsList';
+
+type MarketSource = 'own' | 'gems' | 'dexscreener';
 
 /**
  * Терминал.
@@ -63,7 +66,7 @@ function Terminal() {
    * нами, второе оплачено размещением. Вкладки делают эту разницу
    * видимой до того, как человек начнёт читать.
    */
-  const [source, setSource] = useState<'own' | 'dexscreener'>('own');
+  const [source, setSource] = useState<MarketSource>('own');
 
   const params = new URLSearchParams({ sort, limit: '60' });
   if (chain) params.set('chain', chain);
@@ -195,6 +198,8 @@ function Terminal() {
                   onSelect={(t) => setSelectedId(t.id)}
                   isLoading={isLoading}
                 />
+              ) : source === 'gems' ? (
+                <GemsList />
               ) : (
                 <div className="p-3">
                   <DexScreenerList chain={chain} safeOnly={safeOnly} />
@@ -251,6 +256,8 @@ function Terminal() {
                     touch
                   />
                 </>
+              ) : source === 'gems' ? (
+                <GemsList />
               ) : (
                 <div className="p-3">
                   <DexScreenerList chain={chain} safeOnly={safeOnly} />
@@ -329,23 +336,25 @@ function Terminal() {
 /**
  * Переключатель источника списка.
  *
- * Две вкладки, а не фильтр внутри одного списка. Разница в том,
+ * Три вкладки, а не фильтр внутри одного списка. Разница в том,
  * кто отвечает за состав: «Рынок» собран нами по объёму и проверке,
- * «DexScreener» — оплаченное размещение. Спрятать это различие
+ * GEMS — необработанный живой OKX Signal, «DexScreener» —
+ * оплаченное размещение. Спрятать это различие
  * в выпадающий список значило бы приравнять одно к другому.
  */
 function SourceTabs({
   value,
   onChange,
 }: {
-  value: 'own' | 'dexscreener';
-  onChange: (v: 'own' | 'dexscreener') => void;
+  value: MarketSource;
+  onChange: (v: MarketSource) => void;
 }) {
   return (
     <div className="flex shrink-0 border-b border-border">
       {(
         [
           ['own', 'Рынок'],
+          ['gems', 'GEMS'],
           ['dexscreener', 'DexScreener'],
         ] as const
       ).map(([v, label]) => (

@@ -7,6 +7,7 @@ import {
   ACCESS_MIGRATION,
   CHECK_QUEUE_MIGRATION,
   MARKET_AGE_MIGRATION,
+  OKX_SIGNAL_MIGRATION,
   planProductionSchemaRepair,
 } from './production-schema-repair.js';
 import { readProductionSchemaSnapshot, type RawQuery } from './production-schema-snapshot.js';
@@ -86,7 +87,7 @@ describe('загрузчик на настоящей схеме', () => {
     expect(await planOf(db), 'на прежней схеме нужны все миграции').toEqual({
       action: 'apply-migrations',
       resolveBaseline: true,
-      pending: [ACCESS_MIGRATION, MARKET_AGE_MIGRATION, CHECK_QUEUE_MIGRATION],
+      pending: [ACCESS_MIGRATION, MARKET_AGE_MIGRATION, CHECK_QUEUE_MIGRATION, OKX_SIGNAL_MIGRATION],
     });
 
     // Шаг 1. `migrate resolve --applied 0_baseline`.
@@ -101,7 +102,7 @@ describe('загрузчик на настоящей схеме', () => {
     expect(await planOf(db), 'остаётся возраст рынка и очередь').toEqual({
       action: 'apply-migrations',
       resolveBaseline: false,
-      pending: [MARKET_AGE_MIGRATION, CHECK_QUEUE_MIGRATION],
+      pending: [MARKET_AGE_MIGRATION, CHECK_QUEUE_MIGRATION, OKX_SIGNAL_MIGRATION],
     });
 
     // Шаг 3. Возраст рынка — та миграция, которую прежний
@@ -109,19 +110,29 @@ describe('загрузчик на настоящей схеме', () => {
     await db.exec(sqlOf(MARKET_AGE_MIGRATION));
     await markApplied(db, MARKET_AGE_MIGRATION);
 
-    expect(await planOf(db), 'остаётся очередь проверки').toEqual({
+    expect(await planOf(db), 'остаётся очередь проверки и Signal').toEqual({
       action: 'apply-migrations',
       resolveBaseline: false,
-      pending: [CHECK_QUEUE_MIGRATION],
+      pending: [CHECK_QUEUE_MIGRATION, OKX_SIGNAL_MIGRATION],
     });
 
     // Шаг 4. Очередь проверки и возраст цены.
     await db.exec(sqlOf(CHECK_QUEUE_MIGRATION));
     await markApplied(db, CHECK_QUEUE_MIGRATION);
 
+    expect(await planOf(db), 'остаётся Signal').toEqual({
+      action: 'apply-migrations',
+      resolveBaseline: false,
+      pending: [OKX_SIGNAL_MIGRATION],
+    });
+
+    // Шаг 5. История официального OKX Signal.
+    await db.exec(sqlOf(OKX_SIGNAL_MIGRATION));
+    await markApplied(db, OKX_SIGNAL_MIGRATION);
+
     expect(await planOf(db), 'схема сошлась').toEqual({ action: 'ready' });
 
-    // Шаг 5. Следующий деплой ничего не делает.
+    // Шаг 6. Следующий деплой ничего не делает.
     expect(await planOf(db)).toEqual({ action: 'ready' });
 
     await db.close();

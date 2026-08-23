@@ -110,6 +110,13 @@ describe('неполная схема', () => {
     expect(compareSchema(snapshot)).toContain('Subscription (таблица отсутствует)');
   });
 
+  it('не запускает живой Signal без его таблицы', () => {
+    const snapshot = fullSnapshot();
+    delete snapshot.tables.OkxSignal;
+
+    expect(compareSchema(snapshot)).toContain('OkxSignal (таблица отсутствует)');
+  });
+
   it('отсутствие уникальности очереди — поломка, а не мелочь', () => {
     // Без неё два процесса создадут две задачи на один кошелёк
     // и будут пересчитывать его одновременно, получая разные

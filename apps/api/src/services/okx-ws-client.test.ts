@@ -5,6 +5,7 @@ import {
   ADDRESS_CHANNEL,
   type SocketLike,
 } from './okx-ws-client.js';
+import { OKX_SIGNAL_CHANNEL } from '@memex/core';
 
 /**
  * Управляемая подделка сокета.
@@ -62,15 +63,17 @@ const subAck = (channel: string) => ({
 function makeClient(over: Partial<Parameters<typeof mk>[0]> = {}) { return mk(over as never); }
 function mk(over: any) {
   const events: any[] = [];
+  const signals: any[] = [];
   const rejected: string[] = [];
   const c = new OkxWalletWebSocketClient({
     id: 'test', addresses: [], platformFeed: true, factory,
     onEvent: (e) => events.push(e),
+    onSignal: (e) => signals.push(e),
     onRejected: (r) => rejected.push(r),
     random: () => 0.5,
     ...over,
   });
-  return { c, events, rejected };
+  return { c, events, signals, rejected };
 }
 
 /**
@@ -340,6 +343,58 @@ describe('события', () => {
     sockets[0]!.deliver('{не json');
     expect(rejected).toContain('malformed_json');
     expect(c.getState()).toBe('connected');
+    c.stop();
+  });
+});
+
+describe('OKX Signal', () => {
+  it('подписывает все сети одной командой и принимает событие сразу', () => {
+    const { c, signals } = makeClient({
+      platformFeed: false,
+      signalChains: ['501', '1', '501'],
+    });
+
+    c.start();
+    const socket = sockets[0]!;
+    socket.open();
+    socket.deliver(loginOk);
+
+    const subscribe = socket.sent
+      .map((text) => JSON.parse(text))
+      .find((message) => message.op === 'subscribe');
+
+    expect(subscribe.args).toEqual([
+      { channel: OKX_SIGNAL_CHANNEL, chainIndex: '501' },
+      { channel: OKX_SIGNAL_CHANNEL, chainIndex: '1' },
+    ]);
+
+    socket.deliver(subAck(OKX_SIGNAL_CHANNEL));
+    expect(c.getState()).toBe('connected');
+
+    socket.deliver({
+      arg: {
+        channel: OKX_SIGNAL_CHANNEL,
+        chainIndex: '501',
+        timestamp: '1774364940575',
+        token: {
+          tokenAddress: 'FN9ZSeNDdPV6bBF9DeDYxvqYK4JvFKeF7DBrhGGXJZ3Q',
+          symbol: 'GEM',
+          name: 'Gem',
+          marketCapUsd: '64000',
+        },
+        price: '0.0001',
+        walletType: '1,3',
+        triggerWalletCount: '4',
+        amountUsd: '1200',
+      },
+    });
+
+    expect(signals).toHaveLength(1);
+    expect(signals[0]).toMatchObject({
+      chain: 'SOLANA',
+      symbol: 'GEM',
+      walletTypes: ['smart_money', 'whale'],
+    });
     c.stop();
   });
 });

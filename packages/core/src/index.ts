@@ -43,6 +43,8 @@ export * from './smart-score-v2.js';
 export * from './okx-wallet-model.js';
 // Живые события и раскладка подписок. Тоже чистая часть: сокета здесь нет.
 export * from './okx-ws-model.js';
+// Сигналы Smart Money/KOL/Whale — отдельный формат OKX.
+export * from './okx-signal.js';
 // История DEX — единственный источник точных количеств.
 export * from './okx-dex-history.js';
 // Полнота истории и позиции с неизвестной себестоимостью.

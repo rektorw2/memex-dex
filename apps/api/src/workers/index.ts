@@ -13,6 +13,7 @@ import { startEntitlementSweeper, stopEntitlementSweeper } from './entitlement-s
 import { startWalletDiscovery, stopWalletDiscovery } from './wallet-discovery.js';
 import { startActivityIngest, stopActivityIngest } from '../services/okx-ws-pool.js';
 import { startLedgerSync, stopLedgerSync } from './wallet-ledger-sync.js';
+import { startOkxSignalIngest, stopOkxSignalIngest } from './okx-signal-ingest.js';
 import { logger } from '../lib/logger.js';
 import { prisma } from '../lib/prisma.js';
 import { guardSchemaOnStartup } from '../lib/schema-guard.js';
@@ -44,6 +45,7 @@ const walletWorkersReady = guardSchemaOnStartup().then((ready) => {
   startWalletDiscovery();
   startActivityIngest();
   startLedgerSync();
+  startOkxSignalIngest();
   return true;
 });
 
@@ -69,6 +71,7 @@ const shutdown = async () => {
     stopWalletDiscovery();
     stopActivityIngest();
     stopLedgerSync();
+    stopOkxSignalIngest();
   }
 
   await prisma.$disconnect();

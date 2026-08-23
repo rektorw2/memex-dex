@@ -11,6 +11,8 @@ import {
   CHECK_QUEUE_TOKEN_COLUMNS,
   MARKET_AGE_MIGRATION,
   MARKET_AGE_TOKEN_COLUMNS,
+  OKX_SIGNAL_MIGRATION,
+  OKX_SIGNAL_TABLES,
   planProductionSchemaRepair,
   type ProductionSchemaSnapshot,
 } from './production-schema-repair.js';
@@ -56,6 +58,7 @@ function accessOnlySnapshot(): ProductionSchemaSnapshot {
 function readySnapshot(): ProductionSchemaSnapshot {
   const s = accessOnlySnapshot();
   s.tokenColumns = [...s.tokenColumns, ...MARKET_AGE_TOKEN_COLUMNS, ...CHECK_QUEUE_TOKEN_COLUMNS];
+  s.tables = [...s.tables, ...OKX_SIGNAL_TABLES];
   s.appliedMigrations = [...KNOWN_MIGRATIONS];
   return s;
 }
@@ -87,6 +90,7 @@ describe('готовая база', () => {
       ...CHECK_QUEUE_TOKEN_COLUMNS,
     ];
     after.appliedMigrations = [...KNOWN_MIGRATIONS];
+    after.tables = [...after.tables, ...OKX_SIGNAL_TABLES];
 
     expect(planProductionSchemaRepair(after)).toEqual({ action: 'ready' });
   });
@@ -97,7 +101,7 @@ describe('переход с прежней схемы', () => {
     expect(planProductionSchemaRepair(legacySnapshot())).toEqual({
       action: 'apply-migrations',
       resolveBaseline: true,
-      pending: [ACCESS_MIGRATION, MARKET_AGE_MIGRATION, CHECK_QUEUE_MIGRATION],
+      pending: [ACCESS_MIGRATION, MARKET_AGE_MIGRATION, CHECK_QUEUE_MIGRATION, OKX_SIGNAL_MIGRATION],
     });
   });
 
@@ -116,7 +120,7 @@ describe('переход с прежней схемы', () => {
     expect(planProductionSchemaRepair(accessOnlySnapshot())).toEqual({
       action: 'apply-migrations',
       resolveBaseline: false,
-      pending: [MARKET_AGE_MIGRATION, CHECK_QUEUE_MIGRATION],
+      pending: [MARKET_AGE_MIGRATION, CHECK_QUEUE_MIGRATION, OKX_SIGNAL_MIGRATION],
     });
   });
 });
@@ -173,6 +177,16 @@ describe('отказ при неожиданном состоянии', () => {
     expect(planProductionSchemaRepair(snapshot)).toEqual({
       action: 'refuse',
       reason: 'MARKET_AGE_HISTORY_CONTRADICTS_SCHEMA',
+    });
+  });
+
+  it('история Signal противоречит схеме', () => {
+    const snapshot = readySnapshot();
+    snapshot.tables = snapshot.tables.filter((table) => table !== 'OkxSignal');
+
+    expect(planProductionSchemaRepair(snapshot)).toEqual({
+      action: 'refuse',
+      reason: 'OKX_SIGNAL_HISTORY_CONTRADICTS_SCHEMA',
     });
   });
 

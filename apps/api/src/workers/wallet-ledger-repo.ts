@@ -158,65 +158,66 @@ export class PrismaWalletLedgerRepository implements WalletLedgerRepository {
    * появится снова.
    */
   async ingestAtomically(a: ActivityInput, dueAt: Date): Promise<{ created: boolean }> {
-    try {
-      return await prisma.$transaction(async (tx) => {
-        await tx.walletActivity.create({
-          data: {
-            id: a.id,
-            chain: a.chain as never,
-            walletAddress: a.walletAddress,
-            tokenAddress: a.tokenAddress,
-            tokenSymbol: a.tokenSymbol,
-            side: a.side,
-            quoteSymbol: a.quoteSymbol,
-            quoteAmount: a.quoteAmount != null ? new P.Decimal(a.quoteAmount) : null,
-            priceUsd: a.priceUsd != null ? new P.Decimal(a.priceUsd) : null,
-            marketCapUsd: a.marketCapUsd != null ? new P.Decimal(a.marketCapUsd) : null,
-            realizedPnlUsd: a.realizedPnlUsd != null ? new P.Decimal(a.realizedPnlUsd) : null,
-            txHash: a.txHash,
-            trackerType: a.trackerType,
-            source: a.source,
-            parsingConfidence: new P.Decimal(a.parsingConfidence),
-            tradedAt: a.tradedAt,
-          },
-        });
-
-        const id = `${a.chain}:${a.walletAddress}`;
-        await tx.walletSyncQueue.upsert({
-          where: { id },
-          create: {
-            id,
-            chain: a.chain as never,
-            walletAddress: a.walletAddress,
-            dueAt,
-            generation: 1,
-          },
-          update: { dueAt, generation: { increment: 1 } },
-        });
-
-        return { created: true };
+    return prisma.$transaction(async (tx) => {
+      /*
+       * Повторы ожидаемы: OKX присылает одно событие по нескольким
+       * подпискам, а REST-страховка может увидеть его после WebSocket.
+       * `create` превращал штатную дедупликацию в P2002, и Prisma
+       * печатала её как красную ошибку ещё до нашего catch.
+       *
+       * `createMany(skipDuplicates)` решает конфликт в самой базе:
+       * это остаётся атомарной вставкой, но ожидаемый повтор больше
+       * не проходит через исключение и не засоряет журнал Render.
+       */
+      const inserted = await tx.walletActivity.createMany({
+        data: {
+          id: a.id,
+          chain: a.chain as never,
+          walletAddress: a.walletAddress,
+          tokenAddress: a.tokenAddress,
+          tokenSymbol: a.tokenSymbol,
+          side: a.side,
+          quoteSymbol: a.quoteSymbol,
+          quoteAmount: a.quoteAmount != null ? new P.Decimal(a.quoteAmount) : null,
+          priceUsd: a.priceUsd != null ? new P.Decimal(a.priceUsd) : null,
+          marketCapUsd: a.marketCapUsd != null ? new P.Decimal(a.marketCapUsd) : null,
+          realizedPnlUsd: a.realizedPnlUsd != null ? new P.Decimal(a.realizedPnlUsd) : null,
+          txHash: a.txHash,
+          trackerType: a.trackerType,
+          source: a.source,
+          parsingConfidence: new P.Decimal(a.parsingConfidence),
+          tradedAt: a.tradedAt,
+        },
+        skipDuplicates: true,
       });
-    } catch (e: any) {
-      if (e?.code === 'P2002') {
-        // Событие уже было. Но если оно всё ещё не перенесено
-        // в позиции, задача обязана существовать: предыдущий проход
-        // мог упасть, не доделав.
-        await this.ensureQueuedIfPending(a, dueAt);
-        return { created: false };
+
+      const created = inserted.count === 1;
+
+      if (!created) {
+        const existing = await tx.walletActivity.findUnique({
+          where: { id: a.id },
+          select: { appliedToLedger: true },
+        });
+
+        // Уже учтённое событие не требует ещё одного пересчёта.
+        if (existing?.appliedToLedger !== false) return { created: false };
       }
-      throw e;
-    }
-  }
 
-  private async ensureQueuedIfPending(a: ActivityInput, dueAt: Date): Promise<void> {
-    const existing = await prisma.walletActivity.findUnique({
-      where: { id: a.id },
-      select: { appliedToLedger: true },
+      const id = `${a.chain}:${a.walletAddress}`;
+      await tx.walletSyncQueue.upsert({
+        where: { id },
+        create: {
+          id,
+          chain: a.chain as never,
+          walletAddress: a.walletAddress,
+          dueAt,
+          generation: 1,
+        },
+        update: { dueAt, generation: { increment: 1 } },
+      });
+
+      return { created };
     });
-
-    if (existing?.appliedToLedger !== false) return;
-
-    await this.markDirty(a.chain, a.walletAddress, dueAt).catch(() => undefined);
   }
 
   /**

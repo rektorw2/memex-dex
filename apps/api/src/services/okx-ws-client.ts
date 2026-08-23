@@ -25,9 +25,12 @@ import {
   wsTimestamp,
   parseLoginReply,
   parseLiveTrade,
+  parseOkxSignalMessage,
+  OKX_SIGNAL_CHANNEL,
   reconnectDelay,
   LiveParseError,
   type LiveTradeEvent,
+  type OkxSignal,
 } from '@memex/core';
 import { env } from '../lib/env.js';
 import { logger } from '../lib/logger.js';
@@ -71,6 +74,9 @@ export interface ClientOptions {
   /** Подписываться ли на общий канал Smart Money и KOL. */
   platformFeed?: boolean;
   onEvent: (e: LiveTradeEvent) => void;
+  /** Сети официального Signal channel. Пустой список не подписывает канал. */
+  signalChains?: string[];
+  onSignal?: (e: OkxSignal) => void;
   onRejected?: (reason: string) => void;
   factory?: SocketFactory;
   /** Подставной таймер для тестов. */
@@ -413,6 +419,18 @@ export class OkxWalletWebSocketClient {
       return;
     }
 
+    // ─── Живой OKX Signal ───────────────────────────────────────
+    // Канал отделён от сделок кошельков: у него нет walletAddress,
+    // tradeType и txHash, поэтому прогонять его через parseLiveTrade
+    // означало бы отвергать каждое корректное сообщение как кривое.
+    if (String(msg?.arg?.channel ?? msg?.channel ?? '') === OKX_SIGNAL_CHANNEL) {
+      const signals = parseOkxSignalMessage(msg);
+
+      if (signals.length === 0) this.opts.onRejected?.('signal_parse_failed');
+      for (const signal of signals) this.opts.onSignal?.(signal);
+      return;
+    }
+
     // ─── Событие ленты ──────────────────────────────────────────
     const items = Array.isArray(msg?.data) ? msg.data : msg?.data ? [msg.data] : [];
 
@@ -448,6 +466,18 @@ export class OkxWalletWebSocketClient {
         'subscribe',
         ADDRESS_CHANNEL,
         this.addresses.map((walletAddress) => ({ channel: ADDRESS_CHANNEL, walletAddress })),
+      );
+    }
+
+    const signalChains = [...new Set(this.opts.signalChains ?? [])].filter(Boolean);
+    if (signalChains.length > 0) {
+      this.enqueue(
+        'subscribe',
+        OKX_SIGNAL_CHANNEL,
+        signalChains.map((chainIndex) => ({
+          channel: OKX_SIGNAL_CHANNEL,
+          chainIndex,
+        })),
       );
     }
 

@@ -81,13 +81,22 @@ DATABASE_URL="<строка из Neon>" npm run db:seed
 Dashboard → **New → Blueprint** → выбрать репозиторий. `render.yaml`
 уже в проекте, Render поднимет сервис сам.
 
-Вручную задать три переменные (помечены `sync: false`):
+Вручную задать переменные, помеченные `sync: false`:
 
 | Переменная | Значение |
 |---|---|
 | `DATABASE_URL` | pooled-строка из Neon |
 | `CORS_ORIGINS` | `https://rektorw2.github.io` |
 | `ZEROX_API_KEY` | можно оставить пустым — нужен только для BNB/EVM |
+| `OKX_API_KEY` | ключ проекта OKX OnchainOS |
+| `OKX_API_SECRET` | секрет этого ключа |
+| `OKX_PASSPHRASE` | парольная фраза ключа |
+| `OKX_PROJECT_ID` | Project ID из OKX Developer Portal |
+
+Четыре переменные OKX нужны живой вкладке **GEMS**. Основной канал —
+WebSocket OKX Signal; REST раз в минуту используется только как страховка
+при обрыве и для догрузки истории после перезапуска. Ключи нельзя помещать
+в GitHub Pages или в переменные с префиксом `NEXT_PUBLIC_`.
 
 `CORS_ORIGINS` указывается **без пути к репозиторию**: браузер передаёт
 в заголовке `Origin` только схему и хост. Значение

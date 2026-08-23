@@ -44,7 +44,9 @@ import {
   parseRetryAfterMs,
   type ProviderReport,
   type NormalizedToken,
+  type OkxSignal,
   type ChainKey,
+  parseOkxSignal,
 } from '@memex/core';
 import { env } from '../lib/env.js';
 import { logger } from '../lib/logger.js';
@@ -344,6 +346,37 @@ export async function fetchHotTokensAllChains(
   return dedupeByAddress(lists.flat());
 }
 
+// ───────────────────────────── OKX Signal ──────────────────────────────────
+
+/**
+ * Последние сигналы Smart Money / KOL / Whale по одной сети.
+ *
+ * Эндпоинт используется только для первоначального заполнения и как
+ * страховка при обрыве WebSocket. Постоянный быстрый опрос здесь
+ * намеренно не кэшируется: им управляет один фоновый цикл, а не
+ * пользовательские запросы. Так открытая вкладка не расходует квоту
+ * OKX и не создаёт параллельные проходы.
+ */
+export async function fetchLatestSignals(
+  chain: ChainKey,
+  limit = 100,
+): Promise<OkxSignal[]> {
+  const chainIndex = OKX_CHAIN_INDEX[chain];
+  if (!chainIndex || !isOkxConfigured()) return [];
+
+  const data = await safeCall<unknown>('POST', '/api/v6/dex/market/signal/list', [
+    {
+      chainIndex,
+      walletType: '1,2,3',
+      limit: String(Math.min(100, Math.max(1, limit))),
+    },
+  ]);
+
+  return asArray(data)
+    .map((row) => parseOkxSignal(withChain(row, chainIndex)))
+    .filter((signal): signal is OkxSignal => signal !== null);
+}
+
 // ──────────────────────────────── Поиск ─────────────────────────────────────
 
 /**
@@ -393,6 +426,28 @@ export interface TokenBasicInfo {
 }
 
 /**
+ * Тело пакетных v6-запросов ровно в форме из документации OKX.
+ *
+ * Это массив, не `{ tokens: [...] }`. Обёртка выглядит естественно,
+ * но провайдер её не принимает. EVM-адреса приводятся к нижнему
+ * регистру — это отдельное требование price-info.
+ */
+export function tokenBatchBody(
+  tokens: Array<{ chain: ChainKey; address: string }>,
+): Array<{ chainIndex: string; tokenContractAddress: string }> {
+  return tokens.flatMap((token) => {
+    const chainIndex = OKX_CHAIN_INDEX[token.chain];
+    if (!chainIndex) return [];
+
+    return [{
+      chainIndex,
+      tokenContractAddress:
+        token.chain === 'SOLANA' ? token.address : token.address.toLowerCase(),
+    }];
+  });
+}
+
+/**
  * Пакетный запрос основных сведений.
  *
  * OKX принимает до ста токенов за раз, и это единственная причина
@@ -408,12 +463,7 @@ export async function fetchBasicInfo(
 
   for (let i = 0; i < supported.length; i += 100) {
     const batch = supported.slice(i, i + 100);
-    const body = {
-      tokens: batch.map((t) => ({
-        chainIndex: OKX_CHAIN_INDEX[t.chain],
-        tokenContractAddress: t.address,
-      })),
-    };
+    const body = tokenBatchBody(batch);
 
     const key = `okx:basic:${batch.map((t) => `${t.chain}:${t.address}`).join(',')}`;
 
@@ -444,16 +494,24 @@ function parseBasicInfo(raw: unknown): TokenBasicInfo | null {
   if (!chain || !address) return null;
 
   const symbol = okxStr(r.tokenSymbol, 32) ?? '???';
+  const tagCommunity =
+    r.tagList != null && typeof r.tagList === 'object'
+      ? (r.tagList as Record<string, unknown>).communityRecognized
+      : null;
 
   return {
     chain,
     address,
     symbol,
     name: okxStr(r.tokenName, 120) ?? symbol,
-    decimals: okxInt(r.decimals),
+    decimals: okxInt(r.decimal ?? r.decimals),
     logoUrl: okxStr(r.tokenLogoUrl, 500),
     communityRecognized:
-      typeof r.communityRecognized === 'boolean' ? r.communityRecognized : null,
+      typeof r.communityRecognized === 'boolean'
+        ? r.communityRecognized
+        : typeof tagCommunity === 'boolean'
+          ? tagCommunity
+          : null,
   };
 }
 
@@ -507,12 +565,7 @@ export async function fetchPriceInfo(
 
   for (let i = 0; i < supported.length; i += 100) {
     const batch = supported.slice(i, i + 100);
-    const body = {
-      tokens: batch.map((t) => ({
-        chainIndex: OKX_CHAIN_INDEX[t.chain],
-        tokenContractAddress: t.address,
-      })),
-    };
+    const body = tokenBatchBody(batch);
 
     const key = `okx:price:${batch.map((t) => `${t.chain}:${t.address}`).join(',')}`;
 

@@ -348,6 +348,7 @@ model Token {
   calls     Call[]
   candles   Candle[]
   research  TokenResearch?
+  okxSignals OkxSignal[]
 
   @@unique([chain, address])
   @@index([chain, isVerified])
@@ -367,6 +368,49 @@ model Token {
   // Холодный цикл цен идёт по возрасту котировки. Nulls first —
   // ни разу не обновлённые важнее всех остальных.
   @@index([isHidden, priceUpdatedAt])
+}
+
+/**
+ * Одно событие официальной ленты OKX Signal.
+ *
+ * Отдельно от Token: один токен появляется в Signal много раз, и
+ * повторный вход Smart Money — новое событие, а не обновление названия
+ * токена. История нужна и для порядка «новые сверху», и для измерения
+ * результата от каждого момента сигнала.
+ */
+model OkxSignal {
+  id          String @id @default(cuid())
+  providerKey String @unique
+
+  chain   Chain
+  address String
+  tokenId String?
+  token   Token? @relation(fields: [tokenId], references: [id], onDelete: SetNull)
+
+  symbol  String
+  name    String
+  logoUrl String?
+
+  signaledAt DateTime
+  receivedAt DateTime @default(now())
+
+  priceUsd       Decimal? @db.Decimal(38, 18)
+  marketCapUsd   Decimal? @db.Decimal(24, 8)
+  holders        Int?
+  top10HolderPct Decimal? @db.Decimal(8, 4)
+
+  walletTypes       String[]
+  triggerWalletCount Int?
+  amountUsd          Decimal? @db.Decimal(24, 8)
+  soldRatioPct       Decimal? @db.Decimal(8, 4)
+  source             String
+
+  createdAt DateTime @default(now())
+
+  @@index([signaledAt])
+  @@index([chain, signaledAt])
+  @@index([tokenId, signaledAt])
+  @@index([chain, address, signaledAt])
 }
 
 model Candle {

@@ -55,6 +55,12 @@ const checkQueue = fs.readFileSync(
   'utf8',
 );
 
+/** История официального OKX Signal. */
+const okxSignals = fs.readFileSync(
+  `${R}/prisma/migrations/20260823170000_add_okx_signals/migration.sql`,
+  'utf8',
+);
+
 // ── Проверяется ли вообще то, что лежит в репозитории ──────────────
 /*
  * Файл называет миграции поимённо, и это его слабое место: миграция
@@ -71,6 +77,7 @@ const KNOWN = [
   '20260821120000_add_subscriptions_and_trial',
   '20260823040000_add_token_market_age',
   '20260823120000_add_check_queue_and_price_age',
+  '20260823170000_add_okx_signals',
 ];
 
 const onDisk = fs
@@ -92,11 +99,12 @@ await clean.exec(baseline);
 await clean.exec(feature);
 await clean.exec(marketAge);
 await clean.exec(checkQueue);
+await clean.exec(okxSignals);
 
 const tables = (
   await clean.query(`SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY 1`)
 ).rows.map((r) => r.tablename);
-check('таблиц создано 35', tables.length === 35, String(tables.length));
+check('таблиц создано 36', tables.length === 36, String(tables.length));
 for (const t of ['Subscription', 'EntitlementAudit', 'PaymentCustomer', 'SubscriptionPayment', 'WebhookReceipt']) {
   check(`таблица ${t}`, tables.includes(t));
 }
@@ -679,6 +687,37 @@ check('новая строка: попыток ноль, ошибок нет, п
   qrow.a === 0 && qrow.e === false && qrow.n === null);
 
 check('возраст цены пуст, а не выдуман', qrow.p === null);
+
+// ──────────────────────────── OKX Signal ──────────────────────────────────
+
+console.log('\n=== История OKX Signal ===');
+
+check('таблица OkxSignal создана', tables.includes('OkxSignal'));
+
+await clean.exec(`
+  INSERT INTO "OkxSignal"
+    ("id","providerKey","chain","address","tokenId","symbol","name","signaledAt","walletTypes","source")
+  VALUES
+    ('sig-1','provider-1','SOLANA','SignalAddress111111111111111111111111111','t-queue','GEM','Gem',NOW(),ARRAY['smart_money'],'okx_websocket');
+`);
+
+const signalRows = await clean.query(`SELECT "tokenId","walletTypes" FROM "OkxSignal" WHERE id='sig-1'`);
+check('сигнал связан с импортированным токеном', signalRows.rows[0]?.tokenId === 't-queue');
+check('типы кошельков сохраняются массивом', signalRows.rows[0]?.walletTypes?.[0] === 'smart_money');
+
+let duplicateSignal = null;
+try {
+  await clean.exec(`
+    INSERT INTO "OkxSignal"
+      ("id","providerKey","chain","address","symbol","name","signaledAt","walletTypes","source")
+    VALUES
+      ('sig-2','provider-1','SOLANA','OtherSignal111111111111111111111111111','OTHER','Other',NOW(),ARRAY[]::text[],'okx_rest');
+  `);
+} catch (e) {
+  duplicateSignal = e.message;
+}
+check('одно событие провайдера не записывается дважды', duplicateSignal != null,
+  duplicateSignal ? 'ограничение сработало' : 'вставка прошла');
 
 console.log(`\nИтог: ${failures === 0 ? 'все проверки пройдены' : failures + ' проверок не прошли'}`);
 process.exit(failures === 0 ? 0 : 1);
