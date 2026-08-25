@@ -25,6 +25,7 @@ export * from './round-trip.js';
 // подделок переехала в token-registry.
 export { checkSanity, MAX_PLAUSIBLE_LIQUIDITY_USD, MAX_PLAUSIBLE_CHANGE_PCT } from './impersonation.js';
 export * from './risk-model.js';
+export * from './market-listing.js';
 export * from './token-registry.js';
 // Модель OKX и реестр токенизированных акций. Разделены намеренно:
 // первое — про формат чужих ответов, второе — про подделки под бумаги.
@@ -90,6 +91,7 @@ export * from './route-access.js';
 export * from './api-base.js';
 export * from './discovery-filters.js';
 export * from './chart-state.js';
+export * from './candle-history.js';
 export * from './chart-live.js';
 
 // Веса вынесены из проверки: россыпью по коду их нельзя было

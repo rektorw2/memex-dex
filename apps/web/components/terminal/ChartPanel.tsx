@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { TokenLogo } from '@/components/TokenLogo';
 import { PriceChart } from '@/components/PriceChart';
@@ -8,7 +8,16 @@ import { fmtPrice, fmtUsd, fmtPct } from '@/lib/api';
 import {
   CHART_STATE_TEXT,
   chartStateRetryable,
+  emptyCandleHistory,
+  applyHistoryPage,
+  markHistoryFailed,
+  clearHistoryFailure,
+  mergeCandlePages,
+  shouldLoadOlder,
+  isAwayFromLive,
+  type CandleHistoryState,
   type ChartState,
+  type LiveChartCandle,
 } from '@memex/core';
 import { CHAIN_LABEL, INTERVALS, type Token } from './types';
 import { ScamMark } from './TokenList';
@@ -34,6 +43,14 @@ interface Props {
   chartHeight?: number;
   /** Показывать шапку с ценой. На телефоне она своя, выше. */
   showHeader?: boolean;
+  /**
+   * Загрузить страницу свечей старше указанного времени.
+   *
+   * Приходит снаружи, а не вызывается здесь: панель не знает про
+   * адреса маршрутов и про то, как в проекте ходят в сеть. Тесту
+   * это позволяет подменить одну функцию вместо всего слоя запросов.
+   */
+  loadOlder?: (before: number) => Promise<{ candles: LiveChartCandle[]; oldest: number | null }>;
 }
 
 export function ChartPanel({
@@ -44,7 +61,138 @@ export function ChartPanel({
   onInterval,
   chartHeight = 420,
   showHeader = true,
+  loadOlder,
 }: Props) {
+  return (
+    <ChartPanelBody
+      token={token}
+      chart={chart}
+      onRetry={onRetry}
+      interval={interval}
+      onInterval={onInterval}
+      chartHeight={chartHeight}
+      showHeader={showHeader}
+      loadOlder={loadOlder}
+    />
+  );
+}
+
+function ChartPanelBody({
+  token,
+  chart,
+  onRetry,
+  interval,
+  onInterval,
+  chartHeight,
+  showHeader,
+  loadOlder,
+}: Required<Pick<Props, 'interval' | 'onInterval' | 'chartHeight' | 'showHeader'>> &
+  Pick<Props, 'token' | 'chart' | 'onRetry' | 'loadOlder'>) {
+  const tokenId = token?.id ?? null;
+
+  /** Догруженные страницы истории. Живут отдельно от базового ответа. */
+  const [history, setHistory] = useState<CandleHistoryState | null>(null);
+  /** Человек ушёл от текущей цены. */
+  const [awayFromLive, setAwayFromLive] = useState(false);
+  /** Счётчик команды «вернуться к live». */
+  const [goLive, setGoLive] = useState(0);
+
+  /*
+   * Поколение запроса.
+   *
+   * Растёт при каждой смене токена или таймфрейма и при каждом новом
+   * запросе. Ответ с устаревшим поколением выбрасывается: иначе
+   * страница, заказанная для пятиминутки, доехала бы уже после
+   * переключения на часовик и подмешала бы чужие свечи.
+   */
+  const generation = useRef(0);
+
+  // Смена токена или таймфрейма сбрасывает всё: страницы, курсоры,
+  // положение относительно живого края.
+  useEffect(() => {
+    generation.current += 1;
+    setHistory(tokenId ? emptyCandleHistory(tokenId, interval) : null);
+    setAwayFromLive(false);
+  }, [tokenId, interval]);
+
+  const baseCandles = (Array.isArray(chart?.candles) ? chart.candles : []) as LiveChartCandle[];
+
+  /*
+   * Живые свечи первым аргументом.
+   *
+   * `mergeCandlePages` при совпадении времени оставляет то, что уже
+   * было: последняя свеча меняется каждую секунду, и страница истории
+   * не должна вернуть на её место цену получасовой давности.
+   */
+  const candles = history ? mergeCandlePages(baseCandles, history.candles) : baseCandles;
+
+  /*
+   * Курсор берётся из базового ответа, пока история пуста.
+   *
+   * Без этого первое перетаскивание влево ничего не запрашивало бы:
+   * `shouldLoadOlder` отказывает, когда курсора нет, а взяться ему
+   * больше неоткуда.
+   */
+  useEffect(() => {
+    if (baseCandles.length === 0) return;
+
+    setHistory((current) => {
+      if (current == null || current.oldest != null) return current;
+      return { ...current, oldest: baseCandles[0]!.time };
+    });
+  }, [baseCandles]);
+
+  const requestOlder = useCallback(
+    async (cursor: number) => {
+      if (!loadOlder) return;
+
+      const mine = ++generation.current;
+      setHistory((current) => (current ? { ...current, loading: true } : current));
+
+      try {
+        const page = await loadOlder(cursor);
+
+        // Ответ пришёл после смены токена или таймфрейма — выбрасываем.
+        if (mine !== generation.current) return;
+
+        setHistory((current) =>
+          current ? applyHistoryPage(current, page.candles ?? [], cursor) : current,
+        );
+      } catch {
+        if (mine !== generation.current) return;
+
+        // График не трогаем: уже показанные свечи остаются на месте.
+        setHistory((current) => (current ? markHistoryFailed(current, cursor) : current));
+      }
+    },
+    [loadOlder],
+  );
+
+  const onVisibleRange = useCallback(
+    (range: { from: number; to: number }, total: number) => {
+      setAwayFromLive(isAwayFromLive({ visibleTo: range.to, total }));
+
+      setHistory((current) => {
+        if (current == null) return current;
+        if (!shouldLoadOlder({ state: current, visibleFrom: range.from })) return current;
+
+        // Запрос уходит вне обновления состояния; здесь только решение.
+        const cursor = current.oldest!;
+        queueMicrotask(() => void requestOlder(cursor));
+
+        return current;
+      });
+    },
+    [requestOlder],
+  );
+
+  const retryOlder = useCallback(() => {
+    setHistory((current) => (current ? clearHistoryFailure(current) : current));
+
+    const cursor = history?.failedAt;
+    if (cursor != null) void requestOlder(cursor);
+  }, [history?.failedAt, requestOlder]);
+
   if (!token) {
     return (
       <div className="flex h-full min-h-[320px] flex-col items-center justify-center gap-2 text-center">
@@ -57,13 +205,11 @@ export function ChartPanel({
   }
 
   const ch = token.priceChange24h == null ? null : Number(token.priceChange24h);
-  const candles = chart?.candles;
   // Одна текущая цена на старшем интервале — ещё не график: она
   // растягивается в ровную линию на всю ширину и выглядит поломкой.
   // Для 1s одной точки достаточно, потому что следующие появляются
   // каждую секунду; для OHLCV нужны хотя бы две фактические свечи.
-  const hasCandles =
-    Array.isArray(candles) && candles.length >= (interval === '1s' ? 1 : 2);
+  const hasCandles = candles.length >= (interval === '1s' ? 1 : 2);
 
   /*
    * Причина приходит с сервера, а не выводится здесь.
@@ -157,14 +303,74 @@ export function ChartPanel({
       </div>
 
       {/* График занимает остаток высоты. */}
-      <div className="min-h-0 flex-1 px-2 py-2">
+      <div className="relative min-h-0 flex-1 px-2 py-2">
         {hasCandles ? (
-          <PriceChart
-            candles={candles as never}
-            height={chartHeight}
-            resetKey={`${token.id}:${interval}`}
-            secondsVisible={interval === '1s'}
-          />
+          <>
+            <PriceChart
+              candles={candles as never}
+              height={chartHeight}
+              resetKey={`${token.id}:${interval}`}
+              secondsVisible={interval === '1s'}
+              onVisibleRange={onVisibleRange}
+              goLiveNonce={goLive}
+              // Пока человек изучает прошлое, новая свеча не тащит
+              // его обратно к текущей цене.
+              followLive={!awayFromLive}
+            />
+
+            {/*
+              Индикатор у левого края, а не поверх всего графика.
+
+              Заменять готовые свечи скелетом при догрузке значит
+              на секунду отбирать у человека то, что он уже читает.
+            */}
+            {history?.loading && (
+              <span
+                role="status"
+                aria-live="polite"
+                className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 rounded-md border border-border bg-panel/90 px-2 py-1 text-[11px] text-muted"
+              >
+                Загружаем историю…
+              </span>
+            )}
+
+            {/*
+              Ошибка догрузки — не ошибка графика.
+
+              Показанные свечи остаются; пропала только возможность
+              уйти левее, и предложить надо ровно повтор этого шага.
+            */}
+            {history?.failedAt != null && !history.loading && (
+              <button
+                type="button"
+                onClick={retryOlder}
+                className="absolute left-4 top-1/2 -translate-y-1/2 rounded-md border border-border bg-panel px-2.5 py-1.5 text-[11px] text-muted transition-colors hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 motion-reduce:transition-none"
+              >
+                История не загрузилась. Повторить
+              </button>
+            )}
+
+            {/*
+              Возврат к текущей цене.
+
+              Справа снизу: слева индикатор загрузки, сверху
+              таймфреймы, справа шкала цены — остаётся один угол,
+              и он же ближе всего к большому пальцу на телефоне.
+            */}
+            {awayFromLive && (
+              <button
+                type="button"
+                onClick={() => setGoLive((n) => n + 1)}
+                aria-label="Вернуться к текущей цене"
+                className="tap absolute bottom-3 right-6 inline-flex items-center gap-1.5 rounded-md border border-accent/40 bg-accent/15 px-2.5 py-1.5 text-[11px] text-accent transition-colors hover:bg-accent/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 motion-reduce:transition-none"
+              >
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" aria-hidden>
+                  <path d="M5 12h13M13 6l6 6-6 6" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+                К текущей цене
+              </button>
+            )}
+          </>
         ) : (
           <div
             style={{ height: chartHeight }}

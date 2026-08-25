@@ -50,6 +50,14 @@ describe('GET-контракт свечей OKX Market v6', () => {
     expect(url.searchParams.get('limit')).toBe('299');
   });
 
+  it('передаёт курсор старых свечей через параметр after в миллисекундах', () => {
+    const path = tokenCandlePath('SOLANA', 'SoLaNaMint', '5m', 100, 1_725_000_000_000);
+    const url = new URL(path!, 'https://web3.okx.com');
+
+    expect(url.searchParams.get('after')).toBe('1725000000000');
+    expect(url.searchParams.has('before')).toBe(false);
+  });
+
   it('использует UTC для дневной свечи и lowercase для EVM', () => {
     const path = tokenCandlePath('BASE', '0xAbCd', '1d', 100);
     const url = new URL(path!, 'https://web3.okx.com');

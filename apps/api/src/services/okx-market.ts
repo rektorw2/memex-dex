@@ -906,6 +906,8 @@ export function tokenCandlePath(
   address: string,
   interval: string,
   limit = 299,
+  /** Верхняя граница страницы в миллисекундах. У OKX она называется `after`. */
+  olderThanMs?: number,
 ): string | null {
   const chainIndex = OKX_CHAIN_INDEX[chain];
   const bar = CANDLE_BAR[interval];
@@ -918,6 +920,10 @@ export function tokenCandlePath(
     bar,
     limit: String(Math.max(2, Math.min(299, Math.trunc(limit) || 299))),
   });
+
+  if (olderThanMs != null && Number.isFinite(olderThanMs) && olderThanMs > 0) {
+    params.set('after', String(Math.trunc(olderThanMs)));
+  }
 
   return `/api/v6/dex/market/candles?${params}`;
 }
@@ -967,12 +973,13 @@ export async function fetchTokenCandles(
   address: string,
   interval: string,
   limit = 299,
+  olderThanMs?: number,
 ): Promise<OkxTokenCandle[]> {
-  const path = tokenCandlePath(chain, address, interval, limit);
+  const path = tokenCandlePath(chain, address, interval, limit, olderThanMs);
   if (!path || !isOkxConfigured()) return [];
 
   const bounded = Math.max(2, Math.min(299, Math.trunc(limit) || 299));
-  const key = `okx:candles:${chain}:${address}:${interval}:${bounded}`;
+  const key = `okx:candles:${chain}:${address}:${interval}:${bounded}:${olderThanMs ?? 'latest'}`;
   const hit = await cached(
     key,
     async () => parseOkxTokenCandles(await safeCall<unknown>('GET', path)),

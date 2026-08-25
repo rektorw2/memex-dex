@@ -54,11 +54,24 @@ export interface DexScreenerPair {
   socials: Array<{ type: string; url: string }>;
   /** Продвижение за деньги. Не признак качества, но факт о токене. */
   boosts: number | null;
+  /**
+   * Символ и название базового токена пары.
+   *
+   * Нужны для продвигаемых токенов, которых ещё нет в нашей базе:
+   * список продвижения отдаёт только сеть, адрес, значок и описание,
+   * а символ живёт в ответе о парах. Без них интерфейс показывал
+   * `???` — три знака, по которым нельзя отличить один такой токен
+   * от другого.
+   */
+  baseSymbol: string | null;
+  baseName: string | null;
+  baseAddress: string | null;
 }
 
 interface RawPair {
   chainId?: string;
   pairAddress?: string;
+  baseToken?: { address?: string; symbol?: string; name?: string };
   priceUsd?: string;
   liquidity?: { usd?: number };
   volume?: { h24?: number };
@@ -133,6 +146,9 @@ function toPair(raw: RawPair, chain: Chain): DexScreenerPair | null {
       )
       .map((s) => ({ type: s.type, url: s.url })),
     boosts: num(raw.boosts?.active),
+    baseSymbol: raw.baseToken?.symbol?.trim() || null,
+    baseName: raw.baseToken?.name?.trim() || null,
+    baseAddress: raw.baseToken?.address ?? null,
   };
 }
 
@@ -191,7 +207,7 @@ export async function fetchTokenPairs(
 
       // Ответ не говорит, какому из запрошенных адресов принадлежит пара,
       // поэтому сопоставляем по базовому токену из самого ответа.
-      const base = (raw as RawPair & { baseToken?: { address?: string } }).baseToken?.address;
+      const base = raw.baseToken?.address;
       if (!base) continue;
 
       const key = base.toLowerCase();

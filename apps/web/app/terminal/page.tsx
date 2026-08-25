@@ -1,7 +1,7 @@
 'use client';
 
 import useSWR from 'swr';
-import { Suspense, useEffect, useMemo, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { fetcher, fmtUsd, fmtPrice, fmtPct } from '@/lib/api';
 import { useAccess } from '@/lib/access';
@@ -13,6 +13,15 @@ import {
 } from '@memex/core';
 import { TokenLogo } from '@/components/TokenLogo';
 import { TokenList } from '@/components/terminal/TokenList';
+import { MarketStats } from '@/components/terminal/MarketStats';
+import {
+  TerminalSearchField,
+  TerminalSelect,
+  TerminalFilterChip,
+  TerminalChipRow,
+  TerminalFilterBar,
+  TerminalTabs,
+} from '@/components/terminal/controls';
 import { ChartPanel } from '@/components/terminal/ChartPanel';
 import { SidePanel } from '@/components/terminal/SidePanel';
 import { CHAIN_LABEL, SORT_OPTIONS, QUICK_FILTERS, type Token } from '@/components/terminal/types';
@@ -85,6 +94,29 @@ function Terminal() {
   // на человека — а он для того и пришёл, чтобы этого не делать.
   const [safeOnly, setSafeOnly] = useState(true);
   /**
+   * Только токены с рыночной активностью за последние сутки.
+   *
+   * Комбинируется со всеми остальными фильтрами и по умолчанию
+   * выключен: витрина не должна молча прятать половину рынка
+   * до того, как человек об этом попросил.
+   */
+  const [activeOnly, setActiveOnly] = useState(false);
+  /**
+   * Своё состояние вкладки DexScreener.
+   *
+   * Прежде она получала `chain` и `safeOnly` от «Рынка». Оба фильтра
+   * человек включал для своей витрины, а действовали они на чужой:
+   * `safeOnly` по умолчанию включён, и вкладка молча показывала
+   * только те продвигаемые токены, которые уже прошли нашу проверку.
+   * Их единицы — отсюда и список из двух строк.
+   *
+   * Вкладки показывают разные наборы по разным правилам, и общее
+   * состояние фильтров означало, что настройка одной незаметно
+   * управляет другой.
+   */
+  const [dexChain, setDexChain] = useState('');
+  const [dexSafeOnly, setDexSafeOnly] = useState(false);
+  /**
    * Источник списка рынков.
    *
    * Своя витрина и продвигаемые токены DexScreener — разные вещи
@@ -98,6 +130,7 @@ function Terminal() {
   if (chain) params.set('chain', chain);
   if (search) params.set('search', search);
   if (safeOnly) params.set('safeOnly', 'true');
+  if (activeOnly) params.set('activeOnly', 'true');
 
   const { data: tokens, isLoading } = useSWR<Token[]>(`/tokens?${params}`, fetcher, {
     refreshInterval: 20_000,
@@ -229,6 +262,26 @@ function Terminal() {
 
   const quoteToken = tokens?.find((t) => t.isQuote && t.chain === active?.chain);
 
+  /**
+   * Страница свечей старше указанного времени.
+   *
+   * Кэш SWR здесь не нужен: страница по паре «токен и курсор»
+   * неизменна, и панель сама помнит, какие курсоры уже запрашивала.
+   * Второй раз один и тот же курсор просто не спрашивается.
+   */
+  const loadOlder = useCallback(
+    async (before: number) => {
+      if (!activeId) return { candles: [], oldest: null };
+
+      const res = await fetcher<{ candles?: LiveChartCandle[]; oldest?: number | null }>(
+        `/tokens/${activeId}/candles?interval=${interval}&before=${before}`,
+      );
+
+      return { candles: res.candles ?? [], oldest: res.oldest ?? null };
+    },
+    [activeId, interval],
+  );
+
   /** Выбор токена на телефоне сразу открывает график. */
   function selectToken(t: Token) {
     setSelectedGem(null);
@@ -285,6 +338,8 @@ function Terminal() {
       setSearch={setSearch}
       safeOnly={safeOnly}
       setSafeOnly={setSafeOnly}
+      activeOnly={activeOnly}
+      setActiveOnly={setActiveOnly}
       checkStatus={checkStatus}
     />
   );
@@ -322,7 +377,12 @@ function Terminal() {
                 <GemsList onOpenChart={openGemChart} />
               ) : (
                 <div className="p-3">
-                  <DexScreenerList chain={chain} safeOnly={safeOnly} />
+                  <DexScreenerList
+                    chain={dexChain}
+                    onChain={setDexChain}
+                    safeOnly={dexSafeOnly}
+                    onSafeOnly={setDexSafeOnly}
+                  />
                 </div>
               )}
             </div>
@@ -337,6 +397,7 @@ function Terminal() {
               interval={interval}
               onInterval={setInterval}
               chartHeight={380}
+              loadOlder={loadOlder}
             />
           </section>
 
@@ -364,24 +425,49 @@ function Terminal() {
               <SourceTabs value={source} onChange={setSource} />
 
               {source === 'own' ? (
-                <>
-                  <div className="sticky top-header z-20 space-y-3 border-b border-border bg-panel p-3">
+                /*
+                 * Прокручивается только список токенов.
+                 *
+                 * Вкладки, фильтры и пояснение о проверке остаются
+                 * на месте: прежде длинный список растягивал страницу,
+                 * и чтобы сменить сеть, надо было пролистать шестьдесят
+                 * строк обратно наверх.
+                 *
+                 * Механика включена только для «Рынка»: GEMS
+                 * и DexScreener короче и живут по своим правилам.
+                 */
+                <div className="market-panel-h flex min-h-0 flex-col">
+                  <div className="shrink-0 space-y-3 border-b border-border bg-panel p-3">
                     {filters}
                     {addressNotice}
                   </div>
-                  <TokenList
-                    tokens={tokens}
-                    activeId={active?.id ?? null}
-                    onSelect={selectToken}
-                    isLoading={isLoading}
-                    touch
-                  />
-                </>
+                  {/*
+                    Ключ по составу запроса, а не по выбранному токену.
+
+                    Выбор строки меняет `activeId`, но не набор данных:
+                    перемонтирование по нему сбрасывало бы позицию
+                    прокрутки при каждом нажатии.
+                  */}
+                  <div key={params.toString()} className="scroll-y min-h-0 flex-1">
+                    <TokenList
+                      tokens={tokens}
+                      activeId={active?.id ?? null}
+                      onSelect={selectToken}
+                      isLoading={isLoading}
+                      touch
+                    />
+                  </div>
+                </div>
               ) : source === 'gems' ? (
                 <GemsList onOpenChart={openGemChart} />
               ) : (
                 <div className="p-3">
-                  <DexScreenerList chain={chain} safeOnly={safeOnly} />
+                  <DexScreenerList
+                    chain={dexChain}
+                    onChain={setDexChain}
+                    safeOnly={dexSafeOnly}
+                    onSafeOnly={setDexSafeOnly}
+                  />
                 </div>
               )}
             </div>
@@ -402,6 +488,7 @@ function Terminal() {
                 onInterval={setInterval}
                 chartHeight={260}
                 showHeader={false}
+                loadOlder={loadOlder}
               />
             </div>
             {active && selectedGem == null && (
@@ -471,6 +558,12 @@ function Terminal() {
  * оплаченное размещение. Спрятать это различие
  * в выпадающий список значило бы приравнять одно к другому.
  */
+const SOURCE_TABS = [
+  ['own', 'Рынок'],
+  ['gems', 'GEMS'],
+  ['dexscreener', 'DexScreener'],
+] as const satisfies ReadonlyArray<readonly [MarketSource, string]>;
+
 function SourceTabs({
   value,
   onChange,
@@ -479,93 +572,8 @@ function SourceTabs({
   onChange: (v: MarketSource) => void;
 }) {
   return (
-    <div className="flex shrink-0 border-b border-border">
-      {(
-        [
-          ['own', 'Рынок'],
-          ['gems', 'GEMS'],
-          ['dexscreener', 'DexScreener'],
-        ] as const
-      ).map(([v, label]) => (
-        <button
-          key={v}
-          onClick={() => onChange(v)}
-          className={`-mb-px border-b-2 px-4 py-2.5 text-xs transition-colors ${
-            value === v
-              ? 'border-accent text-accent'
-              : 'border-transparent text-muted hover:text-white'
-          }`}
-        >
-          {label}
-        </button>
-      ))}
-    </div>
+    <TerminalTabs value={value} onChange={onChange} items={SOURCE_TABS} label="Источник списка" />
   );
-}
-
-/* ────────────────────────── Сводка по рынку ────────────────────────── */
-
-function MarketStats({ summary, compact }: { summary: any; compact?: boolean }) {
-  if (!summary) {
-    return (
-      <div className="panel flex h-stats shrink-0 items-center gap-6 px-4">
-        {Array.from({ length: 4 }).map((_, i) => (
-          <div key={i} className="h-3 w-20 animate-pulse rounded bg-raised" />
-        ))}
-      </div>
-    );
-  }
-
-  const items: Array<[string, string]> = [
-    // «Прошли проверку», а не «Токенов»: число в шапке должно совпадать
-    // с тем, что человек видит в списке, иначе оно вводит в заблуждение.
-    ['Прошли проверку', String(summary.passedCheck ?? summary.tokens)],
-    ['Объём 24ч', fmtUsd(summary.volume24hUsd)],
-    ['Ликвидность', fmtUsd(summary.liquidityUsd)],
-    ...Object.entries(summary.byChain ?? {}).map(
-      ([c, n]) => [CHAIN_LABEL[c] ?? c, String(n)] as [string, string],
-    ),
-  ];
-
-  return (
-    <div
-      className={`panel scroll-x flex shrink-0 items-center gap-6 px-4 ${
-        compact ? 'py-2.5' : 'h-stats'
-      }`}
-    >
-      {items.map(([label, value]) => (
-        <div key={label} className="shrink-0">
-          <div className="text-[11px] leading-tight text-muted">{label}</div>
-          <div className="num text-sm leading-tight">{value}</div>
-        </div>
-      ))}
-
-      {/* Источник и время последнего обновления.
-          Оба нужны по одной причине: число без указания, откуда оно
-          и насколько свежее, читается как вечная истина. Цена
-          мем-коина живёт секунды, и человек имеет право видеть,
-          на что он смотрит. */}
-      {summary.dataSource && (
-        <div className="ml-auto shrink-0 pl-4 text-right">
-          <div className="text-[11px] leading-tight text-muted">
-            Рыночные данные: {summary.dataSource}
-          </div>
-          <div className="text-[11px] leading-tight text-muted/70">
-            Обновлено {fmtTime(summary.updatedAt)}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** Время обновления в местном формате. Дата не нужна — данные минутные. */
-function fmtTime(iso: string | null | undefined): string {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  return Number.isFinite(d.getTime())
-    ? d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
-    : '—';
 }
 
 /* ─────────────────────────── Фильтры списка ─────────────────────────── */
@@ -579,6 +587,8 @@ function Filters({
   setSearch,
   safeOnly,
   setSafeOnly,
+  activeOnly,
+  setActiveOnly,
   checkStatus,
 }: {
   chain: string;
@@ -589,86 +599,115 @@ function Filters({
   setSearch: (v: string) => void;
   safeOnly: boolean;
   setSafeOnly: (v: boolean) => void;
+  activeOnly: boolean;
+  setActiveOnly: (v: boolean) => void;
   checkStatus?: {
     total: number; ok: number; warn: number; blocked: number;
     unchecked: number; stale?: number;
   };
 }) {
+  const chainOptions = [
+    ['', 'Все сети'] as const,
+    ...Object.entries(CHAIN_LABEL).map(([k, v]) => [k, v] as const),
+  ];
+
   return (
-    <div className="space-y-2">
-      <input
-        className="input font-sans text-sm"
-        placeholder="Поиск по тикеру или адресу"
-        value={search}
-        onChange={(e) => setSearch(e.target.value)}
-      />
+    <TerminalFilterBar
+      search={<TerminalSearchField value={search} onChange={setSearch} />}
+      selects={
+        <>
+          {/* Выпадающие списки вместо ряда кнопок: пять сетей и пять
+              сортировок занимали три строки и оставляли списку рынков
+              меньше половины панели. */}
+          <TerminalSelect value={chain} onChange={setChain} label="Сеть" options={chainOptions} />
 
-      <div className="flex gap-2">
-        {/* Выпадающие списки вместо ряда кнопок: пять сетей и пять
-            сортировок занимали три строки и оставляли списку рынков
-            меньше половины панели. */}
-        <select
-          value={chain}
-          onChange={(e) => setChain(e.target.value)}
-          className="input flex-1 font-sans text-xs"
-          aria-label="Сеть"
-        >
-          <option value="">Все сети</option>
-          {Object.entries(CHAIN_LABEL).map(([k, v]) => (
-            <option key={k} value={k}>
-              {v}
-            </option>
+          <TerminalSelect
+            // Незнакомое значение приводится к объёму: `select`
+            // с value вне списка молча показал бы первый вариант,
+            // и подпись разошлась бы с тем, что применено на сервере.
+            value={SORT_OPTIONS.some(([k]) => k === sort) ? sort : 'volume'}
+            onChange={setSort}
+            label="Сортировка"
+            options={SORT_OPTIONS}
+          />
+        </>
+      }
+      chips={
+        <TerminalChipRow label="Быстрые фильтры">
+          {QUICK_FILTERS.map(([k, label]) => (
+            <TerminalFilterChip
+              key={k}
+              active={sort === k}
+              onClick={() => setSort(sort === k ? 'volume' : k)}
+            >
+              {label}
+            </TerminalFilterChip>
           ))}
-        </select>
 
-        <select
-          value={SORT_OPTIONS.some(([k]) => k === sort) ? sort : 'volume'}
-          onChange={(e) => setSort(e.target.value)}
-          className="input flex-1 font-sans text-xs"
-          aria-label="Сортировка"
-        >
-          {SORT_OPTIONS.map(([k, v]) => (
-            <option key={k} value={k}>
-              {v}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      {/* Быстрые фильтры переносятся по строкам, а не прокручиваются.
-          Прокрутка обрезала последнюю кнопку у края экрана, и о её
-          существовании нельзя было догадаться: горизонтальный скролл
-          внутри узкой панели пальцем почти не нащупывается. */}
-      <div className="flex flex-wrap gap-1.5">
-        {QUICK_FILTERS.map(([k, label]) => (
-          <button
-            key={k}
-            onClick={() => setSort(sort === k ? 'volume' : k)}
-            className={`tap shrink-0 rounded-md px-2.5 py-1 text-xs transition-colors ${
-              sort === k
-                ? 'bg-accent/15 text-accent'
-                : 'text-muted hover:bg-raised hover:text-white'
-            }`}
+          {/*
+            «Проверенные» сохраняет бирюзовый: это тот же цвет,
+            которым размечена безопасность во всём продукте, и здесь
+            он несёт смысл, а не отличает кнопку от соседних.
+          */}
+          <TerminalFilterChip
+            active={safeOnly}
+            onClick={() => setSafeOnly(!safeOnly)}
+            tone="check"
+            title="Только токены, прошедшие проверку контракта без замечаний"
+            icon={
+              <svg
+                width="11"
+                height="11"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                aria-hidden
+                className="shrink-0"
+              >
+                <path d="M12 3l7 3v6c0 4.5-3 8-7 9-4-1-7-4.5-7-9V6z" />
+              </svg>
+            }
           >
-            {label}
-          </button>
-        ))}
+            Проверенные
+          </TerminalFilterChip>
 
-        <button
-          onClick={() => setSafeOnly(!safeOnly)}
-          title="Только токены, прошедшие проверку контракта без замечаний"
-          className={`tap shrink-0 rounded-md px-2.5 py-1 text-xs transition-colors ${
-            safeOnly ? 'bg-up/15 text-up' : 'text-muted hover:bg-raised hover:text-white'
-          }`}
-        >
-          Проверенные
-        </button>
-      </div>
+          {/*
+            «Активные 24ч», а не «24ч».
 
-      {/* Состояние проверки. Показывается только пока она не закончена:
-          у готовой витрины эта строка была бы шумом. */}
-      {checkStatus && (
-        <div className="text-muted space-y-1 text-[11px] leading-relaxed">
+            Просто «24ч» не отвечает на вопрос, что именно произошло
+            за сутки: обновилась котировка, прошла проверка риска
+            или отработал импортёр. Здесь речь ровно об одном —
+            о торгах на рынке.
+          */}
+          <TerminalFilterChip
+            active={activeOnly}
+            onClick={() => setActiveOnly(!activeOnly)}
+            title="Есть сделки или заметный объём за последние 24 часа. Время импорта и время проверки риска не учитываются"
+            icon={
+              <svg
+                width="11"
+                height="11"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                aria-hidden
+                className="shrink-0"
+              >
+                <path d="M4 16l4-6 4 3 4-8 4 5" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            }
+          >
+            Активные 24ч
+          </TerminalFilterChip>
+        </TerminalChipRow>
+      }
+      notice={
+        /* Состояние проверки. Отделено от контролов линией сверху:
+           это пояснение к результату, а не ещё один фильтр. */
+        checkStatus ? (
+        <div className="space-y-1 border-t border-border/60 pt-2 text-[11px] leading-relaxed text-muted">
           <p>
             {safeOnly
               ? `Прошли проверку: ${checkStatus.ok}. Скрыто: ${checkStatus.blocked} ловушек, ` +
@@ -699,8 +738,9 @@ function Filters({
             </p>
           )}
         </div>
-      )}
-    </div>
+        ) : null
+      }
+    />
   );
 }
 

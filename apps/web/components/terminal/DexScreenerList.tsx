@@ -45,11 +45,24 @@ interface DexToken {
 
 export function DexScreenerList({
   chain,
+  onChain,
   safeOnly,
+  onSafeOnly,
 }: {
   chain: string;
+  onChain?: (v: string) => void;
   safeOnly: boolean;
+  onSafeOnly?: (v: boolean) => void;
 }) {
+  /*
+   * Фильтры вкладки — свои.
+   *
+   * Прежде сюда приходили `chain` и `safeOnly` от «Рынка». Человек
+   * включал их для своей витрины, а действовали они на чужую:
+   * `safeOnly` по умолчанию включён, и вкладка молча оставляла
+   * только те продвигаемые токены, которые уже прошли нашу проверку.
+   * Их единицы — отсюда и список из двух строк.
+   */
   const params = new URLSearchParams({ limit: '40' });
   if (chain) params.set('chain', chain);
   if (!safeOnly) params.set('safeOnly', 'false');

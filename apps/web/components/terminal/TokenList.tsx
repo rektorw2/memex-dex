@@ -84,7 +84,12 @@ export function TokenList({ tokens, activeId, onSelect, isLoading, touch }: Prop
       <div className="sticky top-0 z-10 flex items-center gap-3 border-b border-border bg-panel px-3 py-2 text-[11px] uppercase tracking-wide text-muted">
         <span className="flex-1">Токен</span>
         <span className="w-[92px] text-right">Цена</span>
-        <span className="w-[68px] text-right">24ч</span>
+        {/* «Изменение 24ч», а не «PnL»: это движение цены токена,
+            а не результат человека. Смешивать их нельзя — у них
+            разные знаки в один и тот же момент. */}
+        <span className="w-[68px] text-right" title="Изменение цены за последние 24 часа">
+          Изм. 24ч
+        </span>
       </div>
 
       {rows.map((t) => {
@@ -148,8 +153,20 @@ export function TokenList({ tokens, activeId, onSelect, isLoading, touch }: Prop
               className={`num w-[68px] shrink-0 text-right text-sm ${
                 ch == null ? 'text-muted' : ch >= 0 ? 'text-up' : 'text-down'
               }`}
-              title={t.priceChange24h ?? undefined}
+              title={
+                ch == null
+                  ? 'Достоверных данных за 24 часа нет'
+                  : `Изменение цены за 24 часа: ${t.priceChange24h}`
+              }
             >
+              {/*
+                Прочерк, а не ноль.
+
+                Сервер отдаёт `null`, когда котировка устарела или
+                поля нет вовсе. Ноль утверждал бы «цена не изменилась»,
+                и отличить его от «мы не знаем» на витрине было бы
+                нечем.
+              */}
               {/* Знак ставится всегда: полагаться только на цвет нельзя —
                   восемь процентов мужчин их не различают. */}
               {ch == null ? '—' : fmtPct(ch)}

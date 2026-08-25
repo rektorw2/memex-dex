@@ -7,6 +7,7 @@ import { TokenLogo } from '@/components/TokenLogo';
 import { fetcher, fmtPct, fmtPrice, fmtUsd } from '@/lib/api';
 import { chainLabel } from '@/lib/chains';
 import { useTokenFavorites } from '@/lib/token-favorites';
+import { TerminalSelect, TerminalFilterChip, TerminalChipRow } from './controls';
 
 export interface GemToken {
   id: string | null;
@@ -43,6 +44,18 @@ interface GemSignal {
 }
 
 type GemSort = 'ath' | 'newest' | 'current';
+
+/**
+ * Сортировки вкладки.
+ *
+ * Списком, а не разметкой внутри `select`: так их видно целиком
+ * в одном месте и так они попадают в общий контрол без исключений.
+ */
+const GEM_SORT_OPTIONS = [
+  ['ath', 'По ATH'],
+  ['newest', 'Сначала новые'],
+  ['current', 'По росту сейчас'],
+] as const satisfies ReadonlyArray<readonly [GemSort, string]>;
 
 interface Props {
   /** Открыть этот токен в центральном графике терминала. */
@@ -125,51 +138,61 @@ export function GemsList({ onOpenChart }: Props) {
         </p>
       </div>
 
-      <div className="grid grid-cols-2 gap-2" aria-label="Фильтры GEMS">
-        <select
-          value={chain}
-          onChange={(event) => setChain(event.target.value)}
-          className="input font-sans text-xs"
-          aria-label="Сеть GEMS"
-        >
-          <option value="">Все сети</option>
-          {chains.map((value) => (
-            <option key={value} value={value}>
-              {chainLabel(value)}
-            </option>
-          ))}
-        </select>
+      {/*
+        Те же контролы, что и на вкладке «Рынок».
 
-        <select
-          value={sort}
-          onChange={(event) => setSort(event.target.value as GemSort)}
-          className="input font-sans text-xs"
-          aria-label="Сортировка GEMS"
-        >
-          <option value="ath">По ATH</option>
-          <option value="newest">Сначала новые</option>
-          <option value="current">По росту сейчас</option>
-        </select>
+        Раньше здесь стояли свои `select` с классом `.input` и свои
+        кнопки-фильтры со своим набором классов. Выглядело это иначе,
+        чем на соседней вкладке, и переключение вкладки меняло
+        не только содержимое, но и оформление — как будто человек
+        попал в другое приложение.
+      */}
+      <div className="space-y-2.5">
+        <div className="grid grid-cols-2 gap-2">
+          <TerminalSelect
+            value={chain}
+            onChange={setChain}
+            label="Сеть GEMS"
+            options={[['', 'Все сети'] as const, ...chains.map((v) => [v, chainLabel(v)] as const)]}
+          />
 
-        <button
-          type="button"
-          aria-pressed={lowCapOnly}
-          onClick={() => setLowCapOnly((value) => !value)}
-          className={filterClass(lowCapOnly)}
-          title="Текущая капитализация меньше $30,000"
-        >
-          Low Cap &lt; $30K
-        </button>
+          <TerminalSelect
+            value={sort}
+            onChange={(value) => setSort(value as GemSort)}
+            label="Сортировка GEMS"
+            options={GEM_SORT_OPTIONS}
+          />
+        </div>
 
-        <button
-          type="button"
-          aria-pressed={favoritesOnly}
-          onClick={() => setFavoritesOnly((value) => !value)}
-          className={filterClass(favoritesOnly)}
-          title="Токены, отмеченные звездой в этом браузере"
-        >
-          ★ Избранные
-        </button>
+        <TerminalChipRow label="Фильтры GEMS">
+          <TerminalFilterChip
+            active={lowCapOnly}
+            onClick={() => setLowCapOnly((value) => !value)}
+            title="Текущая капитализация меньше $30,000"
+          >
+            Low Cap &lt; $30K
+          </TerminalFilterChip>
+
+          <TerminalFilterChip
+            active={favoritesOnly}
+            onClick={() => setFavoritesOnly((value) => !value)}
+            title="Токены, отмеченные звездой в этом браузере"
+            icon={
+              <svg
+                width="11"
+                height="11"
+                viewBox="0 0 24 24"
+                fill="currentColor"
+                aria-hidden
+                className="shrink-0"
+              >
+                <path d="M12 3l2.6 5.6 6 .8-4.4 4.2 1.1 6-5.3-3-5.3 3 1.1-6L3.4 9.4l6-.8z" />
+              </svg>
+            }
+          >
+            Избранные
+          </TerminalFilterChip>
+        </TerminalChipRow>
       </div>
 
       {isLoading && signals.length === 0 ? (
@@ -517,12 +540,4 @@ function isRecent(value: string | null, maxAgeMs: number): boolean {
 
 function shortAddress(value: string): string {
   return value.length > 16 ? `${value.slice(0, 6)}…${value.slice(-6)}` : value;
-}
-
-function filterClass(active: boolean): string {
-  return `tap min-h-10 rounded-lg border px-2.5 text-xs font-medium transition-colors ${
-    active
-      ? 'border-accent/40 bg-accent/15 text-accent'
-      : 'border-border bg-panel text-muted hover:border-border/80 hover:text-white'
-  }`;
 }

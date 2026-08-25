@@ -16,6 +16,30 @@ interface Props {
   resetKey?: string;
   /** На секундном графике ось обязана показывать секунды, а не минуты. */
   secondsVisible?: boolean;
+  /**
+   * Видимый участок изменился.
+   *
+   * `from` — логический индекс самой левой видимой свечи; отрицательный
+   * означает, что человек утащил график за край данных. По нему
+   * решается, пора ли грузить историю, и ушёл ли он от живого края.
+   */
+  onVisibleRange?: (range: { from: number; to: number }, total: number) => void;
+  /**
+   * Счётчик команды «вернуться к текущей цене».
+   *
+   * Число, а не функция: прокинуть императивный вызов в дочерний
+   * компонент иначе можно только через ref, а увеличенный счётчик
+   * читается как обычное свойство и не требует лишнего слоя.
+   */
+  goLiveNonce?: number;
+  /**
+   * Держаться правого края при появлении новой свечи.
+   *
+   * Выключается, когда человек изучает прошлое: иначе каждая живая
+   * котировка утаскивала бы его обратно к текущей цене — самый
+   * раздражающий из возможных дефектов графика.
+   */
+  followLive?: boolean;
 }
 
 /**
@@ -45,11 +69,34 @@ function priceFormatFor(candles: CandlestickData[]): { precision: number; minMov
   return { precision, minMove: 10 ** -precision };
 }
 
-export function PriceChart({ candles, height = 420, resetKey = '', secondsVisible = false }: Props) {
+export function PriceChart({
+  candles,
+  height = 420,
+  resetKey = '',
+  secondsVisible = false,
+  onVisibleRange,
+  goLiveNonce = 0,
+  followLive = true,
+}: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<'Candlestick'> | ISeriesApi<'Line'> | null>(null);
   const previousRef = useRef<{ key: string; length: number; first: unknown } | null>(null);
+
+  /*
+   * Обработчик диапазона держится в ref.
+   *
+   * Подписка ставится один раз при создании графика, а замыкание
+   * внутри неё жило бы с первым значением свойства навсегда: обработчик
+   * видел бы пустую историю и никогда не запросил бы вторую страницу.
+   * Ref обновляется каждый рендер и решает это без пересоздания
+   * подписки — а пересоздавать её нельзя, она привязана к canvas.
+   */
+  const rangeHandler = useRef(onVisibleRange);
+  rangeHandler.current = onVisibleRange;
+
+  const totalRef = useRef(candles.length);
+  totalRef.current = candles.length;
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -71,6 +118,15 @@ export function PriceChart({ candles, height = 420, resetKey = '', secondsVisibl
         borderColor: '#252B35',
         timeVisible: true,
         secondsVisible,
+        /*
+         * Библиотека не двигает диапазон сама.
+         *
+         * По умолчанию новая свеча сдвигает видимую область вправо —
+         * и человека, изучающего вчерашний день, каждую секунду
+         * выбрасывало бы к текущей цене. Решение о следовании
+         * за live принимается здесь явно, ниже.
+         */
+        shiftVisibleRangeOnNewBar: false,
       },
       crosshair: {
         mode: 1,
@@ -121,6 +177,20 @@ export function PriceChart({ candles, height = 420, resetKey = '', secondsVisibl
     chartRef.current = chart;
     seriesRef.current = series;
 
+    /*
+     * Подписка на видимый участок.
+     *
+     * Единственный способ узнать, что человек утащил график к левому
+     * краю: события перетаскивания библиотека наружу не отдаёт,
+     * а опрос диапазона по таймеру был бы и дороже, и грубее.
+     */
+    const onRange = (range: { from: number; to: number } | null) => {
+      if (range == null) return;
+      rangeHandler.current?.({ from: range.from, to: range.to }, totalRef.current);
+    };
+
+    chart.timeScale().subscribeVisibleLogicalRangeChange(onRange);
+
     // ResizeObserver вместо события окна: панель меняет ширину и без
     // изменения размера окна — например, когда на мобильном
     // переключается вкладка и график попадает в другой контейнер.
@@ -133,6 +203,7 @@ export function PriceChart({ candles, height = 420, resetKey = '', secondsVisibl
 
     return () => {
       ro.disconnect();
+      chart.timeScale().unsubscribeVisibleLogicalRangeChange(onRange);
       seriesRef.current = null;
       chartRef.current = null;
       previousRef.current = null;
@@ -163,6 +234,27 @@ export function PriceChart({ candles, height = 420, resetKey = '', secondsVisibl
       candles.length >= previous.length &&
       candles.length <= previous.length + 1;
 
+    /*
+     * Сколько свечей добавилось слева.
+     *
+     * Признак вставки истории: ключ тот же, но левый край сдвинулся.
+     * Прежняя первая свеча всё ещё в наборе — её индекс и есть число
+     * добавленных баров.
+     */
+    const prepended =
+      previous != null && previous.key === resetKey && previous.first !== first
+        ? candles.findIndex((candle) => candle.time === previous.first)
+        : -1;
+
+    /*
+     * Диапазон снимается ДО записи данных.
+     *
+     * После `setData` библиотека пересчитывает шкалу, и прежние
+     * логические индексы уже недоступны. Именно здесь график
+     * и прыгал бы к текущей цене.
+     */
+    const rangeBefore = prepended > 0 ? chart.timeScale().getVisibleLogicalRange() : null;
+
     if (secondsVisible) {
       const line = series as ISeriesApi<'Line'>;
       const points: LineData[] = candles.map((candle) => ({
@@ -186,12 +278,49 @@ export function PriceChart({ candles, height = 420, resetKey = '', secondsVisibl
       else candlesticks.setData(candles);
     }
 
-    if (!incremental) {
+    if (prepended > 0) {
+      /*
+       * Тот же участок, что и был.
+       *
+       * Логические индексы отсчитываются от начала набора: вставка
+       * слева сдвигает их все ровно на число добавленных баров.
+       * Прибавляем это число к обеим границам — и человек остаётся
+       * там же, где стоял, только теперь слева от него есть куда идти.
+       */
+      if (rangeBefore != null) {
+        chart.timeScale().setVisibleLogicalRange({
+          from: rangeBefore.from + prepended,
+          to: rangeBefore.to + prepended,
+        });
+      }
+    } else if (!incremental) {
+      // Первая загрузка или смена токена: показываем всё, что есть.
       chart.timeScale().fitContent();
+    } else if (followLive) {
+      /*
+       * Новая свеча у правого края.
+       *
+       * Сдвиг делается вручную и только когда человек и так смотрит
+       * на текущую цену: `shiftVisibleRangeOnNewBar` выключен именно
+       * ради этого различия.
+       */
+      chart.timeScale().scrollToRealTime();
     }
 
     previousRef.current = { key: resetKey, length: candles.length, first };
-  }, [candles, resetKey, secondsVisible]);
+  }, [candles, resetKey, secondsVisible, followLive]);
+
+  /*
+   * Возврат к текущей цене по кнопке.
+   *
+   * Отдельный эффект: команда приходит счётчиком и не должна
+   * зависеть от данных — иначе нажатие терялось бы, если в тот же
+   * тик пришла новая свеча.
+   */
+  useEffect(() => {
+    if (goLiveNonce === 0) return;
+    chartRef.current?.timeScale().scrollToRealTime();
+  }, [goLiveNonce]);
 
   return <div ref={containerRef} className="w-full" />;
 }

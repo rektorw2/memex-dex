@@ -18,6 +18,11 @@ import {
   appendLivePrice,
   OKX_CHAIN_INDEX,
   type ChainKey,
+  belongsInMarketList,
+  priceChange24h,
+  tokenDisplaySymbol,
+  isDisplayableToken,
+  ACTIVE_MIN_VOLUME_USD,
 } from '@memex/core';
 import { env } from '../lib/env.js';
 import { prisma } from '../lib/prisma.js';
@@ -34,6 +39,16 @@ import { serializeResearch } from '../services/research.js';
 import { RULES_VERSION } from '../workers/scam-checker.js';
 import { MARKET_DATA_SOURCE } from '../services/okx-market.js';
 import { cached } from '../lib/cache.js';
+import type { DexScreenerPair as DexPair } from '../services/dexscreener.js';
+
+/**
+ * Запас строк под отсев стейблкоинов.
+ *
+ * Их единицы на всю базу; десяти хватает с избытком, а лишние
+ * прочитанные строки стоят доли миллисекунды.
+ */
+const STABLECOIN_SLACK = 10;
+
 
 /**
  * Получить историю напрямую по адресу токена.
@@ -46,10 +61,13 @@ async function immediateTokenCandles(
   address: string,
   interval: string,
   limit: number,
+  beforeSeconds?: number,
 ) {
   const provider = await import('../services/okx-market.js');
   if (typeof provider.fetchTokenCandles !== 'function') return [];
-  return provider.fetchTokenCandles(chain, address, interval, limit);
+  return beforeSeconds == null
+    ? provider.fetchTokenCandles(chain, address, interval, limit)
+    : provider.fetchTokenCandles(chain, address, interval, limit, beforeSeconds * 1000);
 }
 
 /**
@@ -694,7 +712,25 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
     boosted: Awaited<ReturnType<typeof import('../services/dexscreener.js')['fetchBoostedTokens']>>,
     q: { chain?: string; safeOnly: boolean; limit: number },
   ) {
-    const filtered = q.chain ? boosted.filter((b) => b.chain === q.chain) : boosted;
+    /*
+     * Отсев некорректных записей и свёртка повторов.
+     *
+     * Провайдер отдаёт продвижение по каждому оплаченному размещению,
+     * и один токен встречается в списке несколько раз, если за него
+     * платили не единожды. Без свёртки он занимает три строки подряд.
+     *
+     * Запись без сети или адреса не идентифицируется вовсе: две
+     * разные монеты с одинаковым символом слились бы в одну строку.
+     */
+    const usable = boosted.filter((b) => isDisplayableToken(b));
+    const byChain = q.chain ? usable.filter((b) => b.chain === q.chain) : usable;
+
+    const filtered = [
+      ...new Map(
+        byChain.map((b) => [`${b.chain}:${b.address.toLowerCase()}`, b] as const),
+      ).values(),
+    ];
+
     if (filtered.length === 0) {
       return { tokens: [], source: 'DexScreener', unchecked: 0, total: 0 };
     }
@@ -720,24 +756,100 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
 
     void ingestUnknownTokens(missing);
 
+    /*
+     * Пакетное обогащение метаданными.
+     *
+     * Список продвижения отдаёт сеть, адрес, значок и описание —
+     * и не отдаёт символ. Раньше это превращалось в `???`: три знака,
+     * по которым нельзя отличить один такой токен от другого, и
+     * которые читаются как поломка интерфейса, а не как отсутствие
+     * сведений у провайдера.
+     *
+     * Запрос идёт пачками по тридцать адресов на сеть, а не по одному
+     * на токен: сорок токенов — это две пачки вместо сорока запросов.
+     * Ответ уходит в тот же кэш, что и вся сборка, поэтому обновление
+     * страницы до провайдера не доходит.
+     */
+    const enriched = new Map<string, { symbol: string | null; name: string | null; pair: DexPair | null }>();
+
+    /*
+     * Обогащение необязательно.
+     *
+     * Провайдер может не ответить, упереться в лимит или оказаться
+     * подменённым в изолированном тесте. Ни один из этих случаев
+     * не должен ронять маршрут: без символа остаётся сокращённый
+     * адрес — хуже, но честно и однозначно.
+     */
+    if (missing.length > 0) {
+      try {
+        const { fetchTokenPairs } = await import('../services/dexscreener.js');
+
+        const chains = new Map<string, string[]>();
+        for (const b of missing) {
+          const list = chains.get(b.chain) ?? [];
+          list.push(b.address);
+          chains.set(b.chain, list);
+        }
+
+        // Последовательно по сетям: параллельные пачки на четыре сети
+        // упёрлись бы в лимит провайдера ровно тогда, когда список
+        // самый длинный. Внутри сети запрос уже идёт пачками
+        // по тридцать адресов — не по одному на токен.
+        for (const [chain, addresses] of chains) {
+          const pairs = await fetchTokenPairs(chain as never, addresses).catch(
+            () => new Map<string, DexPair>(),
+          );
+
+          for (const [address, pair] of pairs) {
+            enriched.set(`${chain}:${address.toLowerCase()}`, {
+              symbol: pair.baseSymbol,
+              name: pair.baseName,
+              pair,
+            });
+          }
+        }
+      } catch {
+        // Метаданных не будет. Список от этого не исчезает.
+      }
+    }
+
     const rows = filtered
       .map((b) => {
         const t = byKey.get(`${b.chain}:${b.address.toLowerCase()}`);
         if (!t) {
+          const meta = enriched.get(`${b.chain}:${b.address.toLowerCase()}`);
+
           return {
             id: null,
             chain: b.chain,
             address: b.address,
-            symbol: '???',
-            name: b.description ?? null,
+            /*
+             * Символ провайдера, а если его нет — сокращённый адрес.
+             *
+             * Никогда `???`. Отсутствие символа означает, что токен
+             * только что появился и метаданные ещё не разошлись
+             * по агрегаторам; адрес при этом известен точно и
+             * однозначно идентифицирует монету.
+             */
+            symbol: tokenDisplaySymbol({ symbol: meta?.symbol, address: b.address }),
+            name: meta?.name ?? b.description ?? null,
             logoUrl: b.iconUrl,
+            /*
+             * Непроверенный — не опасный.
+             *
+             * `riskLevel: null` означает «мы ещё не смотрели»,
+             * и интерфейс обязан показать это отдельным состоянием,
+             * а не молчанием, которое читается как одобрение.
+             */
             riskLevel: null,
             riskCodes: [] as string[],
             riskScore: null,
-            priceUsd: null,
-            liquidityUsd: null,
-            volume24hUsd: null,
-            priceChange24h: null,
+            priceUsd: meta?.pair?.priceUsd?.toString() ?? null,
+            liquidityUsd: meta?.pair?.liquidityUsd?.toString() ?? null,
+            volume24hUsd: meta?.pair?.volume24hUsd?.toString() ?? null,
+            // Строго `priceChange.h24` провайдера. Роста «за всё время»
+            // здесь нет: он отвечает на другой вопрос.
+            priceChange24h: meta?.pair?.priceChange24h?.toString() ?? null,
             boostAmount: b.boostAmount,
             isNew: true,
           };
@@ -756,7 +868,14 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
           priceUsd: t.priceUsd?.toString() ?? null,
           liquidityUsd: t.liquidityUsd?.toString() ?? null,
           volume24hUsd: t.volume24hUsd?.toString() ?? null,
-          priceChange24h: t.priceChange24h?.toString() ?? null,
+          // Тот же контракт, что и в «Рынке»: устаревшая котировка
+          // даёт `null`, а не последнее известное число.
+          priceChange24h:
+            priceChange24h({
+              priceChange24h: t.priceChange24h?.toString() ?? null,
+              priceUpdatedAt: t.priceUpdatedAt,
+              now: Date.now(),
+            })?.toString() ?? null,
           boostAmount: b.boostAmount,
           isNew: false,
         };
@@ -971,6 +1090,14 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
         includeBlocked: z.coerce.boolean().default(false),
         /** Только проверенные и чистые. */
         safeOnly: z.coerce.boolean().default(false),
+        /**
+         * Только с рыночной активностью за последние сутки.
+         *
+         * Комбинируется с остальными фильтрами: «Проверенные +
+         * Активные 24ч» означает безопасные токены, которыми
+         * действительно торговали.
+         */
+        activeOnly: z.coerce.boolean().default(false),
         /** Предельный возраст рынка в часах. Действует для sort=new. */
         maxAgeHours: z.coerce.number().positive().max(24 * 30).optional(),
         limit: z.coerce.number().max(200).default(60),
@@ -1067,6 +1194,36 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
           : {}),
         ...(q.maxRiskScore != null ? { riskScore: { lte: q.maxRiskScore } } : {}),
 
+        /*
+         * Стейблкоины не попадают в витрину.
+         *
+         * Человек приходит сюда искать, во что зайти. Доллар в списке
+         * «во что зайти» — шум, и шум первый: по объёму и ликвидности
+         * он обгоняет всё именно потому, что он доллар.
+         *
+         * Скрывается только строка списка. Из базы токен не удаляется,
+         * из портфеля и кошельков не исчезает и продолжает работать
+         * валютой котировки: `isQuote` для торговли остаётся как есть.
+         *
+         * Проверка по метке и адресу, а не по символу: «USDC» может
+         * выпустить кто угодно, и подделка обязана остаться в списке
+         * со своим уровнем риска, а не спрятаться под правилом,
+         * написанным для оригинала.
+         */
+        ...(q.activeOnly
+          ? {
+              /*
+               * Свежесть рыночных данных.
+               *
+               * Не время импорта и не время проверки риска: оба
+               * говорят о нашей работе, а не о рынке. Импортёр
+               * обходит и мёртвый пул, оставляя свежую отметку.
+               */
+              priceUpdatedAt: { not: null, gte: new Date(Date.now() - 24 * 3_600_000) },
+              volume24hUsd: { gte: ACTIVE_MIN_VOLUME_USD },
+            }
+          : {}),
+
         // Заблокированные скрыты всегда, кроме явного запроса.
         ...(q.includeBlocked ? {} : { riskLevel: { not: 'blocked' } }),
         // Строгий режим: только подтверждённые и низкий риск.
@@ -1085,7 +1242,14 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
           : {}),
       },
       orderBy: [SORTS[q.sort], { volume24hUsd: 'desc' }],
-      take: q.limit,
+      /*
+       * Небольшой запас под отсев стейблкоинов.
+       *
+       * Их единицы на всю базу, но выбрасывать строки после выборки
+       * без запаса значило бы отдавать страницу короче запрошенной
+       * ровно на их число — и список молча терял бы хвост.
+       */
+      take: q.limit + STABLECOIN_SLACK,
     });
 
     /*
@@ -1099,7 +1263,31 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
      * за открытым графиком, и только он платит за live-цикл.
      */
 
-    return tokens.map((t) => ({
+    /*
+     * Отсев стейблкоинов правилом из ядра.
+     *
+     * Не выражением в SQL: реестр подтверждённых адресов живёт
+     * в `packages/core`, и вторая его копия в запросе разошлась бы
+     * с первой при подключении новой сети. Строк здесь не больше
+     * двух сотен — цена отсева в памяти незаметна.
+     *
+     * Исключений нет, включая поиск по точному адресу.
+     *
+     * Соблазн был: человек, вставивший адрес USDC, спрашивает
+     * про USDC. Но `/tokens` — это рыночный список, и вернуть в него
+     * стейблкоин хотя бы одним путём значит завести правило
+     * с дырой: витрина, из которой актив то исчезает, то нет,
+     * перестаёт быть предсказуемой.
+     *
+     * Сведения о самом активе никуда не делись: он остаётся в базе,
+     * в портфеле, в кошельках и валютой котировки для торговли.
+     * Показывать его отдельно — задача других экранов, а не рынка.
+     */
+    const listed = tokens.filter((t) => belongsInMarketList(t)).slice(0, q.limit);
+
+    const now = Date.now();
+
+    return listed.map((t) => ({
       id: t.id,
       chain: t.chain,
       address: t.address,
@@ -1110,7 +1298,20 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
       isQuote: t.isQuote,
       isVerified: t.isVerified,
       priceUsd: t.priceUsd?.toString() ?? null,
-      priceChange24h: t.priceChange24h?.toString() ?? null,
+      /*
+       * Изменение цены строго за сутки.
+       *
+       * Устаревшая котировка даёт `null`, а не последнее известное
+       * число: «+42%», посчитанное три дня назад, суточным изменением
+       * не является. Ноль сюда тоже не подставляется — он утверждает
+       * «цена не изменилась», а это другое сообщение.
+       */
+      priceChange24h:
+        priceChange24h({
+          priceChange24h: t.priceChange24h?.toString() ?? null,
+          priceUpdatedAt: t.priceUpdatedAt,
+          now,
+        })?.toString() ?? null,
       liquidityUsd: t.liquidityUsd?.toString() ?? null,
       volume24hUsd: t.volume24hUsd?.toString() ?? null,
       // Возраст рынка и его источник. Интерфейс обязан различать
@@ -1355,6 +1556,20 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
       .object({
         interval: z.string().default('5m'),
         limit: z.coerce.number().max(1000).default(300),
+        /**
+         * Курсор в прошлое: время в секундах, строго старше которого
+         * нужны свечи.
+         *
+         * Прежде запрос отдавал только последние `limit` свечей и
+         * курсора не имел вовсе. Человек перетаскивал график влево,
+         * упирался в край данных, и дальше ничего не происходило —
+         * попросить старшее было нечем.
+         *
+         * Секунды, а не миллисекунды: в этих же единицах приходит
+         * `time` каждой свечи в ответе, и брать курсор оттуда должно
+         * быть возможно без пересчёта.
+         */
+        before: z.coerce.number().int().positive().optional(),
       })
       .parse(req.query);
 
@@ -1377,7 +1592,14 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
         },
       }),
       prisma.candle.findMany({
-        where: { tokenId: id, interval: q.interval },
+        where: {
+          tokenId: id,
+          interval: q.interval,
+          // Страница в прошлое. Строгое сравнение: свеча-курсор
+          // у клиента уже есть, и повторять её значит отдавать
+          // дубль, который на графике рисуется палкой.
+          ...(q.before != null ? { openTime: { lt: new Date(q.before * 1000) } } : {}),
+        },
         orderBy: { openTime: 'desc' },
         take: q.limit,
       }),
@@ -1410,19 +1632,27 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
             token.address,
             q.interval,
             Math.min(q.limit, 299),
+            q.before,
           ).catch(() => [])
         : [];
 
     const history = [
       ...new Map(
-        [...remote.map((c) => ({
-          time: Math.floor(c.openTime.getTime() / 1000),
-          open: c.open,
-          high: c.high,
-          low: c.low,
-          close: c.close,
-          volume: c.volumeUsd,
-        })), ...stored].map((candle) => [candle.time, candle]),
+        [
+          ...remote
+            .map((c) => ({
+              time: Math.floor(c.openTime.getTime() / 1000),
+              open: c.open,
+              high: c.high,
+              low: c.low,
+              close: c.close,
+              volume: c.volumeUsd,
+            }))
+            // Не доверяем границе вслепую: курсорная страница никогда
+            // не должна содержать свечу на курсоре или новее него.
+            .filter((candle) => q.before == null || candle.time < q.before),
+          ...stored,
+        ].map((candle) => [candle.time, candle]),
       ).values(),
     ]
       .sort((a, b) => a.time - b.time)
@@ -1470,6 +1700,27 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
     }
 
     markHot(id);
+
+    /*
+     * Страница в прошлое отдаётся как есть.
+     *
+     * Живая цена к ней не дописывается: она относится к текущему
+     * моменту, а страница — к отрезку сутками раньше. Дописанная,
+     * она нарисовала бы свечу «сейчас» посреди истории и сдвинула
+     * бы курсор следующей страницы на неё же.
+     */
+    if (q.before != null) {
+      return {
+        interval: q.interval,
+        state: history.length > 0 ? 'ready' : 'empty-period',
+        candles: history,
+        // Курсор следующей страницы. `null` означает, что дальше
+        // ничего нет: клиент запомнит это и перестанет спрашивать.
+        oldest: history.length > 0 ? history[0]!.time : null,
+        livePriceUsd: null,
+        liveAt: null,
+      };
+    }
 
     const observedAt = token.priceUpdatedAt ?? token.createdAt;
     const displayed = appendLivePrice(
