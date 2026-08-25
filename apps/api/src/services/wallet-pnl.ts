@@ -17,6 +17,7 @@ import {
   type WalletPriceMark,
 } from '@memex/core';
 import { prisma } from '../lib/prisma.js';
+import { markHotFromList } from '../workers/hot-tokens.js';
 
 export interface WalletRef {
   chain: ChainKey;
@@ -25,6 +26,7 @@ export interface WalletRef {
 
 export interface PublicWalletPnlSnapshot {
   state: WalletPnlSnapshot['state'];
+  assetsUsd: number | null;
   realizedUsd: number | null;
   unrealizedUsd: number | null;
   totalUsd: number | null;
@@ -158,8 +160,14 @@ export async function walletPnlForWallets(
             address: token.address,
           })),
         },
-        select: { chain: true, address: true, priceUsd: true, priceUpdatedAt: true },
+        select: { id: true, chain: true, address: true, priceUsd: true, priceUpdatedAt: true },
       });
+
+  // Пока пользователь смотрит Smart Wallets, открытые позиции должны
+  // получать ту же приоритетную котировку, что токен в терминале.
+  // Список ограничен общим бюджетом hot-token очереди и не создаёт
+  // прямых запросов к провайдеру из HTTP-маршрута.
+  markHotFromList(tokenRows.map((token) => token.id));
 
   const marks: WalletPriceMark[] = tokenRows
     .filter((token) => token.priceUsd != null && token.priceUpdatedAt != null)
@@ -187,6 +195,7 @@ function finite(value: string | null): number | null {
 export function serializeWalletPnl(snapshot: WalletPnlSnapshot): PublicWalletPnlSnapshot {
   return {
     state: snapshot.state,
+    assetsUsd: finite(snapshot.assetsUsd),
     realizedUsd: finite(snapshot.realizedUsd),
     unrealizedUsd: finite(snapshot.unrealizedUsd),
     totalUsd: finite(snapshot.totalUsd),

@@ -1,4 +1,5 @@
 import type { Chain } from '@prisma/client';
+import { Decimal } from 'decimal.js';
 import {
   fetchHotTokens,
   fetchPriceInfo,
@@ -163,6 +164,30 @@ export function quotePath(
 }
 
 /**
+ * Приводит количество в минимальных единицах токена к целой строке.
+ *
+ * OKX возвращает такие значения строками, потому что для 18 знаков после
+ * запятой они быстро выходят за безопасный диапазон JavaScript number.
+ * Преобразование через Number превращало их в `1.43e+23`; API котировки
+ * такой формат не принимает и отвечал `Parameter amount error`.
+ */
+function atomicAmount(value: unknown): string | null {
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || value <= 0) return null;
+  } else if (typeof value !== 'string' || value.trim() === '') {
+    return null;
+  }
+
+  try {
+    const amount = new Decimal(value);
+    if (!amount.isFinite() || !amount.isInteger() || amount.lte(0)) return null;
+    return amount.toFixed(0);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Замер полного круга: купить и сразу продать обратно.
  *
  * Это самая честная проверка из возможных, потому что она не полагается
@@ -194,17 +219,22 @@ export async function checkRoundTrip(
   // проверяется не цена, а сама возможность обмена, и порядок величины
   // достаточен, чтобы маршрут строился по реальной ликвидности,
   // а не по пылинке.
+  const probe = new Decimal(probeUsd);
+  if (!probe.isFinite() || probe.lte(0)) {
+    return { canBuy: false, canSell: false, returnRatio: null, reason: 'Некорректная сумма проверки' };
+  }
+
   const probeAmount = chain === 'SOLANA'
-    ? String(Math.round(probeUsd * 1e9 / 150))   // ~SOL в лампортах
-    : String(Math.round((probeUsd / 2500) * 1e18)); // ~ETH/BNB в wei
+    ? probe.mul('1000000000').div(150).round().toFixed(0) // ~SOL в лампортах
+    : probe.mul('1000000000000000000').div(2500).round().toFixed(0); // ~ETH/BNB в wei
 
   const buy = await safeCall<any[]>(
     'GET',
     quotePath(chainId, native, tokenAddress, probeAmount),
   );
 
-  const buyOut = Number(buy?.[0]?.toTokenAmount);
-  if (!Number.isFinite(buyOut) || buyOut <= 0) {
+  const buyOut = atomicAmount(buy?.[0]?.toTokenAmount);
+  if (buyOut === null) {
     return {
       canBuy: false,
       canSell: false,
@@ -216,11 +246,11 @@ export async function checkRoundTrip(
   // Обратный обмен на то количество, которое реально получили бы.
   const sell = await safeCall<any[]>(
     'GET',
-    quotePath(chainId, tokenAddress, native, String(Math.floor(buyOut))),
+    quotePath(chainId, tokenAddress, native, buyOut),
   );
 
-  const sellOut = Number(sell?.[0]?.toTokenAmount);
-  if (!Number.isFinite(sellOut) || sellOut <= 0) {
+  const sellOut = atomicAmount(sell?.[0]?.toTokenAmount);
+  if (sellOut === null) {
     return {
       canBuy: true,
       canSell: false,
@@ -229,7 +259,7 @@ export async function checkRoundTrip(
     };
   }
 
-  const returnRatio = sellOut / Number(probeAmount);
+  const returnRatio = new Decimal(sellOut).div(probeAmount).toNumber();
 
   return {
     canBuy: true,

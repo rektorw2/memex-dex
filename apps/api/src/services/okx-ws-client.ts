@@ -584,7 +584,10 @@ export class OkxWalletWebSocketClient {
     this.consecutiveErrors++;
 
     logger.warn(
-      { connection: this.opts.id, code, detail: detail?.slice(0, 120) },
+      // Поле `code` намеренно не используем: глобальный фильтр логов
+      // скрывает его как возможный код подтверждения почты. Код состояния
+      // сокета не является секретом и нужен для диагностики в Render.
+      { connection: this.opts.id, errorCode: code, detail: detail?.slice(0, 120) },
       'OKX сокет: сбой',
     );
 

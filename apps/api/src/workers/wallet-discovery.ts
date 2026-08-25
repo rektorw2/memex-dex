@@ -155,6 +155,14 @@ export async function runDiscovery(): Promise<DiscoveryResult | null> {
         const saved = await saveCandidate(c);
         if (saved === 'created') result.created++;
         else if (saved === 'updated') result.updated++;
+
+        // Лидерборд даёт только кандидата и агрегаты. Сразу ставим
+        // новый адрес в очередь истории OKX: без этого у найденного
+        // кошелька не появлялись ни позиции, ни локальный PnL.
+        if (saved === 'created' && env.WALLET_LEDGER_SYNC_ENABLED) {
+          const { markDirty } = await import('./wallet-ledger-sync.js');
+          await markDirty(c.chain, c.address);
+        }
       }
     }
 

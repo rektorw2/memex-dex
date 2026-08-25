@@ -77,6 +77,8 @@ export interface WalletPriceMark {
 
 export interface WalletPnlSnapshot {
   state: WalletPnlState;
+  /** Текущая рыночная стоимость всех известных открытых позиций. */
+  assetsUsd: string | null;
   realizedUsd: string | null;
   unrealizedUsd: string | null;
   totalUsd: string | null;
@@ -314,6 +316,7 @@ export function walletPnlSnapshot(
     return {
       ...base,
       state: 'empty',
+      assetsUsd: null,
       realizedUsd: null,
       unrealizedUsd: null,
       totalUsd: null,
@@ -328,6 +331,7 @@ export function walletPnlSnapshot(
     return {
       ...base,
       state: ledger.incompleteTokens > 0 ? 'incomplete_history' : 'ambiguous',
+      assetsUsd: null,
       realizedUsd: null,
       unrealizedUsd: null,
       totalUsd: null,
@@ -341,6 +345,7 @@ export function walletPnlSnapshot(
   const byToken = new Map(marks.map((m) => [tokenKey(m.chain, m.tokenAddress), m]));
   const open = ledger.positions.filter((p) => !p.isClosed);
   let unrealized = ZERO;
+  let assets = ZERO;
   let unpriced = 0;
   let stale = false;
   let priceAsOf: number | null = null;
@@ -362,9 +367,9 @@ export function walletPnlSnapshot(
     }
 
     priceAsOf = priceAsOf == null ? mark.observedAt : Math.min(priceAsOf, mark.observedAt);
-    unrealized = unrealized.plus(
-      new Decimal(position.remainingAmount).mul(price).minus(position.remainingCostUsd),
-    );
+    const marketValue = new Decimal(position.remainingAmount).mul(price);
+    assets = assets.plus(marketValue);
+    unrealized = unrealized.plus(marketValue.minus(position.remainingCostUsd));
   }
 
   const realized = new Decimal(ledger.realizedUsd ?? 0);
@@ -373,6 +378,9 @@ export function walletPnlSnapshot(
     return {
       ...base,
       state: stale ? 'stale' : 'pending',
+      // Частичную стоимость не выдаём за весь портфель: если хотя бы
+      // одна открытая позиция без цены, итог неизвестен.
+      assetsUsd: null,
       realizedUsd: text(realized),
       unrealizedUsd: null,
       totalUsd: null,
@@ -386,6 +394,7 @@ export function walletPnlSnapshot(
   return {
     ...base,
     state: 'available',
+    assetsUsd: text(assets),
     realizedUsd: text(realized),
     unrealizedUsd: text(unrealized),
     totalUsd: text(realized.plus(unrealized)),

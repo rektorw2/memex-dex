@@ -39,7 +39,7 @@ describe('единый серверный PnL', () => {
     ]);
     mocks.tokenFindMany.mockResolvedValue([
       {
-        chain: 'SOLANA', address: 'Token1', priceUsd: dec('20'),
+        id: 'token-1', chain: 'SOLANA', address: 'Token1', priceUsd: dec('20'),
         priceUpdatedAt: new Date(NOW - 1_000),
       },
     ]);
@@ -52,6 +52,7 @@ describe('единый серверный PnL', () => {
 
     expect(result).toMatchObject({
       state: 'available',
+      assetsUsd: 120,
       realizedUsd: 20,
       unrealizedUsd: 60,
       totalUsd: 80,
@@ -86,7 +87,9 @@ describe('единый серверный PnL', () => {
     );
     const result = serializeWalletPnl(snapshots.get('SOLANA:Wallet1')!);
 
-    expect(result).toMatchObject({ state: 'available', realizedUsd: 20, unrealizedUsd: 0, totalUsd: 20 });
+    expect(result).toMatchObject({
+      state: 'available', assetsUsd: 0, realizedUsd: 20, unrealizedUsd: 0, totalUsd: 20,
+    });
     expect(mocks.tokenFindMany).not.toHaveBeenCalled();
   });
 

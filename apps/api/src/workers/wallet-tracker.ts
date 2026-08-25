@@ -5,6 +5,7 @@ import {
   foldTokenOutcomes,
   walletPerformanceSummary,
   assertSummaryInvariants,
+  SCORE_VERSION,
   type ChainKey,
   type WalletPerformanceSummary,
   type WalletTradeOutcome,
@@ -35,6 +36,7 @@ import { decimalFor, DECIMAL_COLUMN } from '../lib/decimal.js';
  */
 
 const TICK_MS = 90_000;
+const STALE_RESCORE_BATCH = 100;
 
 /**
  * Пулов за проход. Лимит GeckoTerminal — 25 запросов в минуту на всё
@@ -514,6 +516,57 @@ export async function rescoreWallets(limit = 200): Promise<number> {
   return updated;
 }
 
+/**
+ * Довести строки прежней версии до текущего контракта без ручного CLI.
+ *
+ * Кандидаты из OKX часто ещё не имеют ни одной наблюдаемой покупки.
+ * Их можно массово и честно пометить `empty`; запускать отдельный
+ * запрос на каждый из десятков тысяч таких адресов бессмысленно.
+ * Кошельки со сделками пересчитываются обычным точным путём пачкой.
+ */
+export async function rescoreStaleWallets(limit = STALE_RESCORE_BATCH): Promise<number> {
+  const stale = { OR: [{ scoreVersion: null }, { scoreVersion: { lt: SCORE_VERSION } }] };
+  const computedAt = new Date();
+
+  const empty = await prisma.traderWallet.updateMany({
+    where: { ...stale, trades: { none: {} } },
+    data: {
+      tokensBought: 0,
+      wins2x: 0,
+      wins5x: 0,
+      rugs: 0,
+      volumeUsd: new P.Decimal(0),
+      avgPeakMultiple: null,
+      medianEntryHours: null,
+      score: null,
+      label: 'none',
+      scorableOutcomes: 0,
+      pendingOutcomes: 0,
+      ambiguousOutcomes: 0,
+      scoreVersion: SCORE_VERSION,
+      scoreComputedAt: computedAt,
+      scoreConfidence: 'none',
+      scoreCoverage: 'empty',
+      scoreReason: 'Нет наблюдаемых покупок',
+    },
+  });
+
+  const since = new Date(Date.now() - MAX_TRADE_AGE_DAYS * 864e5);
+  const candidates = await prisma.traderWallet.findMany({
+    where: { ...stale, trades: { some: {} } },
+    orderBy: { updatedAt: 'asc' },
+    take: limit,
+    select: { id: true },
+  });
+
+  for (const wallet of candidates) {
+    const { summary, label } = await summarizeWallet(wallet.id, since);
+    await saveWalletSummary(wallet.id, summary, label);
+  }
+
+  return empty.count + candidates.length;
+}
+
 export interface RescoreAllResult {
   scanned: number;
   updated: number;
@@ -701,9 +754,10 @@ async function tick(): Promise<void> {
     const { pools, trades } = await collectTrades();
     const settled = await settleOutcomes();
     const rescored = settled > 0 ? await rescoreWallets() : 0;
+    const migrated = await rescoreStaleWallets();
 
-    if (trades > 0 || settled > 0) {
-      logger.debug({ pools, trades, settled, rescored }, 'кошельки: проход завершён');
+    if (trades > 0 || settled > 0 || migrated > 0) {
+      logger.debug({ pools, trades, settled, rescored, migrated }, 'кошельки: проход завершён');
     }
   } catch (e: any) {
     logger.warn({ err: e?.message }, 'кошельки: ошибка прохода');

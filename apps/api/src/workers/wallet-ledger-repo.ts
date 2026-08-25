@@ -192,6 +192,27 @@ export class PrismaWalletLedgerRepository implements WalletLedgerRepository {
    */
   async ingestAtomically(a: ActivityInput, dueAt: Date): Promise<{ created: boolean }> {
     return prisma.$transaction(async (tx) => {
+      // Общая лента OKX — ещё один источник кандидатов. Событие не
+      // должно существовать отдельно от кошелька, иначе оно видно во
+      // вкладке «Активность», но адрес никогда не появляется в списке.
+      await tx.traderWallet.upsert({
+        where: { chain_address: { chain: a.chain as never, address: a.walletAddress } },
+        create: {
+          chain: a.chain as never,
+          address: a.walletAddress,
+          lastActiveAt: a.tradedAt,
+        },
+        update: {},
+      });
+      await tx.traderWallet.updateMany({
+        where: {
+          chain: a.chain as never,
+          address: a.walletAddress,
+          lastActiveAt: { lt: a.tradedAt },
+        },
+        data: { lastActiveAt: a.tradedAt },
+      });
+
       /*
        * Повторы ожидаемы: OKX присылает одно событие по нескольким
        * подпискам, а REST-страховка может увидеть его после WebSocket.

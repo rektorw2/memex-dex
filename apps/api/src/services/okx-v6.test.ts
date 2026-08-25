@@ -121,4 +121,27 @@ describe('контракт OKX v6', () => {
       expect(path).not.toContain('/api/v5/');
     }
   });
+
+  it('не превращает большое целое количество токенов в экспоненциальную запись', async () => {
+    const receivedAtomicAmount = '143819395138556630000000';
+    provider.safeCall
+      .mockResolvedValueOnce([{ toTokenAmount: receivedAtomicAmount }])
+      .mockResolvedValueOnce([{ toTokenAmount: '38000000000000000' }]);
+
+    await checkRoundTrip('BASE', '0xtoken', 100);
+
+    const sellPath = provider.safeCall.mock.calls[1]?.[1] as string;
+    const sellUrl = new URL(`https://web3.okx.com${sellPath}`);
+    expect(sellUrl.searchParams.get('amount')).toBe(receivedAtomicAmount);
+    expect(sellUrl.searchParams.get('amount')).not.toMatch(/e[+-]/i);
+  });
+
+  it('не отправляет обратно небезопасное число с уже потерянной точностью', async () => {
+    provider.safeCall.mockResolvedValueOnce([{ toTokenAmount: 143819395138556630000000 }]);
+
+    const result = await checkRoundTrip('BASE', '0xtoken', 100);
+
+    expect(result.canBuy).toBe(false);
+    expect(provider.safeCall).toHaveBeenCalledTimes(1);
+  });
 });

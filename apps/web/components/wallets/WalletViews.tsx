@@ -37,6 +37,8 @@ export interface Wallet {
   knownAs?: string | null;
   score: number | null;
   settled?: number | null;
+  /** Единственный серверный знаменатель сделок с известным исходом. */
+  sampleSize?: number | null;
   tokensBought?: number | null;
   wins2x: number | null;
   wins5x?: number | null;
@@ -47,6 +49,13 @@ export interface Wallet {
   volumeUsd: string | number | null;
   label?: string | null;
   lastActiveAt?: string | null;
+  pnl?: {
+    state: 'available' | 'pending' | 'incomplete_history' | 'ambiguous' | 'stale' | 'empty';
+    assetsUsd: number | null;
+    realizedUsd: number | null;
+    unrealizedUsd: number | null;
+    totalUsd: number | null;
+  } | null;
   /**
    * Сводка целиком, как её посчитал сервер.
    *
@@ -62,9 +71,10 @@ export interface Wallet {
 export function statsOf(w: Wallet): WalletStats {
   return {
     score: w.score,
-    // Завершённых сделок: если поле не пришло, берём число купленных
-    // токенов — оно ближе всего по смыслу и не завышает выборку.
-    settled: w.settled ?? w.tokensBought ?? 0,
+    // Завершённые исходы приходят отдельным знаменателем. Число
+    // купленных токенов здесь использовать нельзя: часть ещё ждёт
+    // наблюдений и не является ни победой, ни поражением.
+    settled: w.sampleSize ?? w.settled ?? 0,
     wins2x: w.wins2x,
     hitRate: w.hitRate ?? null,
     avgMultiple: w.avgPeakMultiple,
@@ -76,7 +86,7 @@ export function statsOf(w: Wallet): WalletStats {
 
 export function categoryOf(w: Wallet): WalletCategory {
   return categorize({
-    settled: w.settled ?? w.tokensBought ?? 0,
+    settled: w.sampleSize ?? w.settled ?? 0,
     volumeUsd: w.volumeUsd == null ? null : Number(w.volumeUsd),
     medianEntryHours: w.medianEntryHours,
     score: w.score,
@@ -155,6 +165,8 @@ const COLUMNS: Array<{ key: string; label: string; sort?: string; right?: boolea
   { key: 'avg', label: 'Средний максимум', sort: 'avg', right: true },
   { key: 'entry', label: 'Медианный вход', sort: 'entry', right: true, hide: 'hidden xl:table-cell' },
   { key: 'volume', label: 'Объём покупок', sort: 'volume', right: true },
+  { key: 'assets', label: 'Активы', right: true },
+  { key: 'pnl', label: 'Общий PnL', right: true },
   { key: 'active', label: 'Активность', sort: 'active', right: true, hide: 'hidden lg:table-cell' },
   { key: 'actions', label: '', right: true },
 ];
@@ -173,7 +185,7 @@ export function WalletTable({
   return (
     <div className="panel overflow-hidden">
       <div className="scroll-x">
-        <table className="w-full min-w-[820px] border-collapse text-[13px]">
+        <table className="w-full min-w-[980px] border-collapse text-[13px]">
           <thead className="sticky top-0 z-10 bg-panel">
             <tr className="border-b border-border text-[11px] uppercase tracking-wide text-muted">
               {COLUMNS.map((c) => (
@@ -247,6 +259,14 @@ function TableRow({ wallet: w, onOpen }: { wallet: Wallet; onOpen: (w: Wallet) =
         {fmtUsd(w.volumeUsd)}
       </td>
 
+      <td className="num px-3 py-2.5 text-right" title="Текущая стоимость известных открытых позиций">
+        {assetsText(w)}
+      </td>
+
+      <td className="px-3 py-2.5 text-right">
+        <PnlText wallet={w} />
+      </td>
+
       <td className="hidden px-3 py-2.5 text-right text-muted lg:table-cell">
         {w.lastActiveAt ? timeAgo(w.lastActiveAt) : '—'}
       </td>
@@ -311,6 +331,8 @@ export function WalletCard({
         <Metric label="Средний максимум" value={formatMultiple(w.avgPeakMultiple)} />
         <Metric label="Медианный вход" value={formatEntryTime(w.medianEntryHours)} />
         <Metric label="Объём покупок" value={fmtUsd(w.volumeUsd)} />
+        <Metric label="Стоимость активов" value={assetsText(w)} />
+        <Metric label="Общий PnL" value={w.pnl?.totalUsd == null ? 'Считается' : fmtUsd(w.pnl.totalUsd)} />
       </div>
 
       <div className="flex items-center gap-2 border-t border-border pt-3">
@@ -339,6 +361,25 @@ export function WalletCard({
         </div>
       </div>
     </article>
+  );
+}
+
+export function assetsText(wallet: Pick<Wallet, 'pnl'>): string {
+  if (wallet.pnl?.assetsUsd != null) return fmtUsd(wallet.pnl.assetsUsd);
+  if (wallet.pnl?.state === 'empty') return 'Нет позиций';
+  if (wallet.pnl?.state === 'incomplete_history') return 'Мало истории';
+  if (wallet.pnl?.state === 'ambiguous') return 'Нужна сверка';
+  if (wallet.pnl?.state === 'stale') return 'Цена устарела';
+  return 'Считается';
+}
+
+function PnlText({ wallet }: { wallet: Pick<Wallet, 'pnl'> }) {
+  const value = wallet.pnl?.totalUsd;
+  if (value == null) return <span className="text-muted">Считается</span>;
+  return (
+    <span className={`num ${value > 0 ? 'text-up' : value < 0 ? 'text-down' : ''}`}>
+      {value > 0 ? '+' : ''}{fmtUsd(value)}
+    </span>
   );
 }
 

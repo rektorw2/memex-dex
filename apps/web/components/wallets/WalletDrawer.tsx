@@ -1,6 +1,7 @@
 'use client';
 
 import useSWR from 'swr';
+import Link from 'next/link';
 import {
   timeAgo,
   confidenceOf,
@@ -89,6 +90,16 @@ export function WalletDrawer({ wallet: w, onClose }: { wallet: Wallet; onClose: 
               isPriceStale={pnl?.state === 'stale'}
               computedAt={pnl?.computedAt ? new Date(pnl.computedAt).getTime() : null}
             />
+            <div className="mt-3 flex items-center justify-between border-t border-border pt-2 text-[11px]">
+              <span className="text-muted">Стоимость открытых активов</span>
+              <span className="num">
+                {pnl?.assetsUsd == null
+                  ? pnl?.state === 'stale'
+                    ? 'Цена устарела'
+                    : 'Считается'
+                  : fmtUsd(pnl.assetsUsd)}
+              </span>
+            </div>
             {pnl?.state === 'ambiguous' && (
               <p className="mt-2 text-[10px] leading-relaxed text-warn/80">
                 Порядок части сделок неоднозначен — итог скрыт, чтобы не показывать догадку.
@@ -150,8 +161,23 @@ export function WalletDrawer({ wallet: w, onClose }: { wallet: Wallet; onClose: 
                   >
                     {t.side === 'BUY' ? 'покупка' : 'продажа'}
                   </span>
-                  <span className="num truncate">{t.tokenSymbol ?? shortAddr(t.tokenAddress)}</span>
+                  {t.tokenId ? (
+                    <Link
+                      href={`/terminal/?token=${encodeURIComponent(t.tokenId)}`}
+                      className="num truncate transition-colors hover:text-accent"
+                      title="Открыть токен в графике Memex"
+                    >
+                      {t.tokenSymbol ?? shortAddr(t.tokenAddress)}
+                    </Link>
+                  ) : (
+                    <span className="num truncate">{t.tokenSymbol ?? shortAddr(t.tokenAddress)}</span>
+                  )}
                   <span className="num ml-auto shrink-0">{fmtUsd(t.amountUsd)}</span>
+                  {t.growthPercent != null && Number.isFinite(t.growthPercent) && (
+                    <span className={`num shrink-0 ${t.growthPercent >= 0 ? 'text-up' : 'text-down'}`}>
+                      {t.growthPercent >= 0 ? '+' : ''}{Number(t.growthPercent).toFixed(1)}%
+                    </span>
+                  )}
                   {t.outcomeMultiple != null && (
                     <span
                       className={`num shrink-0 ${

@@ -67,6 +67,7 @@ describe('точный локальный PnL', () => {
       { computedAt: 10_000 },
     );
     expect(snapshot).toMatchObject({
+      assetsUsd: '2',
       realizedUsd: '99',
       unrealizedUsd: '1',
       totalUsd: '100',
@@ -139,6 +140,7 @@ describe('снимок PnL с локальными ценами', () => {
     expect(snapshot.realizedUsd).toBe('20');
     expect(snapshot.unrealizedUsd).toBe('60');
     expect(snapshot.totalUsd).toBe('80');
+    expect(snapshot.assetsUsd).toBe('120');
     expect(snapshot.priceAsOf).toBe(9_000);
   });
 
@@ -153,6 +155,7 @@ describe('снимок PnL с локальными ценами', () => {
     expect(snapshot.realizedUsd).toBe('20');
     expect(snapshot.unrealizedUsd).toBeNull();
     expect(snapshot.totalUsd).toBeNull();
+    expect(snapshot.assetsUsd).toBeNull();
     expect(snapshot.isStale).toBe(true);
   });
 
@@ -160,6 +163,7 @@ describe('снимок PnL с локальными ценами', () => {
     const snapshot = walletPnlSnapshot(ledger, [], { computedAt: 10_000 });
     expect(snapshot.state).toBe('pending');
     expect(snapshot.unrealizedUsd).toBeNull();
+    expect(snapshot.assetsUsd).toBeNull();
     expect(snapshot.unpricedPositions).toBe(1);
   });
 });

@@ -15,8 +15,14 @@
 
 import { useMemo, useState } from 'react';
 import useSWR from 'swr';
-import { timeAgo, FAVORITES_RETRY_DELAYS_MS } from '@memex/core';
-import { fetcher, errorMessage } from '@/lib/api';
+import {
+  timeAgo,
+  FAVORITES_RETRY_DELAYS_MS,
+  formatMultiple,
+  formatEntryTime,
+  winRateView,
+} from '@memex/core';
+import { fetcher, errorMessage, fmtUsd } from '@/lib/api';
 import { chainLabel, CHAINS } from '@/lib/chains';
 import { useFavorites, walletKey } from '@/lib/favorites';
 import { Identicon } from './SmartScore';
@@ -27,6 +33,7 @@ import { PnlValue } from './PnlValue';
 
 interface FavoritePnl {
   state: 'available' | 'pending' | 'incomplete_history' | 'ambiguous' | 'stale' | 'empty';
+  assetsUsd: number | null;
   realizedUsd: number | null;
   unrealizedUsd: number | null;
   totalUsd: number | null;
@@ -51,7 +58,15 @@ interface FavoriteItem {
   score: number | null;
   label: string | null;
   tokensBought: number | null;
+  sampleSize: number | null;
   wins2x: number | null;
+  wins5x: number | null;
+  rugs: number | null;
+  hitRate: number | null;
+  avgPeakMultiple: number | null;
+  medianEntryHours: number | null;
+  volumeUsd: string | number | null;
+  summary: { coverage?: string | null } | null;
   lastActiveAt: string | null;
   pnl: FavoritePnl;
 }
@@ -263,6 +278,8 @@ function FavoriteRow({ item: f, onOpen }: { item: FavoriteItem; onOpen?: (wallet
   const ambiguous = f.pnl.state === 'ambiguous';
   const stalePrice = f.pnl.state === 'stale';
   const computedAt = f.pnl.computedAt ? new Date(f.pnl.computedAt).getTime() : null;
+  const completed = f.sampleSize ?? 0;
+  const wins = winRateView(f.wins2x, completed);
 
   return (
     <article
@@ -313,10 +330,25 @@ function FavoriteRow({ item: f, onOpen }: { item: FavoriteItem; onOpen?: (wallet
         </span>
       </div>
 
-      {/* Три показателя раздельно. Реализованный — деньги, которые
+      {/* Та же результативность, что в общей витрине. Раньше
+          избранное теряло средний максимум, время входа и объём,
+          поэтому один кошелёк выглядел по-разному в двух вкладках. */}
+      <dl className="grid grid-cols-2 gap-2 border-t border-border pt-3 text-[11px] sm:grid-cols-4">
+        <Cell label="Сделки ≥2×"><span className="num">{wins.text}</span></Cell>
+        <Cell label="Средний максимум"><span className="num">{formatMultiple(f.avgPeakMultiple)}</span></Cell>
+        <Cell label="Медианный вход"><span className="num">{formatEntryTime(f.medianEntryHours)}</span></Cell>
+        <Cell label="Объём покупок"><span className="num">{fmtUsd(f.volumeUsd)}</span></Cell>
+      </dl>
+
+      {/* PnL и активы раздельно. Реализованный — деньги, которые
           уже получены; нереализованный — бумажная величина, которая
           исчезнет при первом развороте рынка. Смешивать их нельзя. */}
-      <dl className="grid grid-cols-3 gap-2 border-t border-border pt-3 text-[11px]">
+      <dl className="grid grid-cols-2 gap-2 border-t border-border pt-3 text-[11px] sm:grid-cols-4">
+        <Cell label="Стоимость активов">
+          <span className="num">
+            {f.pnl.assetsUsd == null ? (stalePrice ? 'Цена устарела' : 'Считается') : fmtUsd(f.pnl.assetsUsd)}
+          </span>
+        </Cell>
         <Cell label="Реализованный">
           <PnlValue
             valueUsd={f.pnl.realizedUsd}
@@ -400,14 +432,19 @@ function walletFromFavorite(favorite: FavoriteItem): Wallet {
     chain: favorite.chain,
     address: favorite.address,
     score: favorite.score,
+    sampleSize: favorite.sampleSize,
     tokensBought: favorite.tokensBought,
     wins2x: favorite.wins2x,
-    rugs: null,
-    avgPeakMultiple: null,
-    medianEntryHours: null,
-    volumeUsd: null,
+    wins5x: favorite.wins5x,
+    rugs: favorite.rugs,
+    hitRate: favorite.hitRate,
+    avgPeakMultiple: favorite.avgPeakMultiple,
+    medianEntryHours: favorite.medianEntryHours,
+    volumeUsd: favorite.volumeUsd,
     label: favorite.label,
     lastActiveAt: favorite.lastActiveAt,
+    summary: favorite.summary,
+    pnl: favorite.pnl,
   };
 }
 
@@ -470,10 +507,19 @@ function guestItem(key: string): FavoriteItem {
     score: null,
     label: null,
     tokensBought: null,
+    sampleSize: null,
     wins2x: null,
+    wins5x: null,
+    rugs: null,
+    hitRate: null,
+    avgPeakMultiple: null,
+    medianEntryHours: null,
+    volumeUsd: null,
+    summary: null,
     lastActiveAt: null,
     pnl: {
       state: 'pending',
+      assetsUsd: null,
       realizedUsd: null,
       unrealizedUsd: null,
       totalUsd: null,

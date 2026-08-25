@@ -9,6 +9,10 @@ const db = vi.hoisted(() => {
     walletSyncQueue: {
       upsert: vi.fn(),
     },
+    traderWallet: {
+      upsert: vi.fn(),
+      updateMany: vi.fn(),
+    },
   };
 
   return {
@@ -46,6 +50,10 @@ beforeEach(() => {
   db.tx.walletActivity.createMany.mockReset();
   db.tx.walletActivity.findUnique.mockReset();
   db.tx.walletSyncQueue.upsert.mockReset();
+  db.tx.traderWallet.upsert.mockReset();
+  db.tx.traderWallet.updateMany.mockReset();
+  db.tx.traderWallet.upsert.mockResolvedValue({ id: 'wallet-1' });
+  db.tx.traderWallet.updateMany.mockResolvedValue({ count: 0 });
   db.prisma.$transaction.mockClear();
 });
 
@@ -63,6 +71,11 @@ describe('идемпотентный приём WalletActivity', () => {
       expect.objectContaining({ skipDuplicates: true }),
     );
     expect(db.tx.walletSyncQueue.upsert).toHaveBeenCalledOnce();
+    expect(db.tx.traderWallet.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { chain_address: { chain: 'BASE', address: '0xwallet' } },
+      }),
+    );
   });
 
   it('повтор ожидается базой и не проходит через P2002', async () => {
@@ -76,6 +89,7 @@ describe('идемпотентный приём WalletActivity', () => {
 
     expect(result).toEqual({ created: false });
     expect(db.tx.walletSyncQueue.upsert).toHaveBeenCalledOnce();
+    expect(db.tx.traderWallet.upsert).toHaveBeenCalledOnce();
   });
 
   it('не ставит уже учтённый дубль в очередь повторно', async () => {
@@ -89,5 +103,6 @@ describe('идемпотентный приём WalletActivity', () => {
 
     expect(result).toEqual({ created: false });
     expect(db.tx.walletSyncQueue.upsert).not.toHaveBeenCalled();
+    expect(db.tx.traderWallet.upsert).toHaveBeenCalledOnce();
   });
 });

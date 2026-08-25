@@ -59,6 +59,9 @@ vi.mock('../lib/prisma.js', () => {
       findMany: async (args: any = {}) => {
         let rows = [...wallets].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 
+        if (args.where?.trades?.some) rows = rows.filter((row) => row.hasTrades !== false);
+        if (args.where?.trades?.none) rows = rows.filter((row) => row.hasTrades === false);
+
         if (args.cursor) {
           const at = rows.findIndex((r) => r.id === args.cursor.id);
           rows = rows.slice(at + (args.skip ?? 0));
@@ -71,6 +74,11 @@ vi.mock('../lib/prisma.js', () => {
         const row = wallets.find((w) => w.id === args.where.id)!;
         Object.assign(row, args.data);
         return row;
+      },
+      updateMany: async (args: any) => {
+        const rows = wallets.filter((row) => row.hasTrades === false && row.scoreVersion == null);
+        for (const row of rows) Object.assign(row, args.data);
+        return { count: rows.length };
       },
     },
     walletTrade: { findMany: async () => TRADES },
@@ -107,6 +115,35 @@ const legacyWallet = () => ({
   pendingOutcomes: null,
   ambiguousOutcomes: null,
   scoreVersion: null,
+  hasTrades: true,
+});
+
+describe('автоматический переход со старого контракта', () => {
+  it('пересчитывает историю и честно обнуляет пустую старую строку', async () => {
+    wallets = [
+      legacyWallet(),
+      {
+        ...legacyWallet(),
+        id: 'w-empty',
+        hasTrades: false,
+        label: 'smart',
+      },
+    ];
+
+    const { rescoreStaleWallets } = await import('./wallet-tracker.js');
+    const result = await rescoreStaleWallets(10);
+
+    expect(result).toBe(2);
+    expect(wallets.find((wallet) => wallet.id === 'w-empty')).toMatchObject({
+      score: null,
+      label: 'none',
+      scorableOutcomes: 0,
+      scoreVersion: SCORE_VERSION,
+      scoreCoverage: 'empty',
+    });
+    expect(updates).toHaveLength(1);
+    expect(updates[0]).toMatchObject({ scorableOutcomes: 10, scoreVersion: SCORE_VERSION });
+  });
 });
 
 beforeEach(() => {

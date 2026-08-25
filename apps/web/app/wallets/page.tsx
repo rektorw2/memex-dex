@@ -175,7 +175,7 @@ function WalletsTab({ onOpen }: { onOpen: (wallet: Wallet) => void }) {
         return false;
       if (f.category && categoryOf(w) !== f.category) return false;
       if (f.minScore !== '' && (w.score ?? -1) < f.minScore) return false;
-      if (f.minTrades !== '' && (w.settled ?? w.tokensBought ?? 0) < f.minTrades) return false;
+      if (f.minTrades !== '' && (w.sampleSize ?? w.settled ?? 0) < f.minTrades) return false;
       if (f.growthOnly && (w.wins2x ?? 0) < 1) return false;
       return true;
     });
@@ -185,8 +185,8 @@ function WalletsTab({ onOpen }: { onOpen: (wallet: Wallet) => void }) {
     return [...filtered].sort((a, b) => {
       switch (f.sort) {
         case 'winrate': {
-          const ra = (a.wins2x ?? 0) / Math.max(1, a.settled ?? a.tokensBought ?? 1);
-          const rb = (b.wins2x ?? 0) / Math.max(1, b.settled ?? b.tokensBought ?? 1);
+          const ra = (a.wins2x ?? 0) / Math.max(1, a.sampleSize ?? a.settled ?? 1);
+          const rb = (b.wins2x ?? 0) / Math.max(1, b.sampleSize ?? b.settled ?? 1);
           return rb - ra;
         }
         case 'avg':
@@ -194,7 +194,7 @@ function WalletsTab({ onOpen }: { onOpen: (wallet: Wallet) => void }) {
         case 'volume':
           return num(b.volumeUsd) - num(a.volumeUsd);
         case 'trades':
-          return (b.settled ?? b.tokensBought ?? 0) - (a.settled ?? a.tokensBought ?? 0);
+          return (b.sampleSize ?? b.settled ?? 0) - (a.sampleSize ?? a.settled ?? 0);
         case 'active':
           return (
             new Date(b.lastActiveAt ?? 0).getTime() - new Date(a.lastActiveAt ?? 0).getTime()

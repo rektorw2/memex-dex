@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import useSWR from 'swr';
 import { timeAgo } from '@memex/core';
 import { fetcher, fmtUsd, fmtPrice, errorMessage } from '@/lib/api';
@@ -35,11 +36,15 @@ interface ActivityEvent {
   wallet: string;
   txHash: string | null;
   tokenAddress: string;
+  tokenId: string | null;
   tokenSymbol: string | null;
   quoteSymbol: string | null;
   quoteAmount: number | null;
   side: 'BUY' | 'SELL';
   priceUsd: number | null;
+  currentPriceUsd: number | null;
+  currentPriceAt: string | null;
+  growthPercent: number | null;
   marketCapUsd: number | null;
   realizedPnlUsd: number | null;
   /**
@@ -52,6 +57,14 @@ interface ActivityEvent {
   pnlState?: 'available' | 'pending' | 'incomplete_history' | 'ambiguous' | 'open_position';
   pnlSource?: 'local' | null;
   pnlComputedAt?: string | null;
+  holderPnl: {
+    state: 'available' | 'pending' | 'incomplete_history' | 'ambiguous' | 'stale' | 'empty';
+    assetsUsd: number | null;
+    realizedUsd: number | null;
+    unrealizedUsd: number | null;
+    totalUsd: number | null;
+    computedAt: string | null;
+  } | null;
   tradedAt: number;
 }
 
@@ -230,9 +243,20 @@ function Row({ event: e, onOpen }: { event: ActivityEvent; onOpen?: (wallet: Wal
             {isBuy ? 'Покупка' : 'Продажа'}
           </span>
 
-          <span className="truncate text-[13px] font-medium">
-            {e.tokenSymbol ?? short(e.tokenAddress)}
-          </span>
+          {e.tokenId ? (
+            <Link
+              href={`/terminal/?token=${encodeURIComponent(e.tokenId)}`}
+              onClick={(event) => event.stopPropagation()}
+              className="truncate text-[13px] font-medium transition-colors hover:text-accent"
+              title="Открыть токен в графике Memex"
+            >
+              {e.tokenSymbol ?? short(e.tokenAddress)}
+            </Link>
+          ) : (
+            <span className="truncate text-[13px] font-medium">
+              {e.tokenSymbol ?? short(e.tokenAddress)}
+            </span>
+          )}
 
           <span className="num shrink-0 text-[11px] text-muted">{short(e.wallet)}</span>
 
@@ -249,11 +273,32 @@ function Row({ event: e, onOpen }: { event: ActivityEvent; onOpen?: (wallet: Wal
             <> · {e.quoteAmount.toFixed(3)} {e.quoteSymbol}</>
           )}
           {e.priceUsd != null && <> · {fmtPrice(e.priceUsd)}</>}
+          {e.currentPriceUsd != null && <> → сейчас {fmtPrice(e.currentPriceUsd)}</>}
           {e.marketCapUsd != null && <> · кап {fmtUsd(e.marketCapUsd)}</>}
         </div>
       </div>
 
       <div className="shrink-0 text-right">
+        {e.growthPercent != null && Number.isFinite(e.growthPercent) && (
+          <div className={`num text-[12px] ${e.growthPercent >= 0 ? 'text-up' : 'text-down'}`}>
+            {e.growthPercent >= 0 ? '+' : ''}{e.growthPercent.toFixed(1)}% от сделки
+          </div>
+        )}
+        <div className="mt-0.5 text-[10px] text-muted/60">PnL кошелька</div>
+        <PnlValue
+          valueUsd={e.holderPnl?.totalUsd ?? null}
+          isPending={e.holderPnl == null || e.holderPnl.state === 'pending' || e.holderPnl.state === 'empty'}
+          hasIncompleteHistory={e.holderPnl?.state === 'incomplete_history'}
+          isAmbiguous={e.holderPnl?.state === 'ambiguous'}
+          isPriceStale={e.holderPnl?.state === 'stale'}
+          computedAt={e.holderPnl?.computedAt ? new Date(e.holderPnl.computedAt).getTime() : null}
+          kind="total"
+          size="sm"
+        />
+        <div className="mt-0.5 num text-[10px] text-muted/70">
+          Активы {e.holderPnl?.assetsUsd == null ? 'считаются' : fmtUsd(e.holderPnl.assetsUsd)}
+        </div>
+
         {/*
           Здесь раньше было пустое место — у покупки результата нет,
           и колонка просто пустовала. Выглядело это как потерянные
@@ -270,6 +315,7 @@ function Row({ event: e, onOpen }: { event: ActivityEvent; onOpen?: (wallet: Wal
           computedAt={e.pnlComputedAt ? new Date(e.pnlComputedAt).getTime() : null}
           kind="realized"
           size="sm"
+          className="mt-1"
         />
         <div className="mt-0.5 text-[11px] text-muted/70">{timeAgo(new Date(e.tradedAt))}</div>
       </div>

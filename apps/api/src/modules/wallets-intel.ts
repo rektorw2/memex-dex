@@ -181,43 +181,72 @@ export const walletIntelRoutes: FastifyPluginAsync = async (app) => {
       },
     });
 
-    const liquidityByToken = new Map<string, number | null>();
-    if (q.minLiquidityUsd != null && candidates.length > 0) {
-      const tokens = await prisma.token.findMany({
+    /*
+     * Токены добираются одним запросом для всей страницы. Это даёт
+     * переход в наш терминал, live-рост от цены сделки и ликвидность,
+     * не превращая пятьдесят строк в пятьдесят запросов.
+     */
+    const tokens = candidates.length > 0
+      ? await prisma.token.findMany({
         where: {
           OR: candidates.map((event) => ({
             chain: event.chain,
             address: event.tokenAddress,
           })),
         },
-        select: { chain: true, address: true, liquidityUsd: true },
-      });
-      for (const token of tokens) {
-        liquidityByToken.set(
-          `${token.chain}:${token.address}`,
-          token.liquidityUsd == null ? null : Number(token.liquidityUsd),
-        );
-      }
-    }
+        select: {
+          id: true,
+          chain: true,
+          address: true,
+          symbol: true,
+          liquidityUsd: true,
+          priceUsd: true,
+          priceUpdatedAt: true,
+        },
+      })
+      : [];
 
-    const page = candidates
+    const tokenByKey = new Map(tokens.map((token) => [walletPnlKey(token.chain, token.address), token]));
+
+    const selected = candidates
       .filter((event) => {
         if (q.minLiquidityUsd == null) return true;
-        const liquidity = liquidityByToken.get(`${event.chain}:${event.tokenAddress}`);
+        const token = tokenByKey.get(walletPnlKey(event.chain, event.tokenAddress));
+        const liquidity = token?.liquidityUsd == null ? null : Number(token.liquidityUsd);
         return liquidity != null && liquidity >= q.minLiquidityUsd;
       })
-      .slice(0, q.limit)
-      .map((event) => {
+      .slice(0, q.limit);
+
+    const pnlByWallet = await walletPnlForWallets(
+      selected.map((event) => ({
+        chain: event.chain as ChainKey,
+        address: event.walletAddress,
+      })),
+    );
+
+    const page = selected.map((event) => {
         const state = event.pnlVersion === WALLET_PNL_VERSION
           ? event.localPnlState
           : null;
+        const token = tokenByKey.get(walletPnlKey(event.chain, event.tokenAddress));
+        const currentPrice = token?.priceUsd == null ? null : Number(token.priceUsd);
+        const entryPrice = event.priceUsd == null ? null : Number(event.priceUsd);
+        const growthPercent =
+          currentPrice != null && currentPrice > 0 && entryPrice != null && entryPrice > 0
+            ? (currentPrice / entryPrice - 1) * 100
+            : null;
+        const holderPnl = pnlByWallet.get(walletPnlKey(event.chain, event.walletAddress));
 
         return {
           dedupeKey: event.id,
           chain: event.chain,
           wallet: event.walletAddress,
           tokenAddress: event.tokenAddress,
-          tokenSymbol: event.tokenSymbol,
+          tokenId: token?.id ?? null,
+          tokenSymbol: event.tokenSymbol ?? token?.symbol ?? null,
+          currentPriceUsd: currentPrice,
+          currentPriceAt: token?.priceUpdatedAt?.toISOString() ?? null,
+          growthPercent,
           side: event.side,
           quoteSymbol: event.quoteSymbol,
           quoteAmount: event.quoteAmount == null ? null : Number(event.quoteAmount),
@@ -237,6 +266,7 @@ export const walletIntelRoutes: FastifyPluginAsync = async (app) => {
           txHash: event.txHash,
           trackerType: event.trackerType,
           source: event.source,
+          holderPnl: holderPnl ? serializeWalletPnl(holderPnl) : null,
         };
       });
 
@@ -305,7 +335,19 @@ export const walletIntelRoutes: FastifyPluginAsync = async (app) => {
         walletsAwaitingRecompute: awaitingRecompute,
         minTradesForScore: MIN_TRADES_FOR_SCORE,
       },
-      wallets: wallets.map(serializeWallet),
+      wallets: await (async () => {
+        const pnlByWallet = await walletPnlForWallets(
+          wallets.map((wallet) => ({
+            chain: wallet.chain as ChainKey,
+            address: wallet.address,
+          })),
+        );
+
+        return wallets.map((wallet) => {
+          const pnl = pnlByWallet.get(walletPnlKey(wallet.chain, wallet.address));
+          return { ...serializeWallet(wallet), pnl: pnl ? serializeWalletPnl(pnl) : null };
+        });
+      })(),
     };
   });
 
@@ -335,20 +377,56 @@ export const walletIntelRoutes: FastifyPluginAsync = async (app) => {
     ]);
     const pnl = pnlByWallet.get(walletPnlKey(wallet.chain, wallet.address));
 
+    const tradeTokens = wallet.trades.length === 0
+      ? []
+      : await prisma.token.findMany({
+          where: {
+            OR: wallet.trades.map((trade) => ({
+              chain: trade.chain,
+              address: trade.tokenAddress,
+            })),
+          },
+          select: {
+            id: true,
+            chain: true,
+            address: true,
+            symbol: true,
+            priceUsd: true,
+            priceUpdatedAt: true,
+          },
+        });
+    const tradeTokenByKey = new Map(
+      tradeTokens.map((token) => [walletPnlKey(token.chain, token.address), token]),
+    );
+
     return {
       wallet: serializeWallet(wallet),
       pnl: pnl ? serializeWalletPnl(pnl) : null,
-      trades: wallet.trades.map((t) => ({
-        id: t.id,
-        chain: t.chain,
-        tokenAddress: t.tokenAddress,
-        side: t.side,
-        amountUsd: t.amountUsd.toString(),
-        mcapAtTradeUsd: t.mcapAtTradeUsd?.toString() ?? null,
-        poolAgeHours: t.poolAgeHours ? Number(t.poolAgeHours) : null,
-        outcomeMultiple: t.outcomeMultiple ? Number(t.outcomeMultiple) : null,
-        tradedAt: t.tradedAt,
-      })),
+      trades: wallet.trades.map((t) => {
+        const token = tradeTokenByKey.get(walletPnlKey(t.chain, t.tokenAddress));
+        const currentPrice = token?.priceUsd == null ? null : Number(token.priceUsd);
+        const entryPrice = t.priceUsd == null ? null : Number(t.priceUsd);
+
+        return {
+          id: t.id,
+          chain: t.chain,
+          tokenAddress: t.tokenAddress,
+          tokenId: token?.id ?? null,
+          tokenSymbol: token?.symbol ?? null,
+          side: t.side,
+          amountUsd: t.amountUsd.toString(),
+          mcapAtTradeUsd: t.mcapAtTradeUsd?.toString() ?? null,
+          poolAgeHours: t.poolAgeHours ? Number(t.poolAgeHours) : null,
+          outcomeMultiple: t.outcomeMultiple ? Number(t.outcomeMultiple) : null,
+          currentPriceUsd: currentPrice,
+          currentPriceAt: token?.priceUpdatedAt?.toISOString() ?? null,
+          growthPercent:
+            currentPrice != null && currentPrice > 0 && entryPrice != null && entryPrice > 0
+              ? (currentPrice / entryPrice - 1) * 100
+              : null,
+          tradedAt: t.tradedAt,
+        };
+      }),
     };
   });
 
@@ -418,7 +496,7 @@ export const walletIntelRoutes: FastifyPluginAsync = async (app) => {
   });
 };
 
-function serializeWallet(w: {
+export function serializeWallet(w: {
   id: string; chain: string; address: string; knownAs: string | null;
   tokensBought: number; wins2x: number; wins5x: number; rugs: number;
   volumeUsd: { toString(): string }; avgPeakMultiple: { toString(): string } | null;

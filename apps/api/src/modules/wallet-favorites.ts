@@ -38,6 +38,7 @@ import {
   walletPnlForWallets,
   walletPnlKey,
 } from '../services/wallet-pnl.js';
+import { serializeWallet } from './wallets-intel.js';
 
 /** Сети, за кошельками которых мы вообще умеем следить. */
 const CHAINS = ['SOLANA', 'ETHEREUM', 'BNB', 'BASE'] as const;
@@ -120,8 +121,6 @@ export const walletFavoriteRoutes: FastifyPluginAsync = async (app) => {
           const pnl = pnlByKey.get(key);
 
           return {
-            chain: r.chain,
-            address: r.walletAddress,
             note: r.note,
             addedAt: r.createdAt.toISOString(),
 
@@ -129,14 +128,29 @@ export const walletFavoriteRoutes: FastifyPluginAsync = async (app) => {
             // статистика. Это законное состояние, и отличать его
             // от нулевых показателей обязательно.
             known: w != null,
-            score: w?.score ?? null,
-            label: w?.label ?? null,
-            tokensBought: w?.tokensBought ?? null,
-            wins2x: w?.wins2x ?? null,
-            lastActiveAt: w?.lastActiveAt?.toISOString() ?? null,
+            ...(w
+              ? serializeWallet(w)
+              : {
+                  score: null,
+                  label: null,
+                  tokensBought: null,
+                  wins2x: null,
+                  wins5x: null,
+                  rugs: null,
+                  volumeUsd: null,
+                  avgPeakMultiple: null,
+                  medianEntryHours: null,
+                  hitRate: null,
+                  sampleSize: null,
+                  summary: null,
+                  lastActiveAt: null,
+                }),
+            chain: r.chain,
+            address: r.walletAddress,
 
             pnl: pnl ? serializeWalletPnl(pnl) : {
               state: 'pending',
+              assetsUsd: null,
               realizedUsd: null,
               unrealizedUsd: null,
               totalUsd: null,

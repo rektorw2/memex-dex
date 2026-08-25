@@ -94,6 +94,7 @@ export class ActivityIngestor {
   private addresses: string[] = [];
 
   private pollTimer: NodeJS.Timeout | null = null;
+  private addressRefreshTimer: NodeJS.Timeout | null = null;
   private fallbackActive = false;
 
   private lastMessageAt: number | null = null;
@@ -130,6 +131,15 @@ export class ActivityIngestor {
     // ли опрос. Проверять это внутри клиента нельзя — клиент знает
     // только про своё соединение, а решение принимается по всем.
     setInterval(() => this.checkHealth(), 15_000).unref?.();
+
+    // Discovery пополняет список после старта процесса. Без повторного
+    // чтения новый кандидат не подписывался до следующего деплоя.
+    this.addressRefreshTimer = setInterval(() => {
+      void this.refreshAddresses().then(() => {
+        if (env.OKX_WS_ENABLED) this.rebuildPool();
+      });
+    }, 5 * 60_000);
+    this.addressRefreshTimer.unref?.();
   }
 
   stop(): void {
@@ -137,6 +147,8 @@ export class ActivityIngestor {
     for (const c of this.clients) c.stop();
     this.clients = [];
     this.stopPolling();
+    if (this.addressRefreshTimer) clearInterval(this.addressRefreshTimer);
+    this.addressRefreshTimer = null;
   }
 
   // ─────────────────────────────── Соединения ───────────────────────────────
@@ -151,7 +163,15 @@ export class ActivityIngestor {
   private async refreshAddresses(): Promise<void> {
     const wallets = await prisma.traderWallet
       .findMany({
-        where: { label: { not: 'none' } },
+        where: {
+          OR: [
+            { label: { not: 'none' } },
+            // Кандидат из лидерборда ещё не имеет нашей оценки, но
+            // `knownAs` хранит проверенную категорию OKX. Именно его
+            // сделки нужно слушать, чтобы оценка появилась.
+            { knownAs: { not: null } },
+          ],
+        },
         orderBy: { lastActiveAt: 'desc' },
         take: MAX_ADDRESSES_PER_CONNECTION * 5,
         select: { address: true },

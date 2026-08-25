@@ -27,11 +27,9 @@
     "access:service-grant": "tsx apps/api/scripts/grant-service-access.ts",
     "trades:backfill": "tsx apps/api/scripts/backfill-trades.ts"
   },
-  "prisma": {
-    "seed": "tsx prisma/seed.ts"
-  },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.5",
+    "dotenv": "^16.6.1",
     "prisma": "^6.2.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",
