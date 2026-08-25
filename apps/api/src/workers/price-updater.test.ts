@@ -53,10 +53,16 @@ vi.mock('../lib/logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
-/** Пакетный источник цен. */
-let batchPrices = new Map<string, { priceUsd: number }>();
+/**
+ * Пакетный источник цен.
+ *
+ * Теперь это Basic `market/price`, а не Premium `price-info`.
+ * Подделка повторяет его форму: карта живых цен и отчёт о проходе.
+ */
+let batchPrices = new Map<string, { priceUsd: number; at: Date | null }>();
 let priceInfoCalls = 0;
-let priceInfoFreshFlags: Array<boolean | undefined> = [];
+/** С каким источником расхода звали: горячий цикл или холодный. */
+let livePricePurposes: Array<string | undefined> = [];
 let batchReportOverride: {
   requested: number;
   fetched: number;
@@ -67,12 +73,19 @@ let batchReportOverride: {
 } | null = null;
 
 vi.mock('../services/okx-market.js', () => ({
-  fetchPriceInfo: async (
+  /*
+   * `fetchPriceInfo` здесь намеренно не объявлен.
+   *
+   * Если воркер снова начнёт звать Premium `price-info` за живой
+   * ценой, тест упадёт с «нет такого экспорта» — то есть регрессия
+   * будет видна сразу, а не через месяц по исчерпанной квоте.
+   */
+  fetchLivePrices: async (
     tokens: { chain: string; address: string }[],
-    opts?: { fresh?: boolean },
+    purpose?: string,
   ) => {
     priceInfoCalls++;
-    priceInfoFreshFlags.push(opts?.fresh);
+    livePricePurposes.push(purpose);
     return {
       prices: batchPrices,
       report: batchReportOverride ?? {
@@ -123,7 +136,7 @@ beforeEach(() => {
   updateCount = 1;
   batchPrices = new Map();
   priceInfoCalls = 0;
-  priceInfoFreshFlags = [];
+  livePricePurposes = [];
   batchReportOverride = null;
   rpcCalls = [];
   rpcPrice = null;
@@ -185,20 +198,19 @@ describe('источники цен', () => {
     // Сто токенов за вызов вместо ста вызовов.
     tokenRows = [token('a'), token('b')];
     batchPrices = new Map([
-      ['SOLANA:Addra', { priceUsd: 1 }],
-      ['SOLANA:Addrb', { priceUsd: 2 }],
+      ['SOLANA:Addra', { priceUsd: 1, at: null }],
+      ['SOLANA:Addrb', { priceUsd: 2, at: null }],
     ]);
 
     await updateColdPrices();
 
     expect(priceInfoCalls).toBe(1);
-    expect(priceInfoFreshFlags).toEqual([true]);
     expect(rpcCalls).toEqual([]);
   });
 
   it('поштучно дозапрашивается только то, чего пакет не знает', async () => {
     tokenRows = [token('a'), token('b')];
-    batchPrices = new Map([['SOLANA:Addra', { priceUsd: 1 }]]);
+    batchPrices = new Map([['SOLANA:Addra', { priceUsd: 1, at: null }]]);
     rpcPrice = 5;
 
     await updateColdPrices();
@@ -227,7 +239,7 @@ describe('источники цен', () => {
 
   it('сбой источника не роняет проход', async () => {
     tokenRows = [token('a'), token('b')];
-    batchPrices = new Map([['SOLANA:Addrb', { priceUsd: 3 }]]);
+    batchPrices = new Map([['SOLANA:Addrb', { priceUsd: 3, at: null }]]);
     rpcError = new Error('RPC временно недоступен');
 
     const result = await updateColdPrices();
@@ -272,8 +284,8 @@ describe('запись не затирает более свежее', () => {
     // и порядок записи стал бы зависеть от скорости провайдера.
     tokenRows = [token('a'), token('b')];
     batchPrices = new Map([
-      ['SOLANA:Addra', { priceUsd: 1 }],
-      ['SOLANA:Addrb', { priceUsd: 2 }],
+      ['SOLANA:Addra', { priceUsd: 1, at: null }],
+      ['SOLANA:Addrb', { priceUsd: 2, at: null }],
     ]);
 
     await updateColdPrices();
@@ -390,7 +402,7 @@ describe('общий backoff провайдера', () => {
 
   it('частичный успех записывается перед отступом', async () => {
     tokenRows = [token('a'), token('b')];
-    batchPrices = new Map([['SOLANA:Addra', { priceUsd: 1 }]]);
+    batchPrices = new Map([['SOLANA:Addra', { priceUsd: 1, at: null }]]);
     batchReportOverride = {
       requested: 2,
       fetched: 1,

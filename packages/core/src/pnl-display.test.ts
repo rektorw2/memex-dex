@@ -52,6 +52,19 @@ describe('состояния', () => {
     expect(v.state).toBe('incomplete_history');
   });
 
+  it('неоднозначная сделка не превращается в ожидание', () => {
+    const v = pnlView({ valueUsd: null, isAmbiguous: true, isPending: true });
+    expect(v.state).toBe('ambiguous');
+    expect(v.label).toBe('Неоднозначная сделка');
+  });
+
+  it('устаревшая рыночная цена не превращается в ноль', () => {
+    const v = pnlView({ valueUsd: null, isPriceStale: true, kind: 'unrealized' });
+    expect(v.state).toBe('stale');
+    expect(v.valueUsd).toBeNull();
+    expect(v.label).toBe('Цена устарела');
+  });
+
   it('величина при неполной истории не показывается', () => {
     // Даже если число посчиталось, доверять ему нельзя:
     // себестоимость неизвестна, и «прибыль» здесь — это выручка.

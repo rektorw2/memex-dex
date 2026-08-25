@@ -61,6 +61,31 @@ const okxSignals = fs.readFileSync(
   'utf8',
 );
 
+/** Происхождение экономической сделки. Только добавление. */
+const tradeProvenance = fs.readFileSync(
+  `${R}/prisma/migrations/20260825090000_add_trade_provenance/migration.sql`,
+  'utf8',
+);
+
+/**
+ * Контракт сводки кошелька. Только добавление, все колонки NULL-able.
+ *
+ * Проверять её на настоящем Postgres важнее обычного: смысл этой
+ * миграции целиком держится на том, что колонки пустые. Умолчание,
+ * прокравшееся в SQL, не сломало бы ни одну проверку типов, но стёрло
+ * бы разницу между «посчитано и вышло ноль» и «ещё не пересчитано».
+ */
+const walletSummary = fs.readFileSync(
+  `${R}/prisma/migrations/20260825120000_add_wallet_summary_contract/migration.sql`,
+  'utf8',
+);
+
+/** Локальный PnL события ленты. Только добавление NULL-able колонок. */
+const walletActivityPnl = fs.readFileSync(
+  `${R}/prisma/migrations/20260825150000_add_wallet_activity_local_pnl/migration.sql`,
+  'utf8',
+);
+
 /** Накопленный ATH каждого события Signal. */
 const okxSignalAth = fs.readFileSync(
   `${R}/prisma/migrations/20260823180000_add_okx_signal_ath/migration.sql`,
@@ -85,6 +110,9 @@ const KNOWN = [
   '20260823120000_add_check_queue_and_price_age',
   '20260823170000_add_okx_signals',
   '20260823180000_add_okx_signal_ath',
+  '20260825090000_add_trade_provenance',
+  '20260825120000_add_wallet_summary_contract',
+  '20260825150000_add_wallet_activity_local_pnl',
 ];
 
 const onDisk = fs
@@ -741,6 +769,258 @@ try {
 }
 check('одно событие провайдера не записывается дважды', duplicateSignal != null,
   duplicateSignal ? 'ограничение сработало' : 'вставка прошла');
+
+// ───────────────── Происхождение экономической сделки ──────────────────────
+
+console.log('\n=== Происхождение и идентичность сделки ===');
+
+await clean.exec(tradeProvenance);
+
+const provCols = (await clean.query(`
+  SELECT column_name, is_nullable, column_default
+  FROM information_schema.columns
+  WHERE table_name='WalletEconomicTrade'
+    AND column_name IN ('source','sourceEventId','txHash','fillCount',
+                        'firstFillAt','lastFillAt','reconciliation','supersededBy')
+  ORDER BY 1
+`)).rows;
+
+const pc = Object.fromEntries(provCols.map((c) => [c.column_name, c]));
+
+check('все восемь колонок добавлены', provCols.length === 8,
+  provCols.map((c) => c.column_name).join(', '));
+
+check('источник по умолчанию — история',
+  pc.source?.column_default?.includes('okx_dex_history') === true,
+  pc.source?.column_default ?? 'нет умолчания');
+
+check('состояние сверки по умолчанию каноническое',
+  pc.reconciliation?.column_default?.includes('canonical') === true,
+  pc.reconciliation?.column_default ?? 'нет умолчания');
+
+check('счётчик переводов начинается с единицы',
+  pc.fillCount?.column_default?.startsWith('1') === true,
+  pc.fillCount?.column_default ?? 'нет умолчания');
+
+check('хеш транзакции необязателен: история его не отдаёт',
+  pc.txHash?.is_nullable === 'YES' && pc.txHash?.column_default === null);
+
+// Частичный уникальный индекс — главное здесь.
+const liveIdx = (await clean.query(`
+  SELECT indexdef FROM pg_indexes
+  WHERE tablename='WalletEconomicTrade' AND indexname='WalletEconomicTrade_live_identity'
+`)).rows;
+
+check('индекс живой идентичности частичный',
+  liveIdx.length === 1 && /WHERE .*txHash.* IS NOT NULL/i.test(liveIdx[0].indexdef),
+  liveIdx.length ? liveIdx[0].indexdef : 'индекса нет');
+
+// Проверка поведения, а не только определения.
+await clean.exec(`
+  INSERT INTO "WalletEconomicTrade"
+    ("key","chain","walletAddress","tokenAddress","side","amount","valueUsd","price","tradedAt","updatedAt")
+  VALUES
+    ('k-live-1','SOLANA','W1','T1','BUY',1,1,1,NOW(),NOW()),
+    ('k-hist-1','SOLANA','W1','T1','BUY',1,1,1,NOW(),NOW()),
+    ('k-hist-2','SOLANA','W1','T1','BUY',2,2,1,NOW(),NOW());
+`);
+
+check('несколько строк без хеша уживаются: NULL не конфликтует', true,
+  'история хеша не отдаёт, и это законно');
+
+await clean.exec(`UPDATE "WalletEconomicTrade" SET "txHash"='0xdead' WHERE "key"='k-live-1'`);
+
+let dupLive = null;
+try {
+  await clean.exec(`
+    INSERT INTO "WalletEconomicTrade"
+      ("key","chain","walletAddress","tokenAddress","side","amount","valueUsd","price","txHash","tradedAt","updatedAt")
+    VALUES ('k-live-dup','SOLANA','W1','T1','BUY',1,1,1,'0xdead',NOW(),NOW());
+  `);
+} catch (e) { dupLive = e.message; }
+
+check('одна транзакция — одна live-сделка', dupLive != null,
+  dupLive ? 'ограничение сработало' : 'вставка прошла');
+
+// Та же транзакция с другой стороной — законная вторая половина свопа.
+let swapHalf = null;
+try {
+  await clean.exec(`
+    INSERT INTO "WalletEconomicTrade"
+      ("key","chain","walletAddress","tokenAddress","side","amount","valueUsd","price","txHash","tradedAt","updatedAt")
+    VALUES ('k-live-sell','SOLANA','W1','T1','SELL',1,1,1,'0xdead',NOW(),NOW());
+  `);
+} catch (e) { swapHalf = e.message; }
+
+check('две половины свопа не конфликтуют', swapHalf === null,
+  swapHalf ?? 'обе записаны');
+
+// ───────────────────── Контракт сводки кошелька ────────────────────────────
+
+console.log('\n=== Контракт сводки результативности ===');
+
+/*
+ * До миграции в таблице лежит строка, посчитанная прежними правилами:
+ * оценка 100 при двух исходах. Она специально записывается здесь,
+ * чтобы проверить не определение колонок, а поведение — что миграция
+ * оставляет её на месте и при этом делает отличимой от пересчитанной.
+ */
+await clean.exec(`
+  INSERT INTO "TraderWallet" ("id","chain","address","tokensBought","wins2x","wins5x","rugs","score","updatedAt")
+  VALUES ('tw-legacy','SOLANA','LegacyWallet1111111111111111111111111',2,8,3,0,100,NOW());
+`);
+
+await clean.exec(walletSummary);
+
+const sumCols = (await clean.query(`
+  SELECT column_name, is_nullable, column_default
+  FROM information_schema.columns
+  WHERE table_name='TraderWallet'
+    AND column_name IN ('scorableOutcomes','pendingOutcomes','ambiguousOutcomes',
+                        'scoreVersion','scoreComputedAt','scoreConfidence',
+                        'scoreCoverage','scoreReason')
+  ORDER BY 1
+`)).rows;
+
+check('все восемь колонок сводки добавлены', sumCols.length === 8,
+  sumCols.map((c) => c.column_name).join(', '));
+
+/*
+ * Главная проверка этой миграции.
+ *
+ * Умолчание `0` у знаменателя выглядело бы безобидно и уничтожило бы
+ * весь смысл: строка, никогда не пересчитанная, стала бы неотличима
+ * от честно посчитанной строки с нулём оцениваемых исходов, и чтение
+ * не смогло бы отказаться показывать её старую оценку.
+ */
+check('ни у одной колонки сводки нет умолчания',
+  sumCols.every((c) => c.column_default === null),
+  sumCols.filter((c) => c.column_default !== null).map((c) => c.column_name).join(', ') || 'умолчаний нет');
+
+check('все колонки сводки допускают NULL',
+  sumCols.every((c) => c.is_nullable === 'YES'));
+
+const legacy = (await clean.query(`
+  SELECT "score","wins2x","tokensBought","scoreVersion","scorableOutcomes","ambiguousOutcomes"
+  FROM "TraderWallet" WHERE "id"='tw-legacy'
+`)).rows[0];
+
+check('старая строка не удалена и не изменена',
+  Number(legacy.score) === 100 && Number(legacy.wins2x) === 8 && Number(legacy.tokensBought) === 2);
+
+check('старая строка отличима: версия расчёта пуста',
+  legacy.scoreVersion === null && legacy.scorableOutcomes === null,
+  `scoreVersion=${legacy.scoreVersion}, scorableOutcomes=${legacy.scorableOutcomes}`);
+
+/*
+ * Нейтральные исходы — та самая потеря, ради которой миграция и нужна.
+ * Знаменатель 10 при одной победе и одном rug не выводится из wins
+ * и rugs никаким выражением, поэтому он записывается отдельно.
+ */
+await clean.exec(`
+  INSERT INTO "TraderWallet"
+    ("id","chain","address","tokensBought","wins2x","wins5x","rugs",
+     "scorableOutcomes","pendingOutcomes","ambiguousOutcomes",
+     "scoreVersion","scoreComputedAt","scoreConfidence","scoreCoverage","updatedAt")
+  VALUES ('tw-new','SOLANA','FreshWallet11111111111111111111111111',10,1,0,1,
+          10,0,0,2,'2026-08-25T10:00:00Z','low','complete',NOW());
+`);
+
+const fresh = (await clean.query(`
+  SELECT "scorableOutcomes","wins2x","rugs","scoreVersion",
+         -- Сравнение делает сама база.
+         --
+         -- Колонка объявлена без часового пояса, и разбор её значения
+         -- в JavaScript добавил бы смещение машины, где идёт проверка.
+         -- Тогда проверка падала бы или проходила в зависимости от TZ,
+         -- то есть проверяла бы не то, что записано.
+         ("scoreComputedAt" = TIMESTAMP '2026-08-25 10:00:00') AS "timeKept"
+  FROM "TraderWallet" WHERE "id"='tw-new'
+`)).rows[0];
+
+check('знаменатель хранится, а не выводится из побед и rug',
+  Number(fresh.scorableOutcomes) === 10 &&
+  Number(fresh.scorableOutcomes) !== Math.max(Number(fresh.wins2x), Number(fresh.rugs)),
+  `хранится ${fresh.scorableOutcomes}, max(wins,rugs) = ${Math.max(Number(fresh.wins2x), Number(fresh.rugs))}`);
+
+check('время расчёта сохраняется как момент пересчёта', fresh.timeKept === true);
+
+const versionIdx = (await clean.query(`
+  SELECT indexname FROM pg_indexes
+  WHERE tablename='TraderWallet' AND indexname='TraderWallet_scoreVersion_idx'
+`)).rows;
+
+check('есть индекс по версии расчёта', versionIdx.length === 1);
+
+// ───────────────────── Локальный PnL события ленты ────────────────────────
+
+console.log('\n=== Локальный PnL события ленты ===');
+
+// Существующая строка несёт число провайдера. Миграция обязана
+// сохранить его как диагностику, но не заполнять локальный результат.
+await clean.exec(`
+  INSERT INTO "WalletActivity"
+    ("id","chain","walletAddress","tokenAddress","side","realizedPnlUsd",
+     "source","parsingConfidence","tradedAt")
+  VALUES ('wa-legacy','SOLANA','W1','T1','SELL',999,'okx_rest',1,NOW());
+`);
+
+await clean.exec(walletActivityPnl);
+
+const pnlCols = (await clean.query(`
+  SELECT column_name, is_nullable, column_default
+  FROM information_schema.columns
+  WHERE table_name='WalletActivity'
+    AND column_name IN ('canonicalTradeKey','localRealizedPnlUsd','localCostBasisUsd',
+                        'localPnlState','pnlVersion','pnlComputedAt')
+  ORDER BY 1
+`)).rows;
+
+check('все шесть колонок локального PnL добавлены', pnlCols.length === 6,
+  pnlCols.map((c) => c.column_name).join(', '));
+check('локальные поля допускают NULL и не имеют умолчаний',
+  pnlCols.every((c) => c.is_nullable === 'YES' && c.column_default === null));
+
+const legacyActivity = (await clean.query(`
+  SELECT "realizedPnlUsd","localRealizedPnlUsd","pnlVersion"
+  FROM "WalletActivity" WHERE "id"='wa-legacy'
+`)).rows[0];
+
+check('число провайдера сохранено только как диагностика',
+  Number(legacyActivity.realizedPnlUsd) === 999 &&
+  legacyActivity.localRealizedPnlUsd === null && legacyActivity.pnlVersion === null);
+
+const localPnlIndexes = (await clean.query(`
+  SELECT indexname FROM pg_indexes
+  WHERE tablename='WalletActivity'
+    AND indexname IN ('WalletActivity_canonicalTradeKey_key',
+                      'WalletActivity_localPnlState_tradedAt_idx',
+                      'WalletActivity_pnlVersion_idx')
+`)).rows;
+check('индексы локального PnL созданы вместе', localPnlIndexes.length === 3);
+
+await clean.exec(`
+  INSERT INTO "WalletActivity"
+    ("id","chain","walletAddress","tokenAddress","side","source",
+     "parsingConfidence","tradedAt","canonicalTradeKey")
+  VALUES ('wa-match-1','SOLANA','W1','T1','BUY','okx_rest',1,NOW(),'trade-1');
+`);
+let duplicateCanonicalTrade = null;
+try {
+  await clean.exec(`
+    INSERT INTO "WalletActivity"
+      ("id","chain","walletAddress","tokenAddress","side","source",
+       "parsingConfidence","tradedAt","canonicalTradeKey")
+    VALUES ('wa-match-2','SOLANA','W1','T1','BUY','okx_rest',1,NOW(),'trade-1');
+  `);
+} catch (error) {
+  duplicateCanonicalTrade = error;
+}
+check(
+  'одна каноническая сделка не объясняет два события',
+  duplicateCanonicalTrade != null,
+  'ограничение сработало',
+);
 
 console.log(`\nИтог: ${failures === 0 ? 'все проверки пройдены' : failures + ' проверок не прошли'}`);
 process.exit(failures === 0 ? 0 : 1);

@@ -24,7 +24,8 @@
     "db:seed": "tsx prisma/seed.ts",
     "admin:create": "tsx prisma/create-admin.ts",
     "access:legacy-grant": "tsx apps/api/scripts/grant-legacy-access.ts",
-    "access:service-grant": "tsx apps/api/scripts/grant-service-access.ts"
+    "access:service-grant": "tsx apps/api/scripts/grant-service-access.ts",
+    "trades:backfill": "tsx apps/api/scripts/backfill-trades.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

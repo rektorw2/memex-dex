@@ -272,6 +272,63 @@ describe('сопоставление ленты и истории', () => {
     });
     expect(r.appliedActivities).toBe(1);
     expect(repo.activities.get('e1')!.appliedToLedger).toBe(true);
+    expect(repo.activities.get('e1')!.localPnlState).toBe('open_position');
+    expect(repo.activities.get('e1')!.pnlVersion).toBe(1);
+  });
+
+  it('частичная продажа получает локальный PnL, а не provider PnL', async () => {
+    await repo.ingestAtomically(
+      { ...act('sell-event', 2_000, 'SELL'), realizedPnlUsd: 999_999 },
+      new Date(0),
+    );
+
+    await rebuildWallet(CHAIN, W, {
+      repo,
+      history: source([
+        trade({ side: 'BUY', amount: '10', valueUsd: '100', price: '10', tradedAt: 1_000 }),
+        trade({ side: 'SELL', amount: '4', valueUsd: '60', price: '15', tradedAt: 2_000 }),
+      ]),
+    });
+
+    const row = repo.activities.get('sell-event')!;
+    expect(row.localPnlState).toBe('available');
+    expect(row.localRealizedPnlUsd).toBe('20');
+    expect(row.localCostBasisUsd).toBe('40');
+    expect(row.localRealizedPnlUsd).not.toBe('999999');
+  });
+
+  it('не отдаёт уже занятую каноническую сделку новому событию в следующем проходе', async () => {
+    const canonical = trade({ side: 'BUY', amount: '10', tradedAt: 1_000 });
+
+    await repo.ingestAtomically(act('event-first', 1_000), new Date(0));
+    await rebuildWallet(CHAIN, W, { repo, history: source([canonical]) });
+    expect(repo.activities.get('event-first')!.canonicalTradeKey).toBe(canonical.key);
+
+    // Другой id моделирует дубль без txHash, пришедший позже из
+    // другого источника. Локальный Set прошлого прохода уже исчез.
+    await repo.ingestAtomically(act('event-later-duplicate', 1_000), new Date(0));
+    const second = await rebuildWallet(CHAIN, W, { repo, history: source([canonical]) });
+
+    expect(second.appliedActivities).toBe(0);
+    expect(repo.activities.get('event-later-duplicate')!.canonicalTradeKey).toBeNull();
+    expect(repo.activities.get('event-later-duplicate')!.localPnlState).toBe('pending');
+  });
+
+  it('при смене версии пересчитывает прежнюю сильную связь, а не выбирает заново', async () => {
+    const canonical = trade({ side: 'BUY', amount: '10', tradedAt: 1_000 });
+
+    await repo.ingestAtomically(act('event-versioned', 1_000), new Date(0));
+    await rebuildWallet(CHAIN, W, { repo, history: source([canonical]) });
+
+    const activity = repo.activities.get('event-versioned')!;
+    activity.pnlVersion = null;
+    activity.localPnlState = null;
+
+    const result = await rebuildWallet(CHAIN, W, { repo, history: source([canonical]) });
+    expect(result.appliedActivities).toBe(1);
+    expect(activity.canonicalTradeKey).toBe(canonical.key);
+    expect(activity.localPnlState).toBe('open_position');
+    expect(activity.pnlVersion).toBe(1);
   });
 
   it('расхождение времени в пределах окна допускается', async () => {

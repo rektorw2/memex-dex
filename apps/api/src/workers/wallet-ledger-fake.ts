@@ -45,6 +45,12 @@ interface ActivityRow {
   appliedToLedger: boolean;
   ledgerState: string;
   ledgerAttempts: number;
+  canonicalTradeKey: string | null;
+  localRealizedPnlUsd: string | null;
+  localCostBasisUsd: string | null;
+  localPnlState: string | null;
+  pnlVersion: number | null;
+  pnlComputedAt: number | null;
 }
 
 /** Точки, в которых тест может уронить операцию. */
@@ -112,6 +118,8 @@ export class FakeWalletLedgerRepository implements WalletLedgerRepository {
       id: a.id, chain: a.chain, walletAddress: a.walletAddress,
       tokenAddress: a.tokenAddress, side: a.side, tradedAt: a.tradedAt.getTime(),
       appliedToLedger: false, ledgerState: 'pending', ledgerAttempts: 0,
+      canonicalTradeKey: null, localRealizedPnlUsd: null, localCostBasisUsd: null,
+      localPnlState: null, pnlVersion: null, pnlComputedAt: null,
     });
     await this.markDirty(a.chain, a.walletAddress, dueAt);
 
@@ -218,9 +226,38 @@ export class FakeWalletLedgerRepository implements WalletLedgerRepository {
 
   async pendingActivities(chain: string, wallet: string, limit: number): Promise<PendingActivity[]> {
     return [...this.activities.values()]
-      .filter((a) => a.chain === chain && a.walletAddress === wallet && !a.appliedToLedger)
+      .filter(
+        (a) =>
+          a.chain === chain &&
+          a.walletAddress === wallet &&
+          (!a.appliedToLedger || a.pnlVersion == null || a.pnlVersion < 1),
+      )
       .slice(0, limit)
-      .map((a) => ({ id: a.id, tokenAddress: a.tokenAddress, side: a.side, tradedAt: a.tradedAt }));
+      .map((a) => ({
+        id: a.id,
+        tokenAddress: a.tokenAddress,
+        side: a.side,
+        tradedAt: a.tradedAt,
+        canonicalTradeKey: a.canonicalTradeKey,
+      }));
+  }
+
+  async assignedCanonicalTradeKeys(
+    chain: string,
+    wallet: string,
+    excludeActivityIds: string[],
+  ): Promise<Set<string>> {
+    const excluded = new Set(excludeActivityIds);
+    return new Set(
+      [...this.activities.values()].flatMap((activity) =>
+        activity.chain === chain &&
+        activity.walletAddress === wallet &&
+        !excluded.has(activity.id) &&
+        activity.canonicalTradeKey != null
+          ? [activity.canonicalTradeKey]
+          : [],
+      ),
+    );
   }
 
   async applyActivityStates(updates: ActivityStateUpdate[]): Promise<void> {
@@ -229,8 +266,25 @@ export class FakeWalletLedgerRepository implements WalletLedgerRepository {
     for (const u of updates) {
       const row = this.activities.get(u.id);
       if (!row) continue;
+
+      if (
+        u.canonicalTradeKey != null &&
+        [...this.activities.values()].some(
+          (other) =>
+            other.id !== u.id && other.canonicalTradeKey === u.canonicalTradeKey,
+        )
+      ) {
+        throw new Error('canonicalTradeKey уже занят другим событием');
+      }
+
       row.appliedToLedger = u.applied;
       row.ledgerState = u.state;
+      row.canonicalTradeKey = u.canonicalTradeKey ?? null;
+      row.localRealizedPnlUsd = u.localRealizedPnlUsd ?? null;
+      row.localCostBasisUsd = u.localCostBasisUsd ?? null;
+      row.localPnlState = u.localPnlState ?? null;
+      row.pnlVersion = u.pnlVersion ?? null;
+      row.pnlComputedAt = u.pnlComputedAt ?? null;
       if (!u.applied) row.ledgerAttempts++;
     }
   }

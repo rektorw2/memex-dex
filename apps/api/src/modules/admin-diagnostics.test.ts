@@ -125,7 +125,6 @@ vi.mock('../services/dexscreener.js', () => ({ fetchBoostedTokens: async () => [
 const { tokenRoutes } = await import('./tokens.js');
 const { isHot, hotTokens, resetHotTokensForTests } = await import('../workers/hot-tokens.js');
 const { resetIngestThrottleForTests } = await import('./tokens.js');
-const { markRadarFindsHot } = await import('./radar.js');
 
 let app: FastifyInstance;
 
@@ -363,14 +362,14 @@ describe('административный recheck', () => {
 
 // ─────────────────────── Горячий список из списков ───────────────────────────
 
-describe('Terminal греет то, что показал', () => {
-  it('токены списка попадают в горячие', async () => {
+describe('горячим становится только то, что человек открыл', () => {
+  it('список терминала горячим не делает ничего', async () => {
     tokenRows = [token({ id: 'a' }), token({ id: 'b' })];
 
     await get('/api/tokens');
 
-    expect(isHot('a')).toBe(true);
-    expect(isHot('b')).toBe(true);
+    expect(isHot('a')).toBe(false);
+    expect(isHot('b')).toBe(false);
   });
 
   it('открытая карточка тоже', async () => {
@@ -381,69 +380,57 @@ describe('Terminal греет то, что показал', () => {
     expect(isHot('card')).toBe(true);
   });
 
-  it('горячим становится начало выдачи, а не весь каталог', async () => {
+  it('список терминала горячим не делает ничего', async () => {
     /*
-     * Ответ отдаёт до двухсот токенов, на экране помещается десяток.
-     * Пометить всё значит объявить горячим полкаталога и вытеснить
-     * оттуда открытые карточки.
+     * Ключевое изменение. Раньше здесь помечались первые двенадцать
+     * строк выдачи, и это был один из двух источников перерасхода:
+     * список опрашивается каждые несколько секунд, метка живёт
+     * полторы минуты, значит горячий набор не пустел никогда —
+     * и живой цикл цен обращался к провайдеру круглосуточно просто
+     * потому, что кто-то оставил вкладку открытой.
+     *
+     * Показ строки в таблице не означает, что человек следит
+     * за её ценой. Следит он за открытым графиком.
      */
     tokenRows = Array.from({ length: 200 }, (_, i) => token({ id: `t-${i}` }));
 
     await get('/api/tokens?limit=200');
 
-    expect(hotTokens().length).toBeLessThanOrEqual(12);
-  });
-
-  it('несуществующих и скрытых среди них не бывает', async () => {
-    /*
-     * Помечаются идентификаторы, которые сервер сам только что
-     * прочитал из базы по условию `isHidden: false`. Проверять
-     * их отдельно нечего — они наши собственные.
-     *
-     * Ровно поэтому выбран этот вариант, а не приём списка от клиента:
-     * присланные идентификаторы пришлось бы сверять с базой, то есть
-     * тратить лишний запрос на каждую прокрутку.
-     */
-    tokenRows = [];
-
-    await get('/api/tokens');
-
     expect(hotTokens()).toEqual([]);
   });
 
-  it('перебор страниц не греет каталог бесконечно', async () => {
+  it('перебор страниц не греет каталог вовсе', async () => {
     tokenRows = Array.from({ length: 12 }, (_, i) => token({ id: `t-${i}` }));
 
     for (let i = 0; i < 50; i++) await get(`/api/tokens?limit=12&minLiquidity=${i}`);
 
-    // Упирается в предел размера горячего списка, а не растёт
-    // с числом запросов.
-    expect(hotTokens().length).toBeLessThanOrEqual(50);
+    expect(hotTokens()).toEqual([]);
+  });
+
+  it('лента GEMS горячим не делает ничего', async () => {
+    // То же основание: вкладка GEMS у активного пользователя открыта
+    // постоянно, и её опрос не должен стоить живого цикла цен.
+    tokenRows = Array.from({ length: 20 }, (_, i) => token({ id: `g-${i}` }));
+
+    await get('/api/tokens/gems');
+
+    expect(hotTokens()).toEqual([]);
   });
 });
 
-describe('Radar греет свежие находки', () => {
-  it('существующий видимый токен становится горячим', async () => {
+describe('Radar тоже не греет просмотром', () => {
+  it('лента находок не переводит токены в живой цикл', async () => {
+    /*
+     * Радар открыт постоянно у любого, кто им пользуется. Отметка
+     * первых карточек означала непрерывный живой цикл фоном —
+     * ровно то, от чего мы уходим.
+     *
+     * Цену находкам даёт холодный круг и запись самого сигнала.
+     */
     tokenRows = [token({ id: 'radar-token' })];
 
-    await markRadarFindsHot([
-      {
-        chain: 'SOLANA',
-        address: 'So11111111111111111111111111111111111111112',
-      },
-    ]);
+    await get('/api/tokens');
 
-    expect(isHot('radar-token')).toBe(true);
-    expect(tokenFindManyArgs.at(-1)?.where).toMatchObject({
-      isHidden: false,
-      isQuote: false,
-    });
-  });
-
-  it('пустая выдача не обращается к базе', async () => {
-    await markRadarFindsHot([]);
-
-    expect(tokenFindManyArgs).toEqual([]);
     expect(hotTokens()).toEqual([]);
   });
 });

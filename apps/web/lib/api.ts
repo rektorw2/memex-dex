@@ -177,8 +177,42 @@ export function errorMessage(e: unknown, fallback = 'Что-то пошло не
   return fallback;
 }
 
+/**
+ * Событие смены сессии.
+ *
+ * `sessionStorage` не рассылает `storage` в той вкладке, где запись
+ * произошла, поэтому вход остаётся незамеченным собственным
+ * приложением. Избранное решало это опросом раз в секунду — рабочим,
+ * но неточным: между входом и появлением звёзд проходило до секунды,
+ * и таймер тикал всё время, пока открыта страница.
+ *
+ * Общего контекста авторизации в проекте нет: токен читают напрямую
+ * `api.ts`, `role.ts` и избранное. Заводить его сейчас значило бы
+ * переписать все три ради одного исправления, поэтому здесь —
+ * событие рядом с единственной точкой записи токена. Подписчик
+ * узнаёт о входе в тот же тик, а `storage` по-прежнему приносит
+ * новости из других вкладок.
+ */
+export const AUTH_CHANGED_EVENT = 'memex:auth-changed';
+
+function announceAuthChange(): void {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(new Event(AUTH_CHANGED_EVENT));
+}
+
 export function setToken(token: string) {
   sessionStorage.setItem('accessToken', token);
+  announceAuthChange();
+}
+
+/** Забыть сессию. Единственное место, где токен исчезает. */
+export function clearToken() {
+  sessionStorage.removeItem('accessToken');
+  announceAuthChange();
+}
+
+export function hasToken(): boolean {
+  return typeof window !== 'undefined' && sessionStorage.getItem('accessToken') != null;
 }
 
 export function newIdempotencyKey(): string {

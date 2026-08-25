@@ -15,6 +15,7 @@ import { chainLabel, CHAINS } from '@/lib/chains';
 import { SmartScore, Identicon } from './SmartScore';
 import { WalletIdentity, statsOf, categoryOf, type Wallet } from './WalletViews';
 import { FavoriteStar } from './FavoriteStar';
+import { PnlBreakdown } from './PnlValue';
 
 /**
  * Подробности кошелька.
@@ -30,19 +31,22 @@ import { FavoriteStar } from './FavoriteStar';
  */
 
 export function WalletDrawer({ wallet: w, onClose }: { wallet: Wallet; onClose: () => void }) {
-  const chain = CHAINS[w.chain];
-  const s = statsOf(w);
-  const conf = confidenceOf(s.settled);
-  const wr = winRateView(w.wins2x, s.settled);
-  const cat = categoryOf(w);
-
   // Сделки подгружаются только при открытии: в списке они не нужны,
   // а весят больше, чем всё остальное вместе.
   const { data } = useSWR<any>(`/wallets/${w.chain}/${w.address}`, fetcher, {
     revalidateOnFocus: false,
   });
 
+  // Лента и избранное могут открыть панель по одному адресу. Полная
+  // сводка подменяет краткую, как только пришёл ответ сервера.
+  const wallet: Wallet = data?.wallet ? { ...w, ...data.wallet } : w;
+  const chain = CHAINS[wallet.chain];
+  const s = statsOf(wallet);
+  const conf = confidenceOf(s.settled);
+  const wr = winRateView(wallet.wins2x, s.settled);
+  const cat = categoryOf(wallet);
   const trades: any[] = data?.trades ?? [];
+  const pnl = data?.pnl ?? null;
 
   return (
     <div className="panel fixed inset-0 z-50 flex flex-col overflow-hidden lg:inset-y-4 lg:left-auto lg:right-4 lg:w-[440px] lg:rounded-xl lg:border">
@@ -57,12 +61,12 @@ export function WalletDrawer({ wallet: w, onClose }: { wallet: Wallet; onClose: 
           </svg>
         </button>
         <div className="min-w-0 flex-1">
-          <WalletIdentity wallet={w} size={32} />
+          <WalletIdentity wallet={wallet} size={32} />
         </div>
 
         {/* Та же звезда, что в списке и в ленте: состояние общее,
             и переключение здесь видно везде без перезагрузки. */}
-        <FavoriteStar chain={w.chain} address={w.address} />
+        <FavoriteStar chain={wallet.chain} address={wallet.address} />
       </header>
 
       <div className="scroll-y flex-1 space-y-4 p-4">
@@ -70,6 +74,33 @@ export function WalletDrawer({ wallet: w, onClose }: { wallet: Wallet; onClose: 
         <section className="space-y-2 rounded-lg bg-raised p-3">
           <SmartScore stats={s} />
           <p className="text-[11px] leading-relaxed text-muted">{conf.explanation}</p>
+        </section>
+
+        <section className="space-y-2">
+          <h2 className="text-xs uppercase tracking-wide text-muted">Локальный PnL</h2>
+          <div className="rounded-lg bg-raised p-3">
+            <PnlBreakdown
+              realized={pnl?.realizedUsd ?? null}
+              unrealized={pnl?.unrealizedUsd ?? null}
+              total={pnl?.totalUsd ?? null}
+              isPending={pnl == null || pnl.state === 'pending' || pnl.state === 'empty'}
+              hasIncompleteHistory={pnl?.state === 'incomplete_history'}
+              isAmbiguous={pnl?.state === 'ambiguous'}
+              isPriceStale={pnl?.state === 'stale'}
+              computedAt={pnl?.computedAt ? new Date(pnl.computedAt).getTime() : null}
+            />
+            {pnl?.state === 'ambiguous' && (
+              <p className="mt-2 text-[10px] leading-relaxed text-warn/80">
+                Порядок части сделок неоднозначен — итог скрыт, чтобы не показывать догадку.
+              </p>
+            )}
+            {pnl?.state === 'stale' && (
+              <p className="mt-2 text-[10px] leading-relaxed text-warn/80">
+                Цена открытой позиции устарела. Реализованный результат сохранён,
+                общий появится после обновления котировки.
+              </p>
+            )}
+          </div>
         </section>
 
         {/* ── Из чего сложилась оценка ────────────────────────── */}
@@ -81,14 +112,14 @@ export function WalletDrawer({ wallet: w, onClose }: { wallet: Wallet; onClose: 
               value={wr.text}
               tone={wr.isImpossible ? 'down' : undefined}
             />
-            <Tile label="Средний максимум" value={formatMultiple(w.avgPeakMultiple)} />
+            <Tile label="Средний максимум" value={formatMultiple(wallet.avgPeakMultiple)} />
             <Tile
               label="Медианный вход"
-              value={formatEntryTime(w.medianEntryHours)}
+              value={formatEntryTime(wallet.medianEntryHours)}
               hint="После запуска пула"
             />
-            <Tile label="Обнулившихся" value={String(w.rugs ?? 0)} tone={(w.rugs ?? 0) > 0 ? 'down' : undefined} />
-            <Tile label="Объём покупок" value={fmtUsd(w.volumeUsd)} />
+            <Tile label="Обнулившихся" value={String(wallet.rugs ?? 0)} tone={(wallet.rugs ?? 0) > 0 ? 'down' : undefined} />
+            <Tile label="Объём покупок" value={fmtUsd(wallet.volumeUsd)} />
             <Tile
               label="Категория"
               value={CATEGORY_LABELS[cat]}
@@ -149,7 +180,7 @@ export function WalletDrawer({ wallet: w, onClose }: { wallet: Wallet; onClose: 
       <footer className="safe-bottom sticky bottom-0 flex gap-2 border-t border-border bg-panel p-4">
         {chain && (
           <a
-            href={chain.explorerAddress(w.address)}
+            href={chain.explorerAddress(wallet.address)}
             target="_blank"
             rel="noopener noreferrer"
             className="tap flex h-11 flex-1 items-center justify-center rounded-lg border border-border text-sm text-muted"
@@ -158,7 +189,7 @@ export function WalletDrawer({ wallet: w, onClose }: { wallet: Wallet; onClose: 
           </a>
         )}
         <button
-          onClick={() => navigator.clipboard?.writeText(w.address)}
+          onClick={() => navigator.clipboard?.writeText(wallet.address)}
           className="tap flex h-11 flex-1 items-center justify-center rounded-lg border border-border text-sm text-muted"
         >
           Копировать адрес

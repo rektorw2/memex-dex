@@ -858,6 +858,34 @@ model TraderWallet {
   wins5x       Int @default(0)
   /** Покупки, после которых токен терял более 80%. */
   rugs         Int @default(0)
+
+  // ─── Контракт сводки ────────────────────────────────────────────────
+  //
+  // Знаменатель доли попаданий хранится, а не восстанавливается.
+  // Выражение `max(wins2x, rugs)` теряло исходы между 0.2x и 2x:
+  // они оцениваемые, но ни победа, ни rug. Победы — подмножество
+  // оцениваемых исходов, а подмножество не определяет множество.
+  //
+  // NULL означает «ещё не пересчитан новыми правилами», а не ноль.
+  // Умолчание стёрло бы разницу между честным нулём и старой строкой.
+
+  /** Знаменатель доли попаданий: токены с подведённым достоверным исходом. */
+  scorableOutcomes  Int?
+  /** Ждут наблюдений. Не проигрыши. */
+  pendingOutcomes   Int?
+  /** База кратности недостоверна: в оценку не идут. */
+  ambiguousOutcomes Int?
+
+  /** Версия правил расчёта. Пусто — строка досталась от прежних правил. */
+  scoreVersion    Int?
+  /** Когда сводка была посчитана на самом деле, а не когда прочитана. */
+  scoreComputedAt DateTime?
+  /** none | low | medium | high */
+  scoreConfidence String?
+  /** complete | partial | empty | stale */
+  scoreCoverage   String?
+  /** Почему оценки нет, если её нет. */
+  scoreReason     String?
   /** Совокупный объём покупок в долларах. */
   volumeUsd    Decimal @default(0) @db.Decimal(24, 8)
   /** Средняя пиковая кратность по его покупкам. */
@@ -882,6 +910,8 @@ model TraderWallet {
   @@unique([chain, address])
   @@index([label, score])
   @@index([lastActiveAt])
+  // Дешёвый ответ на вопрос «сколько строк ещё не пересчитано».
+  @@index([scoreVersion])
 }
 
 /**
@@ -1429,6 +1459,25 @@ model WalletActivity {
   ledgerErrorCode String?
   ledgerAttempts  Int     @default(0)
 
+  // ─── Локальный результат ─────────────────────────────────────────
+  //
+  // `realizedPnlUsd` выше оставлен как диагностическое число OKX.
+  // Пользователю оно не показывается. Публичный результат ниже
+  // считается по канонической сделке и нашей средневзвешенной
+  // себестоимости.
+
+  /** Ключ точной сделки, с которой сопоставлено событие ленты. */
+  canonicalTradeKey   String? @unique
+  /** Локальный реализованный PnL этой SELL. У BUY всегда NULL. */
+  localRealizedPnlUsd Decimal? @db.Decimal(30, 10)
+  /** Локальная себестоимость проданного количества. */
+  localCostBasisUsd   Decimal? @db.Decimal(30, 10)
+  /** available | open_position | pending | incomplete_history | ambiguous */
+  localPnlState       String?
+  /** Версия правил расчёта. NULL означает «ещё не пересчитано». */
+  pnlVersion          Int?
+  pnlComputedAt       DateTime?
+
   tradedAt   DateTime
   receivedAt DateTime @default(now())
 
@@ -1439,6 +1488,8 @@ model WalletActivity {
   @@index([side, tradedAt])
   @@index([source, tradedAt])
   @@index([appliedToLedger])
+  @@index([localPnlState, tradedAt])
+  @@index([pnlVersion])
 }
 
 /**
@@ -1497,12 +1548,63 @@ model WalletEconomicTrade {
   providerPnlUsd Decimal? @db.Decimal(30, 10)
 
   provider  String   @default("okx_dex_history")
+
+  // ─── Происхождение и идентичность ───────────────────────────────────
+  //
+  // Появились после разбора живого дефекта: одна покупка показывалась
+  // много раз с одинаковым временем, потому что суммы входили в ключ.
+  // Теперь ключ их не содержит, а происхождение хранится явно —
+  // иначе по строке нельзя сказать, откуда она и можно ли ей верить.
+
+  /** `okx_live` или `okx_dex_history`. У источников разная идентичность. */
+  source String @default("okx_dex_history")
+
+  /**
+   * Идентификатор события у провайдера, если он его отдаёт.
+   *
+   * История DEX не отдаёт ни его, ни хеша транзакции — сверено
+   * по документации. Поле оставлено под живую ленту и под будущее.
+   */
+  sourceEventId String?
+
+  /**
+   * Хеш транзакции. Есть только у живой ленты.
+   *
+   * Именно он даёт сильную идентичность, поэтому по нему стоит
+   * частичный уникальный индекс. Обычный unique здесь не защитил бы:
+   * NULL не конфликтует с NULL, и строки истории дублировались бы
+   * свободно.
+   */
+  txHash String?
+
+  /** Сколько переводов провайдера сложено в эту сделку. */
+  fillCount Int @default(1)
+
+  /** Время первого и последнего перевода группы. */
+  firstFillAt DateTime?
+  lastFillAt  DateTime?
+
+  /**
+   * Состояние сверки: canonical | confirmed | ambiguous | superseded.
+   *
+   * В статистику идут только первые два. `superseded` — старая
+   * запись, свёрнутая в каноническую: история не удаляется, но
+   * и вторым разом не считается.
+   */
+  reconciliation String @default("canonical")
+
+  /** Ключ канонической сделки, в которую свёрнута эта запись. */
+  supersededBy String?
+
   tradedAt  DateTime
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([walletAddress, chain, tradedAt])
   @@index([walletAddress, chain, tokenAddress, tradedAt])
+  // Чтение статистики отсекает свёрнутые и неоднозначные записи.
+  @@index([walletAddress, chain, reconciliation])
+  @@index([supersededBy])
 }
 
 /**

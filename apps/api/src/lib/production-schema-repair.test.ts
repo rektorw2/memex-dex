@@ -9,6 +9,12 @@ import {
   KNOWN_MIGRATIONS,
   CHECK_QUEUE_MIGRATION,
   CHECK_QUEUE_TOKEN_COLUMNS,
+  TRADE_PROVENANCE_MIGRATION,
+  TRADE_PROVENANCE_COLUMNS,
+  WALLET_SUMMARY_COLUMNS,
+  WALLET_SUMMARY_MIGRATION,
+  WALLET_ACTIVITY_PNL_COLUMNS,
+  WALLET_ACTIVITY_PNL_MIGRATION,
   MARKET_AGE_MIGRATION,
   MARKET_AGE_TOKEN_COLUMNS,
   OKX_SIGNAL_MIGRATION,
@@ -38,6 +44,9 @@ function legacySnapshot(): ProductionSchemaSnapshot {
     userColumns: [...BASE_USER_COLUMNS],
     tokenColumns: ['id', 'chain', 'address'],
     okxSignalColumns: [],
+    economicTradeColumns: [],
+    traderWalletColumns: [],
+    walletActivityColumns: [],
     tables: ['User', 'Token', 'WalletActivity'],
     enums: ['UserRole'],
     appliedMigrations: null,
@@ -51,6 +60,9 @@ function accessOnlySnapshot(): ProductionSchemaSnapshot {
     userColumns: [...BASE_USER_COLUMNS, ...ACCESS_USER_COLUMNS],
     tokenColumns: ['id', 'chain', 'address'],
     okxSignalColumns: [],
+    economicTradeColumns: [],
+    traderWalletColumns: [],
+    walletActivityColumns: [],
     tables: ['User', 'Token', ...ACCESS_TABLES],
     enums: [...ACCESS_ENUMS],
     appliedMigrations: [BASELINE_MIGRATION, ACCESS_MIGRATION],
@@ -64,6 +76,9 @@ function readySnapshot(): ProductionSchemaSnapshot {
   s.tokenColumns = [...s.tokenColumns, ...MARKET_AGE_TOKEN_COLUMNS, ...CHECK_QUEUE_TOKEN_COLUMNS];
   s.tables = [...s.tables, ...OKX_SIGNAL_TABLES];
   s.okxSignalColumns = [...OKX_SIGNAL_ATH_COLUMNS];
+  s.economicTradeColumns = [...TRADE_PROVENANCE_COLUMNS];
+  s.traderWalletColumns = [...WALLET_SUMMARY_COLUMNS];
+  s.walletActivityColumns = [...WALLET_ACTIVITY_PNL_COLUMNS];
   s.appliedMigrations = [...KNOWN_MIGRATIONS];
   return s;
 }
@@ -97,6 +112,9 @@ describe('готовая база', () => {
     after.appliedMigrations = [...KNOWN_MIGRATIONS];
     after.tables = [...after.tables, ...OKX_SIGNAL_TABLES];
     after.okxSignalColumns = [...OKX_SIGNAL_ATH_COLUMNS];
+    after.economicTradeColumns = [...TRADE_PROVENANCE_COLUMNS];
+    after.traderWalletColumns = [...WALLET_SUMMARY_COLUMNS];
+    after.walletActivityColumns = [...WALLET_ACTIVITY_PNL_COLUMNS];
 
     expect(planProductionSchemaRepair(after)).toEqual({ action: 'ready' });
   });
@@ -113,6 +131,9 @@ describe('переход с прежней схемы', () => {
         CHECK_QUEUE_MIGRATION,
         OKX_SIGNAL_MIGRATION,
         OKX_SIGNAL_ATH_MIGRATION,
+        TRADE_PROVENANCE_MIGRATION,
+        WALLET_SUMMARY_MIGRATION,
+        WALLET_ACTIVITY_PNL_MIGRATION,
       ],
     });
   });
@@ -137,6 +158,9 @@ describe('переход с прежней схемы', () => {
         CHECK_QUEUE_MIGRATION,
         OKX_SIGNAL_MIGRATION,
         OKX_SIGNAL_ATH_MIGRATION,
+        TRADE_PROVENANCE_MIGRATION,
+        WALLET_SUMMARY_MIGRATION,
+        WALLET_ACTIVITY_PNL_MIGRATION,
       ],
     });
   });

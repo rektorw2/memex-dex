@@ -47,6 +47,15 @@ export interface Wallet {
   volumeUsd: string | number | null;
   label?: string | null;
   lastActiveAt?: string | null;
+  /**
+   * Сводка целиком, как её посчитал сервер.
+   *
+   * Отдельные поля выше оставлены на время перехода, но решение
+   * «показывать числа или сказать, что их нет» принимается здесь:
+   * состояние `stale` означает, что строка ещё не пересчитана
+   * и её прежние числа показывать нельзя.
+   */
+  summary?: { coverage?: string | null } | null;
 }
 
 /** Сводим поля кошелька к тому, что нужно оценке. */
@@ -61,6 +70,7 @@ export function statsOf(w: Wallet): WalletStats {
     avgMultiple: w.avgPeakMultiple,
     medianEntryHours: w.medianEntryHours,
     rugs: w.rugs,
+    needsRecompute: w.summary?.coverage === 'stale',
   };
 }
 

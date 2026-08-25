@@ -9,6 +9,7 @@ import { Identicon } from './SmartScore';
 import { short } from './WalletViews';
 import { PnlValue } from './PnlValue';
 import { FavoriteStar } from './FavoriteStar';
+import type { Wallet } from './WalletViews';
 
 /**
  * Живая лента сделок отслеживаемых кошельков.
@@ -29,9 +30,10 @@ import { FavoriteStar } from './FavoriteStar';
  */
 
 interface ActivityEvent {
+  dedupeKey: string;
   chain: string;
   wallet: string;
-  txHash: string;
+  txHash: string | null;
   tokenAddress: string;
   tokenSymbol: string | null;
   quoteSymbol: string | null;
@@ -47,8 +49,9 @@ interface ActivityEvent {
    * Показывать это число как истину нельзя: оно посчитано по данным,
    * которых мы не видели. Состояние решает, показывать ли его вообще.
    */
-  pnlState?: 'available' | 'pending' | 'incomplete_history' | 'open_position';
-  pnlSource?: 'okx' | null;
+  pnlState?: 'available' | 'pending' | 'incomplete_history' | 'ambiguous' | 'open_position';
+  pnlSource?: 'local' | null;
+  pnlComputedAt?: string | null;
   tradedAt: number;
 }
 
@@ -66,7 +69,7 @@ const SIDE_FILTERS: Array<[string, string]> = [
   ['sell', 'Продажи'],
 ];
 
-export function ActivityFeed() {
+export function ActivityFeed({ onOpen }: { onOpen?: (wallet: Wallet) => void }) {
   const [chain, setChain] = useState('');
   const [side, setSide] = useState('all');
   const [minVolume, setMinVolume] = useState<number | ''>('');
@@ -182,7 +185,7 @@ export function ActivityFeed() {
       ) : (
         <div className="space-y-1.5">
           {events.map((e) => (
-            <Row key={`${e.chain}:${e.txHash}:${e.side}`} event={e} />
+            <Row key={e.dedupeKey} event={e} onOpen={onOpen} />
           ))}
         </div>
       )}
@@ -190,7 +193,7 @@ export function ActivityFeed() {
   );
 }
 
-function Row({ event: e }: { event: ActivityEvent }) {
+function Row({ event: e, onOpen }: { event: ActivityEvent; onOpen?: (wallet: Wallet) => void }) {
   const chain = CHAINS[e.chain];
   const isBuy = e.side === 'BUY';
   const pnl = e.realizedPnlUsd;
@@ -201,7 +204,18 @@ function Row({ event: e }: { event: ActivityEvent }) {
   const state = e.pnlState ?? (isBuy ? 'open_position' : 'pending');
 
   return (
-    <div className="panel flex items-center gap-3 p-3">
+    <div
+      className={`panel flex items-center gap-3 p-3 ${onOpen ? 'cursor-pointer transition-colors hover:bg-raised' : ''}`}
+      role={onOpen ? 'button' : undefined}
+      tabIndex={onOpen ? 0 : undefined}
+      onClick={() => onOpen?.(walletFromActivity(e))}
+      onKeyDown={(event) => {
+        if (onOpen && (event.key === 'Enter' || event.key === ' ')) {
+          event.preventDefault();
+          onOpen(walletFromActivity(e));
+        }
+      }}
+    >
       <Identicon address={e.wallet} size={32} />
 
       <div className="min-w-0 flex-1">
@@ -224,7 +238,9 @@ function Row({ event: e }: { event: ActivityEvent }) {
 
           {/* Звезда рядом с адресом: отметить кошелёк можно там,
               где он попался на глаза, а не только в общем списке. */}
-          <FavoriteStar chain={e.chain} address={e.wallet} size="sm" className="-my-1" />
+          <span onClick={(event) => event.stopPropagation()}>
+            <FavoriteStar chain={e.chain} address={e.wallet} size="sm" className="-my-1" />
+          </span>
         </div>
 
         <div className="mt-0.5 truncate text-[11px] text-muted">
@@ -250,6 +266,8 @@ function Row({ event: e }: { event: ActivityEvent }) {
           isOpen={state === 'open_position'}
           isPending={state === 'pending'}
           hasIncompleteHistory={state === 'incomplete_history'}
+          isAmbiguous={state === 'ambiguous'}
+          computedAt={e.pnlComputedAt ? new Date(e.pnlComputedAt).getTime() : null}
           kind="realized"
           size="sm"
         />
@@ -261,6 +279,7 @@ function Row({ event: e }: { event: ActivityEvent }) {
           href={chain.explorerAddress(e.wallet)}
           target="_blank"
           rel="noopener noreferrer"
+          onClick={(event) => event.stopPropagation()}
           className="tap grid h-9 w-9 shrink-0 place-items-center rounded-lg text-muted transition-colors hover:text-white"
           aria-label="Открыть кошелёк в обозревателе"
         >
@@ -269,6 +288,20 @@ function Row({ event: e }: { event: ActivityEvent }) {
       )}
     </div>
   );
+}
+
+function walletFromActivity(event: ActivityEvent): Wallet {
+  return {
+    chain: event.chain,
+    address: event.wallet,
+    score: null,
+    wins2x: null,
+    rugs: null,
+    avgPeakMultiple: null,
+    medianEntryHours: null,
+    volumeUsd: null,
+    lastActiveAt: new Date(event.tradedAt).toISOString(),
+  };
 }
 
 function Chip({

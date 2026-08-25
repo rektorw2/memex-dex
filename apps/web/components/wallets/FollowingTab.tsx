@@ -15,22 +15,31 @@
 
 import { useMemo, useState } from 'react';
 import useSWR from 'swr';
-import { timeAgo } from '@memex/core';
+import { timeAgo, FAVORITES_RETRY_DELAYS_MS } from '@memex/core';
 import { fetcher, errorMessage } from '@/lib/api';
 import { chainLabel, CHAINS } from '@/lib/chains';
 import { useFavorites, walletKey } from '@/lib/favorites';
 import { Identicon } from './SmartScore';
 import { short } from './WalletViews';
+import type { Wallet } from './WalletViews';
 import { FavoriteStar } from './FavoriteStar';
 import { PnlValue } from './PnlValue';
 
 interface FavoritePnl {
-  state: 'available' | 'pending' | 'incomplete_history';
+  state: 'available' | 'pending' | 'incomplete_history' | 'ambiguous' | 'stale' | 'empty';
   realizedUsd: number | null;
   unrealizedUsd: number | null;
-  closedPositions: number | null;
-  incompleteTokens: number | null;
+  totalUsd: number | null;
+  closedPositions: number;
+  openPositions: number;
+  incompleteTokens: number;
+  ambiguousTokens: number;
+  unpricedPositions: number;
+  isStale: boolean;
   computedAt: string | null;
+  priceAsOf: string | null;
+  method: 'weighted_average';
+  version: number;
 }
 
 interface FavoriteItem {
@@ -62,8 +71,14 @@ const SORTS: Array<[Sort, string]> = [
   ['active', 'По активности'],
 ];
 
-export function FollowingTab({ onFind }: { onFind?: () => void }) {
-  const { keys, isGuest, revision } = useFavorites();
+export function FollowingTab({
+  onFind,
+  onOpen,
+}: {
+  onFind?: () => void;
+  onOpen?: (wallet: Wallet) => void;
+}) {
+  const { keys, isGuest, sync, resync, retries, revision } = useFavorites();
   const [chain, setChain] = useState('');
   const [sort, setSort] = useState<Sort>('added');
 
@@ -169,6 +184,14 @@ export function FollowingTab({ onFind }: { onFind?: () => void }) {
         </select>
       </div>
 
+      {/*
+        Два разных состояния, и раньше они были одним.
+
+        «Войдите» показывается только настоящему гостю. Сбой
+        синхронизации у вошедшего — это сбой синхронизации, а не
+        отсутствие аккаунта: предлагать войти тому, кто уже вошёл,
+        значит сообщать неправду о его собственном состоянии.
+      */}
       {isGuest && (
         <p className="panel px-4 py-3 text-[11px] leading-relaxed text-muted/80">
           Отметки хранятся в этом браузере. Войдите, чтобы они переносились
@@ -176,9 +199,55 @@ export function FollowingTab({ onFind }: { onFind?: () => void }) {
         </p>
       )}
 
+      {/*
+        Четыре отказа — четыре разных сообщения.
+
+        Прежде все они сводились к «синхронизация временно недоступна»,
+        и человеку с истёкшей сессией предлагалось подождать. Ждать
+        в этом случае бесполезно: сервер отвечает по существу, и нужен
+        новый вход. Совет, который никогда не сработает, хуже молчания.
+      */}
+      {!isGuest && sync === 'expired' && (
+        <p className="panel px-4 py-3 text-[11px] leading-relaxed text-muted/80">
+          Сессия истекла. Отметки этого браузера сохранены и перенесутся
+          в аккаунт после нового входа.
+        </p>
+      )}
+
+      {!isGuest && sync === 'forbidden' && (
+        <p className="panel px-4 py-3 text-[11px] leading-relaxed text-muted/80">
+          Избранное недоступно на текущем тарифе. Отметки продолжают
+          храниться в этом браузере.
+        </p>
+      )}
+
+      {!isGuest && sync === 'schema-missing' && (
+        <p className="panel px-4 py-3 text-[11px] leading-relaxed text-muted/80">
+          Сервер пока не умеет хранить избранное — схема базы не обновлена.
+          Отметки сохраняются в этом браузере.
+        </p>
+      )}
+
+      {!isGuest && sync === 'unavailable' && (
+        <p className="panel px-4 py-3 text-[11px] leading-relaxed text-muted/80">
+          Синхронизация временно недоступна. Отметки сохраняются в этом
+          браузере и объединятся с аккаунтом, как только связь
+          восстановится.{' '}
+          {retries >= FAVORITES_RETRY_DELAYS_MS.length ? (
+            // Автоматические попытки закончились: дальше решает человек,
+            // а не таймер, который иначе стучался бы вечно.
+            <button type="button" onClick={resync} className="underline">
+              Повторить сейчас
+            </button>
+          ) : (
+            <span className="text-muted/60">Повторяем автоматически…</span>
+          )}
+        </p>
+      )}
+
       <div className="space-y-2">
         {items.map((f) => (
-          <FavoriteRow key={walletKey(f.chain, f.address)} item={f} />
+          <FavoriteRow key={walletKey(f.chain, f.address)} item={f} onOpen={onOpen} />
         ))}
       </div>
     </div>
@@ -187,14 +256,27 @@ export function FollowingTab({ onFind }: { onFind?: () => void }) {
 
 // ──────────────────────────────── Строка ────────────────────────────────────
 
-function FavoriteRow({ item: f }: { item: FavoriteItem }) {
+function FavoriteRow({ item: f, onOpen }: { item: FavoriteItem; onOpen?: (wallet: Wallet) => void }) {
   const chain = CHAINS[f.chain];
-  const pending = f.pnl.state === 'pending';
+  const pending = f.pnl.state === 'pending' || f.pnl.state === 'empty';
   const incomplete = f.pnl.state === 'incomplete_history';
+  const ambiguous = f.pnl.state === 'ambiguous';
+  const stalePrice = f.pnl.state === 'stale';
   const computedAt = f.pnl.computedAt ? new Date(f.pnl.computedAt).getTime() : null;
 
   return (
-    <article className="panel space-y-3 p-4">
+    <article
+      className={`panel space-y-3 p-4 ${onOpen ? 'cursor-pointer transition-colors hover:bg-raised' : ''}`}
+      role={onOpen ? 'button' : undefined}
+      tabIndex={onOpen ? 0 : undefined}
+      onClick={() => onOpen?.(walletFromFavorite(f))}
+      onKeyDown={(event) => {
+        if (onOpen && (event.key === 'Enter' || event.key === ' ')) {
+          event.preventDefault();
+          onOpen(walletFromFavorite(f));
+        }
+      }}
+    >
       <div className="flex items-start gap-3">
         <Identicon address={f.address} size={36} />
 
@@ -220,12 +302,15 @@ function FavoriteRow({ item: f }: { item: FavoriteItem }) {
 
           <p className="mt-1 text-[11px] text-muted/70">
             {f.lastActiveAt ? `Активен ${timeAgo(f.lastActiveAt)}` : 'Активность неизвестна'}
-            {f.pnl.closedPositions != null && <> · закрытых сделок {f.pnl.closedPositions}</>}
+            <> · закрытых позиций {f.pnl.closedPositions}</>
+            {f.pnl.openPositions > 0 && <> · открытых {f.pnl.openPositions}</>}
             {' · '}в избранном {timeAgo(f.addedAt)}
           </p>
         </div>
 
-        <FavoriteStar chain={f.chain} address={f.address} />
+        <span onClick={(event) => event.stopPropagation()}>
+          <FavoriteStar chain={f.chain} address={f.address} />
+        </span>
       </div>
 
       {/* Три показателя раздельно. Реализованный — деньги, которые
@@ -235,8 +320,9 @@ function FavoriteRow({ item: f }: { item: FavoriteItem }) {
         <Cell label="Реализованный">
           <PnlValue
             valueUsd={f.pnl.realizedUsd}
-            isPending={pending}
+            isPending={pending && f.pnl.realizedUsd == null}
             hasIncompleteHistory={incomplete}
+            isAmbiguous={ambiguous}
             computedAt={computedAt}
             kind="realized"
             size="sm"
@@ -248,6 +334,8 @@ function FavoriteRow({ item: f }: { item: FavoriteItem }) {
             valueUsd={f.pnl.unrealizedUsd}
             isPending={pending}
             hasIncompleteHistory={incomplete}
+            isAmbiguous={ambiguous}
+            isPriceStale={stalePrice}
             computedAt={computedAt}
             kind="unrealized"
             size="sm"
@@ -259,13 +347,11 @@ function FavoriteRow({ item: f }: { item: FavoriteItem }) {
             // Складываем только когда известны обе части: подставить
             // ноль вместо неизвестного значит выдать половину ответа
             // за целый.
-            valueUsd={
-              f.pnl.realizedUsd != null && f.pnl.unrealizedUsd != null
-                ? f.pnl.realizedUsd + f.pnl.unrealizedUsd
-                : null
-            }
+            valueUsd={f.pnl.totalUsd}
             isPending={pending}
             hasIncompleteHistory={incomplete}
+            isAmbiguous={ambiguous}
+            isPriceStale={stalePrice}
             computedAt={computedAt}
             kind="total"
             size="sm"
@@ -280,11 +366,26 @@ function FavoriteRow({ item: f }: { item: FavoriteItem }) {
         </p>
       )}
 
+      {ambiguous && f.pnl.ambiguousTokens > 0 && (
+        <p className="text-[10px] leading-relaxed text-warn/70">
+          По {f.pnl.ambiguousTokens} токенам порядок сделок неоднозначен. Результат
+          скрыт, пока сопоставление нельзя сделать без догадки.
+        </p>
+      )}
+
+      {stalePrice && (
+        <p className="text-[10px] leading-relaxed text-warn/70">
+          Реализованный результат актуален, но live-цена открытой позиции устарела.
+          Общий PnL появится после следующего обновления котировки.
+        </p>
+      )}
+
       {chain && (
         <a
           href={chain.explorerAddress?.(f.address) ?? chain.explorerToken(f.address)}
           target="_blank"
           rel="noopener noreferrer"
+          onClick={(event) => event.stopPropagation()}
           className="inline-block text-[11px] text-accent transition-opacity hover:opacity-80"
         >
           Открыть в обозревателе ↗
@@ -292,6 +393,22 @@ function FavoriteRow({ item: f }: { item: FavoriteItem }) {
       )}
     </article>
   );
+}
+
+function walletFromFavorite(favorite: FavoriteItem): Wallet {
+  return {
+    chain: favorite.chain,
+    address: favorite.address,
+    score: favorite.score,
+    tokensBought: favorite.tokensBought,
+    wins2x: favorite.wins2x,
+    rugs: null,
+    avgPeakMultiple: null,
+    medianEntryHours: null,
+    volumeUsd: null,
+    label: favorite.label,
+    lastActiveAt: favorite.lastActiveAt,
+  };
 }
 
 // ─────────────────────────────── Мелочи ─────────────────────────────────────
@@ -359,9 +476,17 @@ function guestItem(key: string): FavoriteItem {
       state: 'pending',
       realizedUsd: null,
       unrealizedUsd: null,
-      closedPositions: null,
-      incompleteTokens: null,
+      totalUsd: null,
+      closedPositions: 0,
+      openPositions: 0,
+      incompleteTokens: 0,
+      ambiguousTokens: 0,
+      unpricedPositions: 0,
+      isStale: false,
       computedAt: null,
+      priceAsOf: null,
+      method: 'weighted_average',
+      version: 1,
     },
   };
 }

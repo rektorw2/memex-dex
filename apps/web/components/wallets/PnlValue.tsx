@@ -63,7 +63,9 @@ export function PnlValue({ size = 'md', hint = true, className = '', ...input }:
  */
 function toneOf(view: PnlView): string {
   if (view.state !== 'available') {
-    return view.state === 'incomplete_history' ? 'text-warn/80' : 'text-muted/70';
+    return view.state === 'incomplete_history' || view.state === 'ambiguous' || view.state === 'stale'
+      ? 'text-warn/80'
+      : 'text-muted/70';
   }
 
   if (view.sign > 0) return 'text-up';
@@ -100,14 +102,21 @@ function tooltipFor(view: PnlView): string {
 export function PnlBreakdown({
   realized,
   unrealized,
+  total,
   isPending,
   hasIncompleteHistory,
+  isAmbiguous,
+  isPriceStale,
   computedAt,
 }: {
   realized: number | null;
   unrealized: number | null;
+  /** Серверная Decimal-сумма после преобразования на JSON-границе. */
+  total?: number | null;
   isPending?: boolean;
   hasIncompleteHistory?: boolean;
+  isAmbiguous?: boolean;
+  isPriceStale?: boolean;
   computedAt?: number | null;
 }) {
   return (
@@ -117,6 +126,7 @@ export function PnlBreakdown({
           valueUsd={realized}
           isPending={isPending}
           hasIncompleteHistory={hasIncompleteHistory}
+          isAmbiguous={isAmbiguous}
           computedAt={computedAt}
           kind="realized"
           size="sm"
@@ -128,6 +138,8 @@ export function PnlBreakdown({
           valueUsd={unrealized}
           isPending={isPending}
           hasIncompleteHistory={hasIncompleteHistory}
+          isAmbiguous={isAmbiguous}
+          isPriceStale={isPriceStale}
           computedAt={computedAt}
           kind="unrealized"
           size="sm"
@@ -139,9 +151,11 @@ export function PnlBreakdown({
           // Сумма считается только когда известны обе части: сложить
           // известное с неизвестным, подставив ноль, значит выдать
           // половину ответа за целый.
-          valueUsd={realized != null && unrealized != null ? realized + unrealized : null}
+          valueUsd={total ?? null}
           isPending={isPending}
           hasIncompleteHistory={hasIncompleteHistory}
+          isAmbiguous={isAmbiguous}
+          isPriceStale={isPriceStale}
           computedAt={computedAt}
           kind="total"
           size="sm"

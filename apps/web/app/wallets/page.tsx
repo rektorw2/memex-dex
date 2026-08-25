@@ -43,6 +43,7 @@ type Tab = 'wallets' | 'activity' | 'following';
 function WalletsPageContent() {
   const [tab, setTab] = useState<Tab>('wallets');
   const [methodOpen, setMethodOpen] = useState(false);
+  const [selected, setSelected] = useState<Wallet | null>(null);
 
   return (
     <div className="space-y-4">
@@ -88,13 +89,16 @@ function WalletsPageContent() {
         </div>
       </header>
 
-      {tab === 'wallets' && <WalletsTab />}
-      {tab === 'activity' && <ActivityFeed />}
-      {tab === 'following' && <FollowingTab onFind={() => setTab('wallets')} />}
+      {tab === 'wallets' && <WalletsTab onOpen={setSelected} />}
+      {tab === 'activity' && <ActivityFeed onOpen={setSelected} />}
+      {tab === 'following' && (
+        <FollowingTab onFind={() => setTab('wallets')} onOpen={setSelected} />
+      )}
 
       <PageDisclaimer />
 
       <ScoreMethodology open={methodOpen} onClose={() => setMethodOpen(false)} />
+      {selected && <WalletDrawer wallet={selected} onClose={() => setSelected(null)} />}
     </div>
   );
 }
@@ -141,9 +145,8 @@ function countActive(f: Filters): number {
   return n;
 }
 
-function WalletsTab() {
+function WalletsTab({ onOpen }: { onOpen: (wallet: Wallet) => void }) {
   const [f, setF] = useState<Filters>(DEFAULT_FILTERS);
-  const [selected, setSelected] = useState<Wallet | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
 
   const params = new URLSearchParams({ limit: '100', label: 'any' });
@@ -259,13 +262,13 @@ function WalletsTab() {
               wallets={wallets}
               sort={f.sort}
               onSort={(s) => setF({ ...f, sort: s })}
-              onOpen={setSelected}
+              onOpen={onOpen}
             />
           </div>
 
           <div className="space-y-3 lg:hidden">
             {wallets.map((w) => (
-              <WalletCard key={`${w.chain}:${w.address}`} wallet={w} onOpen={setSelected} />
+              <WalletCard key={`${w.chain}:${w.address}`} wallet={w} onOpen={onOpen} />
             ))}
           </div>
         </>
@@ -278,7 +281,6 @@ function WalletsTab() {
         onClose={() => setSheetOpen(false)}
       />
 
-      {selected && <WalletDrawer wallet={selected} onClose={() => setSelected(null)} />}
     </div>
   );
 }

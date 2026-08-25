@@ -3,13 +3,41 @@ import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import {
   summarizeWalletSignal,
-  liveEventId,
   MIN_TRADES_FOR_SCORE,
+  SCORE_VERSION,
+  WALLET_PNL_VERSION,
+  assertSummaryInvariants,
+  needsRecomputeSummary,
+  wilsonLowerBound,
   type ChainKey,
-  type WalletTradeEvent,
+  type WalletPerformanceSummary,
 } from '@memex/core';
 import { prisma } from '../lib/prisma.js';
 import { walletActivityForToken } from '../workers/wallet-tracker.js';
+import {
+  serializeWalletPnl,
+  walletPnlForWallets,
+  walletPnlKey,
+} from '../services/wallet-pnl.js';
+
+/**
+ * В WalletActivity хранится количество quote-токена, а не готовая
+ * долларовая сумма. Поэтому USD-фильтр можно применять только к
+ * долларовым котировкам. Сравнить 2.5 SOL с $1 000 было бы ошибкой
+ * единиц измерения, а не приблизительным фильтром.
+ */
+const USD_QUOTE_SYMBOLS = [
+  'USD',
+  'USDC',
+  'USDT',
+  'DAI',
+  'BUSD',
+  'FDUSD',
+  'TUSD',
+  'USDE',
+  'PYUSD',
+  'USDS',
+] as const;
 
 /**
  * Разметка кошельков: смарт-мани, киты, ранние входы.
@@ -96,42 +124,131 @@ export const walletIntelRoutes: FastifyPluginAsync = async (app) => {
 
     const q = z
       .object({
-        chain: z.string().optional(),
+        chain: z.enum(['SOLANA', 'BNB', 'BASE', 'ETHEREUM']).optional(),
         /** all | buy | sell */
         side: z.enum(['all', 'buy', 'sell']).default('all'),
-        minVolumeUsd: z.coerce.number().optional(),
-        minLiquidityUsd: z.coerce.number().optional(),
-        limit: z.coerce.number().max(100).default(50),
+        minVolumeUsd: z.coerce.number().nonnegative().optional(),
+        minLiquidityUsd: z.coerce.number().nonnegative().optional(),
+        limit: z.coerce.number().int().min(1).max(100).default(50),
       })
       .parse(req.query);
 
-    const { isOkxWalletConfigured, fetchTrades } = await import('../services/okx-wallets.js');
+    const { isOkxWalletConfigured } = await import('../services/okx-wallets.js');
 
-    if (!isOkxWalletConfigured()) {
-      return {
-        configured: false,
-        source: 'OKX Onchain OS',
-        events: [],
-        note: 'OKX provider is not configured',
-      };
-    }
+    const providerConfigured = isOkxWalletConfigured();
 
-    const events = await fetchTrades({
-      // Лента Smart Money самого OKX: она и есть предмет вкладки.
-      trackerType: 1,
-      chain: q.chain as never,
-      tradeType: q.side === 'buy' ? 1 : q.side === 'sell' ? 2 : 0,
-      minVolumeUsd: q.minVolumeUsd,
-      minLiquidityUsd: q.minLiquidityUsd,
+    /*
+     * Лента уже поступает через WebSocket и REST-страховку и хранится
+     * в WalletActivity. Повторно ходить в OKX при каждом открытии
+     * страницы означало платить за одни и те же данные и получать
+     * другой набор между двумя соседними запросами.
+     */
+    const candidates = await prisma.walletActivity.findMany({
+      where: {
+        ...(q.chain ? { chain: q.chain as never } : {}),
+        ...(q.side === 'all' ? {} : { side: q.side.toUpperCase() }),
+        ...(q.minVolumeUsd != null
+          ? {
+              quoteSymbol: { in: [...USD_QUOTE_SYMBOLS] },
+              quoteAmount: { gte: q.minVolumeUsd },
+            }
+          : {}),
+      },
+      orderBy: { tradedAt: 'desc' },
+      // Для фильтра ликвидности берём запас, но всё равно одной
+      // выборкой. Внешних запросов здесь нет.
+      take: q.minLiquidityUsd != null ? Math.min(q.limit * 5, 500) : q.limit,
+      select: {
+        id: true,
+        chain: true,
+        walletAddress: true,
+        tokenAddress: true,
+        tokenSymbol: true,
+        side: true,
+        quoteSymbol: true,
+        quoteAmount: true,
+        priceUsd: true,
+        marketCapUsd: true,
+        txHash: true,
+        trackerType: true,
+        source: true,
+        tradedAt: true,
+        receivedAt: true,
+        localRealizedPnlUsd: true,
+        localPnlState: true,
+        pnlVersion: true,
+        pnlComputedAt: true,
+      },
     });
 
-    const page = events.slice(0, q.limit);
+    const liquidityByToken = new Map<string, number | null>();
+    if (q.minLiquidityUsd != null && candidates.length > 0) {
+      const tokens = await prisma.token.findMany({
+        where: {
+          OR: candidates.map((event) => ({
+            chain: event.chain,
+            address: event.tokenAddress,
+          })),
+        },
+        select: { chain: true, address: true, liquidityUsd: true },
+      });
+      for (const token of tokens) {
+        liquidityByToken.set(
+          `${token.chain}:${token.address}`,
+          token.liquidityUsd == null ? null : Number(token.liquidityUsd),
+        );
+      }
+    }
+
+    const page = candidates
+      .filter((event) => {
+        if (q.minLiquidityUsd == null) return true;
+        const liquidity = liquidityByToken.get(`${event.chain}:${event.tokenAddress}`);
+        return liquidity != null && liquidity >= q.minLiquidityUsd;
+      })
+      .slice(0, q.limit)
+      .map((event) => {
+        const state = event.pnlVersion === WALLET_PNL_VERSION
+          ? event.localPnlState
+          : null;
+
+        return {
+          dedupeKey: event.id,
+          chain: event.chain,
+          wallet: event.walletAddress,
+          tokenAddress: event.tokenAddress,
+          tokenSymbol: event.tokenSymbol,
+          side: event.side,
+          quoteSymbol: event.quoteSymbol,
+          quoteAmount: event.quoteAmount == null ? null : Number(event.quoteAmount),
+          priceUsd: event.priceUsd == null ? null : Number(event.priceUsd),
+          marketCapUsd: event.marketCapUsd == null ? null : Number(event.marketCapUsd),
+          // Только наше число. realizedPnlUsd провайдера в select
+          // намеренно отсутствует и наружу попасть не может.
+          realizedPnlUsd:
+            state === 'available' && event.localRealizedPnlUsd != null
+              ? Number(event.localRealizedPnlUsd)
+              : null,
+          pnlState: state ?? (event.side === 'BUY' ? 'open_position' : 'pending'),
+          pnlSource: state != null ? 'local' : null,
+          pnlComputedAt: event.pnlComputedAt?.toISOString() ?? null,
+          tradedAt: event.tradedAt.getTime(),
+          receivedAt: event.receivedAt.getTime(),
+          txHash: event.txHash,
+          trackerType: event.trackerType,
+          source: event.source,
+        };
+      });
 
     return {
-      configured: true,
-      source: 'OKX Onchain OS',
+      // Сохранённая лента остаётся полезной при кратком сбое ключа.
+      // `configured=false` только когда нет ни источника, ни данных.
+      configured: providerConfigured || page.length > 0,
+      providerConfigured,
+      source: 'Memex ledger · OKX Onchain OS',
       fetchedAt: new Date().toISOString(),
-      events: await withLedgerVerdict(page),
+      events: page,
+      note: providerConfigured ? undefined : 'OKX provider is not configured; cached events only',
     };
   });
 
@@ -167,6 +284,17 @@ export const walletIntelRoutes: FastifyPluginAsync = async (app) => {
     const total = await prisma.traderWallet.count();
     const scored = await prisma.traderWallet.count({ where: { score: { not: null } } });
 
+    /*
+     * Сколько строк ещё не пересчитано новыми правилами.
+     *
+     * Отдаётся наружу намеренно. Пока боевой пересчёт не прошёл,
+     * список выглядит опустевшим — оценок нет, — и без этого числа
+     * причина неотличима от «смарт-кошельков не нашлось».
+     */
+    const awaitingRecompute = await prisma.traderWallet.count({
+      where: { OR: [{ scoreVersion: null }, { scoreVersion: { lt: SCORE_VERSION } }] },
+    });
+
     return {
       // Состояние набора данных отдаётся всегда: пустой список из-за
       // молодой базы и пустой из-за отсутствия смарт-денег — разные вещи,
@@ -174,6 +302,7 @@ export const walletIntelRoutes: FastifyPluginAsync = async (app) => {
       coverage: {
         walletsKnown: total,
         walletsScored: scored,
+        walletsAwaitingRecompute: awaitingRecompute,
         minTradesForScore: MIN_TRADES_FOR_SCORE,
       },
       wallets: wallets.map(serializeWallet),
@@ -201,8 +330,14 @@ export const walletIntelRoutes: FastifyPluginAsync = async (app) => {
 
     if (!wallet) return reply.code(404).send({ error: 'Кошелёк не найден' });
 
+    const pnlByWallet = await walletPnlForWallets([
+      { chain: wallet.chain as ChainKey, address: wallet.address },
+    ]);
+    const pnl = pnlByWallet.get(walletPnlKey(wallet.chain, wallet.address));
+
     return {
       wallet: serializeWallet(wallet),
+      pnl: pnl ? serializeWalletPnl(pnl) : null,
       trades: wallet.trades.map((t) => ({
         id: t.id,
         chain: t.chain,
@@ -289,101 +424,193 @@ function serializeWallet(w: {
   volumeUsd: { toString(): string }; avgPeakMultiple: { toString(): string } | null;
   medianEntryHours: { toString(): string } | null; score: number | null;
   label: string; firstSeenAt: Date; lastActiveAt: Date;
+  scorableOutcomes: number | null; pendingOutcomes: number | null;
+  ambiguousOutcomes: number | null; scoreVersion: number | null;
+  scoreComputedAt: Date | null; scoreConfidence: string | null;
+  scoreCoverage: string | null; scoreReason: string | null;
 }) {
-  const settled = w.wins2x + w.rugs;
+  /*
+   * Сводка собирается здесь целиком и уезжает одним куском.
+   *
+   * Прежде тут было три разных знаменателя сразу:
+   *
+   *     settled    = wins2x + rugs     — считался и не использовался
+   *     hitRate    = wins2x / tokensBought
+   *     sampleSize = tokensBought
+   *
+   * `wins2x` приходил из расчёта по отдельным покупкам, а
+   * `tokensBought` — по уникальным токенам. Десять покупок одного
+   * токена давали до десяти побед при одном купленном, то есть долю
+   * попаданий больше единицы. Именно это и показывалось на экране
+   * как «данные противоречивы».
+   *
+   * Теперь знаменатель едет вместе с долей, и делить одно поле
+   * на другое ни маршруту, ни интерфейсу больше не нужно.
+   */
+  const summary = storedWalletSummary(w);
+
   return {
     id: w.id,
     chain: w.chain,
     address: w.address,
     knownAs: w.knownAs,
     label: w.label,
-    score: w.score,
-    tokensBought: w.tokensBought,
-    wins2x: w.wins2x,
-    wins5x: w.wins5x,
-    rugs: w.rugs,
+
+    /** Единственный источник чисел о результативности. */
+    summary,
+
+    /*
+     * Прежние поля оставлены на время перехода интерфейса.
+     * Все они берутся из той же сводки — второго расчёта нет.
+     */
+    score: summary.score,
+    tokensBought: summary.observedTokens,
+    wins2x: summary.wins2x,
+    wins5x: summary.wins5x,
+    rugs: summary.rugs,
     volumeUsd: w.volumeUsd.toString(),
-    avgPeakMultiple: w.avgPeakMultiple ? Number(w.avgPeakMultiple) : null,
-    medianEntryHours: w.medianEntryHours ? Number(w.medianEntryHours) : null,
-    // Доля попаданий отдаётся вместе с числом сделок и никогда отдельно.
-    hitRate: w.tokensBought > 0 ? w.wins2x / w.tokensBought : null,
-    sampleSize: w.tokensBought,
+    avgPeakMultiple: summary.avgPeakMultiple,
+    medianEntryHours: summary.medianEntryHours,
+    hitRate: summary.hitRate,
+    sampleSize: summary.scorableOutcomes,
+
     firstSeenAt: w.firstSeenAt,
     lastActiveAt: w.lastActiveAt,
   };
 }
 
-// ───────────────────── Вердикт нашего учёта для ленты ───────────────────────
-
 /**
- * Состояние результата по каждому событию ленты.
+ * Сводка из сохранённых полей кошелька.
  *
- * Лента приходит от OKX и содержит его собственный расчёт прибыли.
- * Показывать его как истину нельзя: он посчитан по данным, которых
- * мы не видели, и по правилам, которых не знаем. Но и прятать нечего —
- * если наш учёт подтвердил, что себестоимость этой продажи известна,
- * число провайдера перестаёт быть догадкой и становится сверяемым.
+ * ─── Что здесь было сломано ─────────────────────────────────────────
  *
- * Отсюда три состояния, и все три берутся из нашего учёта, а не
- * из ленты:
+ * Знаменатель доли попаданий не хранился, и чтение восстанавливало
+ * его так:
  *
- *   open_position       — покупка, фиксировать нечего;
- *   pending             — событие ещё не перенесено в позиции;
- *   incomplete_history  — покупок этого токена мы не видели;
- *   available           — учёт подтвердил, число можно показывать.
+ *     scorableOutcomes = max(wins2x, rugs)
  *
- * Один запрос на всю страницу. Спрашивать про каждое событие
- * отдельно значило бы полсотни запросов каждые двадцать секунд.
+ * Это теряет данные. Исход между 0.2x и 2x оцениваемый, но ни победа,
+ * ни rug — в `max` он не попадает. Десять оценённых токенов, из них
+ * одна победа, один rug и восемь обычных, давали знаменатель 1
+ * и долю попаданий 100% вместо 10%. То есть выражение, написанное
+ * ради защиты от завышенной доли, само её и завышало — до предела.
+ *
+ * Восстановить знаменатель из победителей нельзя ни этим выражением,
+ * ни `wins2x + rugs`, ни любым другим: победы являются подмножеством
+ * оцениваемых исходов, а подмножество не определяет множество. Его
+ * можно только хранить, что и делает миграция контракта сводки.
+ *
+ * Заодно исчезли ещё три подстановки, каждая из которых была
+ * утверждением, а не измерением: `computedAt: Date.now()` называл
+ * временем расчёта момент открытия страницы; `scoreVersion:
+ * SCORE_VERSION` объявлял нынешними правилами любую строку, включая
+ * непересчитанную; `ambiguousOutcomes: 0` заявлял об отсутствии
+ * недостоверных исходов, ничего о них не зная.
+ *
+ * ─── Что делает эта функция теперь ──────────────────────────────────
+ *
+ * Читает сохранённое. Единственное вычисление — доля попаданий,
+ * и она выводится из двух сохранённых чисел однозначно. Хранить её
+ * третьей копией значило бы завести третий знаменатель, с которого
+ * всё и началось.
  */
-async function withLedgerVerdict(events: WalletTradeEvent[]): Promise<unknown[]> {
-  if (events.length === 0) return [];
+function storedWalletSummary(w: {
+  tokensBought: number;
+  wins2x: number;
+  wins5x: number;
+  rugs: number;
+  score: number | null;
+  volumeUsd: { toString(): string };
+  avgPeakMultiple: { toString(): string } | null;
+  medianEntryHours: { toString(): string } | null;
+  scorableOutcomes: number | null;
+  pendingOutcomes: number | null;
+  ambiguousOutcomes: number | null;
+  scoreVersion: number | null;
+  scoreComputedAt: Date | null;
+  scoreConfidence: string | null;
+  scoreCoverage: string | null;
+  scoreReason: string | null;
+}): WalletPerformanceSummary {
+  /*
+   * Строка от прежних правил.
+   *
+   * Признак — пустая подпись расчёта. Её нельзя подделать чтением:
+   * заполнить её может только пересчёт. Пока она пуста, сохранённые
+   * числа посчитаны другим способом, и подгонять их к нынешнему
+   * контракту — значит выдавать старую ошибку за исправленный
+   * результат.
+   */
+  if (w.scoreVersion == null || w.scorableOutcomes == null || w.scoreComputedAt == null) {
+    return needsRecomputeSummary({
+      scoreVersion: w.scoreVersion,
+      computedAt: w.scoreComputedAt?.getTime() ?? null,
+    });
+  }
 
-  // Ключ считается той же функцией, что и при записи события:
-  // собранный здесь по-своему, он не совпал бы ни с одной строкой,
-  // и все продажи вечно висели бы в состоянии «рассчитывается».
-  const ids = new Map(events.map((e) => [e.dedupeKey, idOf(e)]));
+  /*
+   * Строка, посчитанная более ранней версией правил.
+   *
+   * Тоже ожидает пересчёта: её числа получены способом, который
+   * мы уже признали неверным, и то, что они лежат в базе, ничего
+   * об их правильности не говорит.
+   */
+  if (w.scoreVersion < SCORE_VERSION) {
+    return needsRecomputeSummary({
+      scoreVersion: w.scoreVersion,
+      computedAt: w.scoreComputedAt.getTime(),
+    });
+  }
 
-  const rows = await prisma.walletActivity
-    .findMany({
-      where: { id: { in: [...ids.values()] } },
-      select: { id: true, ledgerState: true, appliedToLedger: true },
-    })
-    .catch(() => [] as Array<{ id: string; ledgerState: string; appliedToLedger: boolean }>);
+  const scorableOutcomes = w.scorableOutcomes;
 
-  const byId = new Map(rows.map((r: (typeof rows)[number]) => [r.id, r]));
+  const summary: WalletPerformanceSummary = {
+    observedTokens: w.tokensBought,
+    scorableOutcomes,
+    // Ноль здесь — сохранённый ноль, а не подставленный.
+    pendingOutcomes: w.pendingOutcomes ?? 0,
+    ambiguousOutcomes: w.ambiguousOutcomes ?? 0,
 
-  return events.map((e) => {
-    const row = byId.get(ids.get(e.dedupeKey)!);
+    wins2x: w.wins2x,
+    wins5x: w.wins5x,
+    rugs: w.rugs,
 
-    // Покупка: зафиксированного результата ещё нет и быть не может.
-    // Ноль здесь читался бы как «продал в ноль».
-    if (e.side === 'BUY') {
-      return { ...e, pnlState: 'open_position', pnlSource: null };
-    }
+    // Единственное вычисление, и оно однозначно: победы и знаменатель
+    // приходят из одного пересчёта и не могут разойтись.
+    hitRate: scorableOutcomes > 0 ? w.wins2x / scorableOutcomes : null,
+    hitRateLower: scorableOutcomes > 0 ? wilsonLowerBound(w.wins2x, scorableOutcomes) : null,
 
-    // Событие ещё не дошло до нашего учёта: история DEX обновляется
-    // позже ленты, и это не ошибка.
-    if (!row || !row.appliedToLedger) {
-      return {
-        ...e,
-        pnlState: row?.ledgerState === 'failed' ? 'incomplete_history' : 'pending',
-        pnlSource: null,
-      };
-    }
+    avgPeakMultiple: w.avgPeakMultiple ? Number(w.avgPeakMultiple) : null,
+    medianEntryHours: w.medianEntryHours ? Number(w.medianEntryHours) : null,
+    buyVolumeUsd: Number(w.volumeUsd.toString()),
 
-    return { ...e, pnlState: 'available', pnlSource: 'okx' };
-  });
-}
+    score: w.score,
+    confidence: (w.scoreConfidence as WalletPerformanceSummary['confidence']) ?? 'none',
+    coverage: (w.scoreCoverage as WalletPerformanceSummary['coverage']) ?? 'complete',
+    reason: w.scoreReason,
 
-/** Ключ события, общий с приёмом из сокета и опроса. */
-function idOf(e: WalletTradeEvent): string {
-  return liveEventId({
-    chain: e.chain as ChainKey,
-    wallet: e.wallet,
-    tokenAddress: e.tokenAddress,
-    side: e.side,
-    txHash: e.txHash,
-    tradedAt: e.tradedAt,
-    quoteAmount: e.quoteAmount,
-  });
+    computedAt: w.scoreComputedAt.getTime(),
+    scoreVersion: w.scoreVersion,
+  };
+
+  /*
+   * Последняя проверка перед выдачей наружу.
+   *
+   * Пересчёт уже проверяет инварианты перед записью, но между записью
+   * и чтением лежит база, а в базу можно попасть и мимо пересчёта —
+   * скриптом, ручным `UPDATE`, недоехавшей миграцией. Невозможные
+   * числа на экране выглядят обычными: доля попаданий в 400%
+   * читается как «очень хороший кошелёк», а не как «расчёт сломан».
+   *
+   * Поэтому противоречивая строка теряет не только оценку, но и
+   * право показывать свои числа: она уходит как ожидающая пересчёта.
+   */
+  if (assertSummaryInvariants(summary).length > 0) {
+    return needsRecomputeSummary({
+      scoreVersion: w.scoreVersion,
+      computedAt: w.scoreComputedAt.getTime(),
+    });
+  }
+
+  return summary;
 }

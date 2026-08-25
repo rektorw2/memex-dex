@@ -27,6 +27,11 @@ import { normalizeAddress } from './token-registry.js';
 import { chainFromIndex, okxStr, okxInt } from './okx-model.js';
 import { okxMillis } from './okx-wallet-model.js';
 import { canonicalDecimal } from './ledger-completeness.js';
+import {
+  aggregateFills,
+  historyTradeKey,
+  type TradeSource,
+} from './economic-identity.js';
 
 /** Виды операций в истории. */
 export const DEX_HISTORY_TYPE = {
@@ -56,8 +61,24 @@ export function isLedgerType(type: string | null): boolean {
  * Преобразование в число делается там, где считают, и осознанно.
  */
 export interface CanonicalTrade {
-  /** Устойчивый ключ. История не отдаёт хеш транзакции. */
+  /**
+   * Устойчивый ключ.
+   *
+   * История не отдаёт хеш транзакции — сверено по документации,
+   * — поэтому идентичность собирается из кошелька, токена, стороны
+   * и точной отметки времени. Суммы в неё не входят: провайдер
+   * меняет округление, но не меняет того, какой это был перевод.
+   */
   key: string;
+  /** Откуда пришла сделка. У источников разная идентичность. */
+  source?: TradeSource;
+  /** Сколько переводов провайдера сложено в эту сделку. */
+  fillCount?: number;
+  firstFillAt?: number;
+  lastFillAt?: number;
+  /** Сложить группу не удалось — в статистику она не идёт. */
+  ambiguous?: boolean;
+  ambiguityReason?: string | null;
   chain: ChainKey;
   wallet: string;
   tokenAddress: string;
@@ -202,12 +223,85 @@ export function parseHistoryPage(
   }
 
   return {
-    trades,
+    // Переводы одной транзакции складываются в одну сделку.
+    //
+    // Без этого шага страница отдавала бы столько «завершённых
+    // сделок», сколько провайдер прислал переводов: одна покупка
+    // повторялась на экране с одинаковым временем и близкими
+    // суммами, а `wins2x` и средний максимум раздувались вместе
+    // с ней.
+    trades: foldFillsIntoTrades(trades),
     // Курсор непрозрачен: разбирать его нельзя, только передавать
     // обратно как есть.
     cursor: okxStr(p.cursor, 256),
     skipped,
   };
+}
+
+/**
+ * Свернуть переводы в экономические сделки.
+ *
+ * Группировка идёт по идентичности, в которую суммы не входят,
+ * поэтому и несколько переводов одной транзакции, и повторный импорт
+ * с другим округлением дают одну и ту же сделку.
+ *
+ * Группа, которую не удалось сложить, не выбрасывается и не
+ * подменяется правдоподобным числом: она помечается неоднозначной
+ * и исключается из статистики отдельным правилом.
+ */
+export function foldFillsIntoTrades(trades: CanonicalTrade[]): CanonicalTrade[] {
+  /*
+   * Одиночная сделка проходит тот же путь, что и группа.
+   *
+   * Здесь стоял ранний возврат для одного элемента, и он был
+   * ошибкой: такая сделка сохраняла прежний ключ — тот самый,
+   * в который входят суммы. Одна покупка, импортированная дважды
+   * с разным округлением, по-прежнему давала бы две записи,
+   * просто реже.
+   */
+  if (trades.length === 0) return trades;
+
+  const groups = new Map<string, CanonicalTrade[]>();
+
+  for (const t of trades) {
+    const key = historyTradeKey({
+      chain: t.chain,
+      wallet: t.wallet,
+      tokenAddress: t.tokenAddress,
+      side: t.side,
+      tradedAt: t.tradedAt,
+    });
+
+    const list = groups.get(key);
+    if (list) list.push(t);
+    else groups.set(key, [t]);
+  }
+
+  const folded: CanonicalTrade[] = [];
+
+  for (const [key, fills] of groups) {
+    const agg = aggregateFills(fills);
+    const head = fills[0]!;
+
+    folded.push({
+      ...head,
+      key,
+      source: 'okx_dex_history',
+      amount: agg.amount,
+      valueUsd: agg.valueUsd,
+      price: agg.price,
+      marketCapUsd: agg.marketCapUsd,
+      providerPnlUsd: agg.providerPnlUsd,
+      tokenSymbol: agg.tokenSymbol ?? head.tokenSymbol,
+      fillCount: agg.fillCount,
+      firstFillAt: agg.firstFillAt,
+      lastFillAt: agg.lastFillAt,
+      ambiguous: agg.ambiguous,
+      ambiguityReason: agg.ambiguityReason,
+    });
+  }
+
+  return folded;
 }
 
 /**

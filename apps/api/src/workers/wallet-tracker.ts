@@ -1,5 +1,14 @@
 import { Prisma as P, type Chain } from '@prisma/client';
-import { scoreWallet, summarizeWalletSignal, type WalletTradeOutcome } from '@memex/core';
+import {
+  scoreWallet,
+  summarizeWalletSignal,
+  foldTokenOutcomes,
+  walletPerformanceSummary,
+  assertSummaryInvariants,
+  type ChainKey,
+  type WalletPerformanceSummary,
+  type WalletTradeOutcome,
+} from '@memex/core';
 import { prisma } from '../lib/prisma.js';
 import { logger } from '../lib/logger.js';
 import { fetchPoolTrades } from '../services/market-data.js';
@@ -290,6 +299,196 @@ export async function settleOutcomes(): Promise<number> {
 
 // ───────────────────────────── Пересчёт оценок ──────────────────────────────
 
+/**
+ * Сводка кошелька из наблюдаемых покупок.
+ *
+ * Вынесено отдельно, чтобы одна и та же логика работала и в фоновом
+ * проходе, и в полном пересчёте, и в тестах. Раньше расчёт жил внутри
+ * `rescoreWallets`, и проверить его можно было только через базу.
+ */
+export async function summarizeWallet(
+  walletId: string,
+  since: Date,
+): Promise<{ summary: WalletPerformanceSummary; label: string }> {
+  const rows = await prisma.walletTrade.findMany({
+    where: { walletId, side: 'BUY', tradedAt: { gte: since } },
+    select: {
+      chain: true,
+      tokenAddress: true,
+      amountUsd: true,
+      outcomeMultiple: true,
+      poolAgeHours: true,
+      mcapAtTradeUsd: true,
+      priceUsd: true,
+      tradedAt: true,
+    },
+  });
+
+  /*
+   * Независимое наблюдение цены и капитализации тех же токенов.
+   *
+   * По нему сверяется подразумеваемое предложение — способ отличить
+   * ошибку единиц измерения от честного раннего входа, не полагаясь
+   * на один абсолютный порог. Находка радара получена другим путём
+   * и в другой момент, поэтому годится как вторая точка зрения.
+   *
+   * Один запрос на весь кошелёк, а не на каждую сделку: токенов
+   * у кошелька десятки, сделок — сотни. Связь идёт по паре
+   * «сеть и адрес», а не по `radarEventId`: тот заполнен лишь
+   * у сделок, найденных через радар, а капитализация нужна и для
+   * остальных.
+   */
+  const tokenKeys = [...new Set(rows.map((r) => `${r.chain}|${r.tokenAddress}`))];
+
+  const references =
+    tokenKeys.length === 0
+      ? []
+      : await prisma.radarEvent.findMany({
+          where: {
+            OR: tokenKeys.map((k) => {
+              const [chain, address] = k.split('|');
+              return { chain: chain as never, address: address! };
+            }),
+          },
+          select: { chain: true, address: true, priceUsd: true, mcapAtSignalUsd: true },
+        });
+
+  const referenceOf = new Map(references.map((e) => [`${e.chain}|${e.address}`, e]));
+
+  /*
+   * Покупки сворачиваются в исходы по токенам.
+   *
+   * Здесь и была ошибка: `scoreWallet` получал список покупок,
+   * а `tokensBought` считался по уникальным токенам. Десять покупок
+   * одного токена давали до десяти побед при одном купленном —
+   * то есть долю попаданий больше единицы.
+   */
+  const outcomes = foldTokenOutcomes(
+    rows.map((r) => {
+      const reference = referenceOf.get(`${r.chain}|${r.tokenAddress}`);
+
+      return {
+      chain: r.chain as ChainKey,
+      tokenAddress: r.tokenAddress,
+      amountUsd: Number(r.amountUsd),
+      poolAgeHours: r.poolAgeHours != null ? Number(r.poolAgeHours) : null,
+      tradedAt: r.tradedAt.getTime(),
+      outcomeMultiple: r.outcomeMultiple != null ? Number(r.outcomeMultiple) : null,
+      mcapAtTradeUsd: r.mcapAtTradeUsd != null ? Number(r.mcapAtTradeUsd) : null,
+      priceUsd: r.priceUsd != null ? Number(r.priceUsd) : null,
+      referencePriceUsd: reference?.priceUsd != null ? Number(reference.priceUsd) : null,
+      referenceMcapUsd:
+        reference?.mcapAtSignalUsd != null ? Number(reference.mcapAtSignalUsd) : null,
+      };
+    }),
+  );
+
+  /*
+   * Оценка считается тем же движком, но на исходах по токенам.
+   *
+   * `scoreWallet` сам по себе исправен: он делит победы на своё
+   * `settled` и отказывается ставить оценку на малой выборке.
+   * Ломало его то, чем его кормили.
+   */
+  const scorable = outcomes.filter((o) => o.status === 'scorable');
+
+  const scored = scoreWallet(
+    scorable.map((o): WalletTradeOutcome => ({
+      amountUsd: o.buyVolumeUsd,
+      outcomeMultiple: o.peakMultiple,
+      poolAgeHours: o.entryHours,
+    })),
+  );
+
+  const summary = walletPerformanceSummary({ outcomes, score: scored.score });
+
+  /*
+   * Невозможная сводка не записывается.
+   *
+   * Проверка стоит здесь, а не в интерфейсе: число, доехавшее
+   * до базы, потом выглядит на экране обычным. Доля попаданий
+   * в 400% читается как «очень хороший кошелёк», а не как
+   * «расчёт сломан».
+   */
+  const broken = assertSummaryInvariants(summary);
+
+  if (broken.length > 0) {
+    logger.warn({ walletId, broken }, 'кошельки: сводка нарушает инварианты, оценка не выставлена');
+    return { summary: { ...summary, score: null }, label: scored.label };
+  }
+
+  return { summary, label: scored.label };
+}
+
+/**
+ * Записать сводку в кошелёк. Одно место записи на все проходы.
+ *
+ * ─── Почему записывается весь контракт ──────────────────────────────
+ *
+ * Прежде сохранялись только победы, крупные победы, rug и число
+ * купленных токенов, а знаменатель доли попаданий не сохранялся вовсе.
+ * Чтение восстанавливало его выражением `max(wins2x, rugs)` — и теряло
+ * всё, что лежит между rug и удвоением. Десять оценённых токенов, из
+ * них одна победа, один rug и восемь обычных, превращались в выборку
+ * из одного и долю попаданий 100% вместо 10%.
+ *
+ * Восстановить знаменатель из победителей нельзя в принципе: победы
+ * являются его подмножеством, а подмножество не определяет множество.
+ * Поэтому знаменатель, разбиение исходов, версия правил и настоящее
+ * время расчёта пишутся сюда целиком — и читаются как есть.
+ *
+ * Одним `update`, то есть одним оператором: сводка обязана попасть
+ * в базу целиком либо не попасть вовсе. Половина новых полей рядом
+ * со старыми победами — это то же расхождение знаменателей, только
+ * записанное в базу.
+ */
+async function saveWalletSummary(
+  walletId: string,
+  summary: WalletPerformanceSummary,
+  label: string,
+): Promise<void> {
+  await prisma.traderWallet.update({
+    where: { id: walletId },
+    data: {
+      // Смысл поля не изменился, изменился способ подсчёта:
+      // это число разных токенов, и оно же — основа знаменателя.
+      tokensBought: summary.observedTokens,
+      wins2x: summary.wins2x,
+      wins5x: summary.wins5x,
+      rugs: summary.rugs,
+      volumeUsd: new P.Decimal(summary.buyVolumeUsd),
+      avgPeakMultiple:
+        summary.avgPeakMultiple != null
+          ? decimalFor(summary.avgPeakMultiple, DECIMAL_COLUMN.percent)
+          : null,
+      medianEntryHours: decimalFor(summary.medianEntryHours, DECIMAL_COLUMN.percent),
+      score: summary.score,
+      label,
+
+      /*
+       * Знаменатель и разбиение исходов.
+       *
+       * `hitRate` отдельной колонкой не хранится намеренно: он
+       * однозначно выводится из `wins2x` и `scorableOutcomes`,
+       * а третья копия того же факта — это третий знаменатель,
+       * который однажды разойдётся с двумя первыми. Ровно с этого
+       * весь дефект и начался.
+       */
+      scorableOutcomes: summary.scorableOutcomes,
+      pendingOutcomes: summary.pendingOutcomes,
+      ambiguousOutcomes: summary.ambiguousOutcomes,
+
+      // Подпись расчёта: чем посчитано и когда. Без неё чтение
+      // не может отличить пересчитанную строку от старой.
+      scoreVersion: summary.scoreVersion,
+      scoreComputedAt: summary.computedAt != null ? new Date(summary.computedAt) : null,
+      scoreConfidence: summary.confidence,
+      scoreCoverage: summary.coverage,
+      scoreReason: summary.reason,
+    },
+  });
+}
+
 export async function rescoreWallets(limit = 200): Promise<number> {
   const since = new Date(Date.now() - MAX_TRADE_AGE_DAYS * 864e5);
 
@@ -307,40 +506,160 @@ export async function rescoreWallets(limit = 200): Promise<number> {
   let updated = 0;
 
   for (const w of candidates) {
-    const rows = await prisma.walletTrade.findMany({
-      where: { walletId: w.id, side: 'BUY', tradedAt: { gte: since } },
-      select: {
-        amountUsd: true, outcomeMultiple: true, poolAgeHours: true, tokenAddress: true,
-      },
-    });
-
-    const outcomes: WalletTradeOutcome[] = rows.map((r) => ({
-      amountUsd: Number(r.amountUsd),
-      outcomeMultiple: r.outcomeMultiple != null ? Number(r.outcomeMultiple) : null,
-      poolAgeHours: r.poolAgeHours != null ? Number(r.poolAgeHours) : null,
-    }));
-
-    const s = scoreWallet(outcomes);
-
-    await prisma.traderWallet.update({
-      where: { id: w.id },
-      data: {
-        tokensBought: new Set(rows.map((r) => r.tokenAddress)).size,
-        wins2x: s.wins2x,
-        wins5x: s.wins5x,
-        rugs: s.rugs,
-        volumeUsd: new P.Decimal(s.volumeUsd),
-        avgPeakMultiple: s.settled > 0 ? decimalFor(s.avgMultiple, DECIMAL_COLUMN.percent) : null,
-        medianEntryHours:
-          decimalFor(s.medianEntryHours, DECIMAL_COLUMN.percent),
-        score: s.score,
-        label: s.label,
-      },
-    });
+    const { summary, label } = await summarizeWallet(w.id, since);
+    await saveWalletSummary(w.id, summary, label);
     updated++;
   }
 
   return updated;
+}
+
+export interface RescoreAllResult {
+  scanned: number;
+  updated: number;
+  scoreCleared: number;
+  invariantViolations: number;
+  /** Строк, ещё не пересчитанных новыми правилами, на входе прохода. */
+  staleFound: number;
+  /**
+   * Строк, у которых пересчёт не изменил ни одного значимого поля.
+   *
+   * Мера идемпотентности, наблюдаемая снаружи: второй прогон подряд
+   * обязан дать `unchanged === scanned`. Без такого счётчика проверить
+   * это можно было бы только сравнением дампов базы.
+   */
+  unchanged: number;
+}
+
+/**
+ * Значимые поля сводки — те, по которым судят об идемпотентности.
+ *
+ * Время расчёта сюда не входит: оно меняется при каждом пересчёте
+ * по определению, и включать его значило бы объявить любой повторный
+ * прогон изменяющим.
+ */
+function summaryDiffers(
+  stored: {
+    tokensBought: number;
+    wins2x: number;
+    wins5x: number;
+    rugs: number;
+    scorableOutcomes: number | null;
+    pendingOutcomes: number | null;
+    ambiguousOutcomes: number | null;
+    score: number | null;
+    scoreVersion: number | null;
+  },
+  next: WalletPerformanceSummary,
+): boolean {
+  return (
+    stored.tokensBought !== next.observedTokens ||
+    stored.wins2x !== next.wins2x ||
+    stored.wins5x !== next.wins5x ||
+    stored.rugs !== next.rugs ||
+    stored.scorableOutcomes !== next.scorableOutcomes ||
+    stored.pendingOutcomes !== next.pendingOutcomes ||
+    stored.ambiguousOutcomes !== next.ambiguousOutcomes ||
+    stored.score !== next.score ||
+    stored.scoreVersion !== next.scoreVersion
+  );
+}
+
+/**
+ * Полный пересчёт всех кошельков.
+ *
+ * Нужен отдельно от фонового прохода. Тот берёт только тех, у кого
+ * недавно появился новый подведённый исход, — а кошелёк с давним
+ * Smart Score 100, посчитанным по прежним правилам, нового исхода
+ * может не получить никогда. Сохранённая оценка так и осталась бы
+ * на экране, хотя правила давно изменились.
+ *
+ * Идемпотентен: повторный запуск на тех же данных даёт тот же
+ * результат. По умолчанию ничего не пишет.
+ */
+export async function rescoreAllWallets(
+  opts: { apply?: boolean; batchSize?: number; limit?: number } = {},
+): Promise<RescoreAllResult> {
+  const since = new Date(Date.now() - MAX_TRADE_AGE_DAYS * 864e5);
+  const batchSize = opts.batchSize ?? 200;
+
+  const result: RescoreAllResult = {
+    scanned: 0,
+    updated: 0,
+    scoreCleared: 0,
+    invariantViolations: 0,
+    staleFound: 0,
+    unchanged: 0,
+  };
+
+  let cursor: string | null = null;
+
+  for (;;) {
+    const batch: {
+      id: string;
+      score: number | null;
+      tokensBought: number;
+      wins2x: number;
+      wins5x: number;
+      rugs: number;
+      scorableOutcomes: number | null;
+      pendingOutcomes: number | null;
+      ambiguousOutcomes: number | null;
+      scoreVersion: number | null;
+    }[] = await prisma.traderWallet.findMany({
+      // Курсор по id, а не смещение: пересчёт идёт долго, и записи,
+      // добавленные во время обхода, сдвинули бы окно.
+      //
+      // Курсор Prisma здесь безопасен, в отличие от свёртки сделок:
+      // проход обновляет строки, но не выводит их из набора — ни один
+      // кошелёк не перестаёт быть кошельком, и строка-курсор остаётся
+      // на месте до конца обхода.
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+      orderBy: { id: 'asc' },
+      take: batchSize,
+      select: {
+        id: true,
+        score: true,
+        tokensBought: true,
+        wins2x: true,
+        wins5x: true,
+        rugs: true,
+        scorableOutcomes: true,
+        pendingOutcomes: true,
+        ambiguousOutcomes: true,
+        scoreVersion: true,
+      },
+    });
+
+    if (batch.length === 0) break;
+    cursor = batch.at(-1)!.id;
+
+    for (const w of batch) {
+      result.scanned++;
+
+      // Пустая версия — строка от прежних правил. Считаем до пересчёта,
+      // иначе после записи отличить её будет уже нечем.
+      if (w.scoreVersion == null) result.staleFound++;
+
+      const { summary, label } = await summarizeWallet(w.id, since);
+
+      if (assertSummaryInvariants(summary).length > 0) result.invariantViolations++;
+
+      // Оценка была и пропала: выборки не хватает по новым правилам.
+      if (w.score != null && summary.score == null) result.scoreCleared++;
+
+      if (!summaryDiffers(w, summary)) result.unchanged++;
+
+      if (opts.apply) {
+        await saveWalletSummary(w.id, summary, label);
+        result.updated++;
+      }
+    }
+
+    if (opts.limit != null && result.scanned >= opts.limit) break;
+  }
+
+  return result;
 }
 
 // ───────────────────────── Сводка по одному токену ──────────────────────────

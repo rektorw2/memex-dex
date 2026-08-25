@@ -4,10 +4,10 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useRef } from 'react';
 import { useAccess } from '@/lib/access';
+import { publicAsset } from '@/lib/public-assets';
 
-const publicBasePath = process.env.NEXT_PUBLIC_BASE_PATH ?? '';
-const welcomeVideo = `${publicBasePath}/welcome/memex-welcome-1080p.mp4`;
-const welcomePoster = `${publicBasePath}/welcome/memex-welcome-poster.jpg`;
+const welcomeVideo = publicAsset('/welcome/memex-welcome-1080p.mp4');
+const welcomePoster = publicAsset('/welcome/memex-welcome-poster.jpg');
 
 /**
  * Первый экран для человека без аккаунта.

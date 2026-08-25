@@ -28,17 +28,16 @@ import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import {
   normalizeAddress,
-  summarizePnl,
-  buildPositions,
-  checkCompleteness,
-  scorableTokens,
   type ChainKey,
-  type CanonicalTrade,
-  type EconomicTrade,
 } from '@memex/core';
 import { prisma } from '../lib/prisma.js';
 import { favorites } from '../lib/prisma-favorites.js';
 import { logger } from '../lib/logger.js';
+import {
+  serializeWalletPnl,
+  walletPnlForWallets,
+  walletPnlKey,
+} from '../services/wallet-pnl.js';
 
 /** Сети, за кошельками которых мы вообще умеем следить. */
 const CHAINS = ['SOLANA', 'ETHEREUM', 'BNB', 'BASE'] as const;
@@ -102,10 +101,10 @@ export const walletFavoriteRoutes: FastifyPluginAsync = async (app) => {
       });
 
       const byKey = new Map(
-        wallets.map((w: (typeof wallets)[number]) => [`${w.chain}:${w.address}`, w]),
+        wallets.map((w: (typeof wallets)[number]) => [walletPnlKey(w.chain, w.address), w]),
       );
 
-      const pnlByKey = await pnlForWallets(
+      const pnlByKey = await walletPnlForWallets(
         rows.map((r: (typeof rows)[number]) => ({
           chain: r.chain as ChainKey,
           address: r.walletAddress,
@@ -116,7 +115,7 @@ export const walletFavoriteRoutes: FastifyPluginAsync = async (app) => {
         available: true,
         requiredAction: null,
         favorites: rows.map((r: (typeof rows)[number]) => {
-          const key = `${r.chain}:${r.walletAddress}`;
+          const key = walletPnlKey(r.chain, r.walletAddress);
           const w = byKey.get(key);
           const pnl = pnlByKey.get(key);
 
@@ -136,13 +135,21 @@ export const walletFavoriteRoutes: FastifyPluginAsync = async (app) => {
             wins2x: w?.wins2x ?? null,
             lastActiveAt: w?.lastActiveAt?.toISOString() ?? null,
 
-            pnl: pnl ?? {
+            pnl: pnl ? serializeWalletPnl(pnl) : {
               state: 'pending',
               realizedUsd: null,
               unrealizedUsd: null,
-              closedPositions: null,
-              incompleteTokens: null,
+              totalUsd: null,
+              closedPositions: 0,
+              openPositions: 0,
+              incompleteTokens: 0,
+              ambiguousTokens: 0,
+              unpricedPositions: 0,
+              isStale: false,
               computedAt: null,
+              priceAsOf: null,
+              method: 'weighted_average',
+              version: 1,
             },
           };
         }),
@@ -270,139 +277,3 @@ export const walletFavoriteRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 };
-
-// ────────────────────────────── Показатели ──────────────────────────────────
-
-export interface FavoritePnl {
-  state: 'available' | 'pending' | 'incomplete_history';
-  realizedUsd: number | null;
-  unrealizedUsd: number | null;
-  closedPositions: number | null;
-  incompleteTokens: number | null;
-  computedAt: string | null;
-}
-
-/**
- * Результат по каждому кошельку из набора.
- *
- * Считается по каноническим сделкам — тем, у которых точное
- * количество токена взято из истории DEX. Лента отслеживания сюда
- * не идёт: там нет количества купленного, и любое число, выведенное
- * из неё, было бы догадкой.
- *
- * Один запрос на весь набор, а не по одному на кошелёк.
- */
-async function pnlForWallets(
-  wallets: Array<{ chain: ChainKey; address: string }>,
-): Promise<Map<string, FavoritePnl>> {
-  const out = new Map<string, FavoritePnl>();
-  if (wallets.length === 0) return out;
-
-  const rows = await prisma.walletEconomicTrade
-    .findMany({
-      where: {
-        OR: wallets.map((w) => ({ chain: w.chain as never, walletAddress: w.address })),
-      },
-      orderBy: [{ tradedAt: 'asc' }, { key: 'asc' }],
-    })
-    .catch(() => []);
-
-  const byWallet = new Map<string, CanonicalTrade[]>();
-
-  for (const r of rows as any[]) {
-    const key = `${r.chain}:${r.walletAddress}`;
-    const list = byWallet.get(key) ?? [];
-
-    list.push({
-      key: r.key,
-      chain: r.chain as ChainKey,
-      wallet: r.walletAddress,
-      tokenAddress: r.tokenAddress,
-      tokenSymbol: r.tokenSymbol,
-      side: r.side as 'BUY' | 'SELL',
-      amount: r.amount.toString(),
-      valueUsd: r.valueUsd.toString(),
-      price: r.price.toString(),
-      marketCapUsd: r.marketCapUsd?.toString() ?? null,
-      providerPnlUsd: r.providerPnlUsd?.toString() ?? null,
-      tradedAt: r.tradedAt.getTime(),
-    });
-
-    byWallet.set(key, list);
-  }
-
-  for (const w of wallets) {
-    const key = `${w.chain}:${w.address}`;
-    const trades = byWallet.get(key);
-
-    if (!trades || trades.length === 0) {
-      // Ни одной канонической сделки — пересчёт ещё не дошёл
-      // до этого кошелька. Это не «ноль прибыли».
-      out.set(key, {
-        state: 'pending',
-        realizedUsd: null,
-        unrealizedUsd: null,
-        closedPositions: null,
-        incompleteTokens: null,
-        computedAt: null,
-      });
-      continue;
-    }
-
-    const completeness = checkCompleteness(trades);
-    const scorable = scorableTokens(completeness);
-    const incompleteTokens = completeness.filter((c) => c.incompleteCostBasis).length;
-
-    // В расчёт идут только токены с известной себестоимостью.
-    // Продажа без покупки выглядела бы чистой прибылью, и кошелёк
-    // с потерянной историей оказался бы тем успешнее, чем больше
-    // её потеряно.
-    const usable = trades.filter((t) => scorable.has(t.tokenAddress));
-
-    if (usable.length === 0) {
-      out.set(key, {
-        state: 'incomplete_history',
-        realizedUsd: null,
-        unrealizedUsd: null,
-        closedPositions: null,
-        incompleteTokens,
-        computedAt: null,
-      });
-      continue;
-    }
-
-    const positions = buildPositions(toEconomic(usable));
-    const pnl = summarizePnl(positions);
-
-    out.set(key, {
-      state: 'available',
-      realizedUsd: pnl.realizedPnlUsd,
-      // Нереализованный результат требует свежей цены по каждому
-      // открытому токену. Пока её нет — null, а не ноль: ноль
-      // означал бы «открытые позиции в нуле», чего мы не измеряли.
-      unrealizedUsd: null,
-      closedPositions: pnl.closedCount,
-      incompleteTokens,
-      computedAt: new Date(Math.max(...usable.map((t) => t.tradedAt))).toISOString(),
-    });
-  }
-
-  return out;
-}
-
-function toEconomic(trades: CanonicalTrade[]): EconomicTrade[] {
-  return trades.map((t) => ({
-    chain: t.chain,
-    wallet: t.wallet,
-    tokenAddress: t.tokenAddress,
-    side: t.side,
-    tokenAmount: Number(t.amount),
-    amountUsd: Number(t.valueUsd),
-    priceUsd: Number(t.price),
-    timestamp: t.tradedAt,
-    txHash: t.key,
-    legs: 1,
-    parsingConfidence: 1,
-    source: 'okx_dex_history',
-  }));
-}

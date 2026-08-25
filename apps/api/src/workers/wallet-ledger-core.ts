@@ -20,6 +20,9 @@ import {
   scorableTokens,
   coveragePercent,
   assessCoverage,
+  calculateWalletLedger,
+  normalizeAddress,
+  WALLET_PNL_VERSION,
   type CanonicalTrade,
   type ChainKey,
   type EconomicTrade,
@@ -105,7 +108,18 @@ export async function rebuildWallet(
 
   const pnl = summarizePnl(scorablePositions);
 
-  const activityUpdates = await matchActivities(chain, wallet, all, deps.repo);
+  // Публичный PnL считается отдельно, без преобразования Decimal
+  // в number. Старый position-ledger пока остаётся только для Smart
+  // Score, а точный ledger даёт результат каждой частичной SELL.
+  const exactLedger = calculateWalletLedger(all);
+
+  const activityUpdates = await matchActivities(
+    chain,
+    wallet,
+    all,
+    exactLedger.tradePnl,
+    deps.repo,
+  );
   await deps.repo.applyActivityStates(activityUpdates);
 
   return {
@@ -149,32 +163,128 @@ function toEconomic(trades: CanonicalTrade[]): EconomicTrade[] {
 /**
  * Сопоставление событий ленты с точными сделками.
  *
- * Несопоставленное событие остаётся несопоставленным и получает
- * состояние «отложено». Придумывать ему количество нельзя: оценка
- * кошелька не должна зависеть от того, что мы что-то предположили.
+ * ─── Что здесь было сломано ─────────────────────────────────────────
+ *
+ * Стоял `trades.find(...)`, и из него следовали сразу две беды.
+ *
+ * Первая: одна сделка истории могла достаться нескольким событиям
+ * ленты. `find` ничего не помечает занятым, поэтому две похожие
+ * продажи одного токена подтверждались одной и той же строкой —
+ * то есть транзакция применялась к учёту дважды.
+ *
+ * Вторая: при двух подходящих кандидатах выбирался первый по порядку
+ * массива. Это не выбор, а совпадение: порядок страниц истории
+ * решал, какое событие считать подтверждённым.
+ *
+ * ─── Как теперь ─────────────────────────────────────────────────────
+ *
+ * Сделка, отданная событию, помечается занятой и больше не кандидат.
+ * Два подходящих кандидата означают неоднозначность, и событие
+ * остаётся неразрешённым — придумывать ему сделку нельзя, оценка
+ * кошелька не должна зависеть от нашей догадки.
+ *
+ * События разбираются от самых ранних: иначе позднее событие
+ * забирало бы сделку у более раннего просто потому, что оказалось
+ * первым в выборке.
  */
 async function matchActivities(
   chain: ChainKey,
   wallet: string,
   trades: CanonicalTrade[],
+  exactTradePnl: ReturnType<typeof calculateWalletLedger>['tradePnl'],
   repo: WalletLedgerRepository,
 ): Promise<ActivityStateUpdate[]> {
   const pending = await repo.pendingActivities(chain, wallet, 500);
   if (pending.length === 0) return [];
 
-  return pending.map((a): ActivityStateUpdate => {
-    const match = trades.find(
+  /** Сделки, уже отданные другому событию в прошлом проходе. */
+  const taken = await repo.assignedCanonicalTradeKeys(
+    chain,
+    wallet,
+    pending.map((activity) => activity.id),
+  );
+  const pnlByTrade = new Map(exactTradePnl.map((result) => [result.canonicalTradeKey, result]));
+  const computedAt = Date.now();
+
+  const ordered = [...pending].sort((a, b) => a.tradedAt - b.tradedAt);
+
+  return ordered.map((a): ActivityStateUpdate => {
+    // При смене версии уже сопоставленная строка не выбирает сделку
+    // заново: её прежняя сильная связь важнее близости по времени.
+    const existing = a.canonicalTradeKey == null
+      ? null
+      : trades.find((trade) => trade.key === a.canonicalTradeKey) ?? null;
+
+    if (existing && !taken.has(existing.key)) {
+      const local = pnlByTrade.get(existing.key);
+      taken.add(existing.key);
+      return {
+        id: a.id,
+        state: 'applied',
+        applied: true,
+        canonicalTradeKey: existing.key,
+        localPnlState: local?.state ?? (existing.side === 'BUY' ? 'open_position' : 'ambiguous'),
+        localRealizedPnlUsd: local?.realizedUsd ?? null,
+        localCostBasisUsd: local?.costBasisUsd ?? null,
+        pnlVersion: WALLET_PNL_VERSION,
+        pnlComputedAt: computedAt,
+      };
+    }
+
+    const fits = trades.filter(
       (t) =>
-        t.tokenAddress === a.tokenAddress &&
+        !taken.has(t.key) &&
+        // Неоднозначная группа подтверждением быть не может:
+        // мы сами не уверены, что сложили её верно.
+        t.ambiguous !== true &&
+        normalizeAddress(chain, t.tokenAddress) === normalizeAddress(chain, a.tokenAddress) &&
         t.side === a.side &&
         Math.abs(t.tradedAt - a.tradedAt) <= MATCH_WINDOW_MS,
     );
 
-    return match
-      ? { id: a.id, state: 'applied', applied: true }
-      : // История обновляется позже сокета. Это не ошибка и не повод
-        // ни удалять событие из ленты, ни выдумывать ему количество.
-        { id: a.id, state: 'deferred', applied: false };
+    if (fits.length === 1) {
+      const matched = fits[0]!;
+      const local = pnlByTrade.get(matched.key);
+      taken.add(matched.key);
+      return {
+        id: a.id,
+        state: 'applied',
+        applied: true,
+        canonicalTradeKey: matched.key,
+        localPnlState: local?.state ?? (matched.side === 'BUY' ? 'open_position' : 'ambiguous'),
+        localRealizedPnlUsd: local?.realizedUsd ?? null,
+        localCostBasisUsd: local?.costBasisUsd ?? null,
+        pnlVersion: WALLET_PNL_VERSION,
+        pnlComputedAt: computedAt,
+      };
+    }
+
+    if (fits.length > 1) {
+      /*
+       * Выбрать нельзя. Прежний код брал первый попавшийся
+       * и объявлял событие подтверждённым — а вместе с ним
+       * подтверждал число, которое могло относиться к другой сделке.
+       */
+      return {
+        id: a.id,
+        state: 'ambiguous',
+        applied: false,
+        localPnlState: 'ambiguous',
+        pnlVersion: WALLET_PNL_VERSION,
+        pnlComputedAt: computedAt,
+      };
+    }
+
+    // История обновляется позже сокета. Это не ошибка и не повод
+    // ни удалять событие из ленты, ни выдумывать ему количество.
+    return {
+      id: a.id,
+      state: 'deferred',
+      applied: false,
+      localPnlState: 'pending',
+      pnlVersion: WALLET_PNL_VERSION,
+      pnlComputedAt: computedAt,
+    };
   });
 }
 

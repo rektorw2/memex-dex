@@ -32,6 +32,14 @@ export interface WalletStats {
   avgMultiple: number | null;
   medianEntryHours: number | null;
   rugs: number | null;
+  /**
+   * Сводка ещё не пересчитана новыми правилами.
+   *
+   * Отдельно от «мало наблюдений»: там мы знаем, сколько собрано
+   * и сколько осталось, здесь не знаем ничего. Показывать прогресс
+   * «0 из 5» было бы утверждением о данных, которого у нас нет.
+   */
+  needsRecompute?: boolean;
 }
 
 const TONE: Record<string, string> = {
@@ -42,6 +50,23 @@ const TONE: Record<string, string> = {
 
 export function SmartScore({ stats, compact }: { stats: WalletStats; compact?: boolean }) {
   const conf = confidenceOf(stats.settled);
+
+  /*
+   * Строка ждёт пересчёта.
+   *
+   * Проверяется до прогресса: прогресс опирается на число собранных
+   * наблюдений, а у такой строки это число неизвестно. Нарисовать
+   * пустую полоску и «0 из 5» значило бы сказать «наблюдений нет» —
+   * а мы знаем только, что старым числам верить нельзя.
+   */
+  if (stats.needsRecompute) {
+    return (
+      <div className="min-w-0" title="Статистика посчитана прежними правилами и ожидает пересчёта">
+        <div className="text-[13px] text-muted">Ожидает пересчёта</div>
+        <div className="mt-1 text-[11px] text-muted/70">данные обновляются</div>
+      </div>
+    );
+  }
 
   // Оценки нет — показываем прогресс, а не пустоту.
   if (stats.score == null) {

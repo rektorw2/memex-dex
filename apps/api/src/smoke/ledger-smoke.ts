@@ -24,7 +24,7 @@ import {
   scorableTokens,
   coveragePercent,
   assessCoverage,
-  canonicalKey,
+  historyTradeKey,
   type CanonicalTrade,
   type ChainKey,
   type EconomicTrade,
@@ -228,15 +228,21 @@ export async function runLedgerSmoke(opts: LedgerSmokeOptions): Promise<LedgerSm
   }
 
   const sample = trades[0]!;
-  const rebuilt = canonicalKey({
+
+  /*
+   * Ключ обязан пересобираться из тех же полей.
+   *
+   * Проверка та же, что была, но собирается новой идентичностью:
+   * суммы в ключ больше не входят. Именно из-за них переводы одной
+   * транзакции расходились на несколько «сделок», а повторный импорт
+   * с другим округлением создавал ещё одну запись.
+   */
+  const rebuilt = historyTradeKey({
     chain: sample.chain,
     wallet: sample.wallet,
     tokenAddress: sample.tokenAddress,
     side: sample.side,
     tradedAt: sample.tradedAt,
-    amount: sample.amount,
-    valueUsd: sample.valueUsd,
-    price: sample.price,
   });
 
   if (rebuilt !== sample.key) {

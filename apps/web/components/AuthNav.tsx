@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useState, useRef } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
-import { api } from '@/lib/api';
+import { api, clearToken } from '@/lib/api';
 
 /**
  * Правая часть шапки: режим и аккаунт.
@@ -48,6 +48,9 @@ export function AuthNav() {
   async function logout() {
     await api('/auth/logout', { method: 'POST' }).catch(() => {});
     sessionStorage.clear();
+    // Разделы, следящие за сессией, узнают о выходе сразу: `clear()`
+    // события в своей вкладке не рассылает.
+    clearToken();
     localStorage.removeItem('role');
     localStorage.removeItem('refreshToken');
     router.push('/login');

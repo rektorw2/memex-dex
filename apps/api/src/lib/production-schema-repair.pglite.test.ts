@@ -9,6 +9,9 @@ import {
   MARKET_AGE_MIGRATION,
   OKX_SIGNAL_MIGRATION,
   OKX_SIGNAL_ATH_MIGRATION,
+  TRADE_PROVENANCE_MIGRATION,
+  WALLET_SUMMARY_MIGRATION,
+  WALLET_ACTIVITY_PNL_MIGRATION,
   planProductionSchemaRepair,
 } from './production-schema-repair.js';
 import { readProductionSchemaSnapshot, type RawQuery } from './production-schema-snapshot.js';
@@ -94,6 +97,9 @@ describe('загрузчик на настоящей схеме', () => {
         CHECK_QUEUE_MIGRATION,
         OKX_SIGNAL_MIGRATION,
         OKX_SIGNAL_ATH_MIGRATION,
+        TRADE_PROVENANCE_MIGRATION,
+        WALLET_SUMMARY_MIGRATION,
+        WALLET_ACTIVITY_PNL_MIGRATION,
       ],
     });
 
@@ -114,6 +120,9 @@ describe('загрузчик на настоящей схеме', () => {
         CHECK_QUEUE_MIGRATION,
         OKX_SIGNAL_MIGRATION,
         OKX_SIGNAL_ATH_MIGRATION,
+        TRADE_PROVENANCE_MIGRATION,
+        WALLET_SUMMARY_MIGRATION,
+        WALLET_ACTIVITY_PNL_MIGRATION,
       ],
     });
 
@@ -125,7 +134,14 @@ describe('загрузчик на настоящей схеме', () => {
     expect(await planOf(db), 'остаётся очередь проверки и Signal').toEqual({
       action: 'apply-migrations',
       resolveBaseline: false,
-      pending: [CHECK_QUEUE_MIGRATION, OKX_SIGNAL_MIGRATION, OKX_SIGNAL_ATH_MIGRATION],
+      pending: [
+        CHECK_QUEUE_MIGRATION,
+        OKX_SIGNAL_MIGRATION,
+        OKX_SIGNAL_ATH_MIGRATION,
+        TRADE_PROVENANCE_MIGRATION,
+        WALLET_SUMMARY_MIGRATION,
+        WALLET_ACTIVITY_PNL_MIGRATION,
+      ],
     });
 
     // Шаг 4. Очередь проверки и возраст цены.
@@ -135,7 +151,13 @@ describe('загрузчик на настоящей схеме', () => {
     expect(await planOf(db), 'остаётся Signal').toEqual({
       action: 'apply-migrations',
       resolveBaseline: false,
-      pending: [OKX_SIGNAL_MIGRATION, OKX_SIGNAL_ATH_MIGRATION],
+      pending: [
+        OKX_SIGNAL_MIGRATION,
+        OKX_SIGNAL_ATH_MIGRATION,
+        TRADE_PROVENANCE_MIGRATION,
+        WALLET_SUMMARY_MIGRATION,
+        WALLET_ACTIVITY_PNL_MIGRATION,
+      ],
     });
 
     // Шаг 5. История официального OKX Signal.
@@ -145,16 +167,46 @@ describe('загрузчик на настоящей схеме', () => {
     expect(await planOf(db), 'остаётся накопление ATH').toEqual({
       action: 'apply-migrations',
       resolveBaseline: false,
-      pending: [OKX_SIGNAL_ATH_MIGRATION],
+      pending: [OKX_SIGNAL_ATH_MIGRATION, TRADE_PROVENANCE_MIGRATION, WALLET_SUMMARY_MIGRATION, WALLET_ACTIVITY_PNL_MIGRATION],
     });
 
     // Шаг 6. Пик после каждого события Signal.
     await db.exec(sqlOf(OKX_SIGNAL_ATH_MIGRATION));
     await markApplied(db, OKX_SIGNAL_ATH_MIGRATION);
 
+    expect(await planOf(db), 'остаётся происхождение сделки').toEqual({
+      action: 'apply-migrations',
+      resolveBaseline: false,
+      pending: [TRADE_PROVENANCE_MIGRATION, WALLET_SUMMARY_MIGRATION, WALLET_ACTIVITY_PNL_MIGRATION],
+    });
+
+    // Шаг 7. Происхождение и идентичность экономической сделки.
+    await db.exec(sqlOf(TRADE_PROVENANCE_MIGRATION));
+    await markApplied(db, TRADE_PROVENANCE_MIGRATION);
+
+    expect(await planOf(db), 'остаётся контракт сводки').toEqual({
+      action: 'apply-migrations',
+      resolveBaseline: false,
+      pending: [WALLET_SUMMARY_MIGRATION, WALLET_ACTIVITY_PNL_MIGRATION],
+    });
+
+    // Шаг 8. Контракт сводки результативности кошелька.
+    await db.exec(sqlOf(WALLET_SUMMARY_MIGRATION));
+    await markApplied(db, WALLET_SUMMARY_MIGRATION);
+
+    expect(await planOf(db), 'остаётся локальный PnL ленты').toEqual({
+      action: 'apply-migrations',
+      resolveBaseline: false,
+      pending: [WALLET_ACTIVITY_PNL_MIGRATION],
+    });
+
+    // Шаг 9. Локальный PnL события ленты.
+    await db.exec(sqlOf(WALLET_ACTIVITY_PNL_MIGRATION));
+    await markApplied(db, WALLET_ACTIVITY_PNL_MIGRATION);
+
     expect(await planOf(db), 'схема сошлась').toEqual({ action: 'ready' });
 
-    // Шаг 7. Следующий деплой ничего не делает.
+    // Шаг 10. Следующий деплой ничего не делает.
     expect(await planOf(db)).toEqual({ action: 'ready' });
 
     await db.close();

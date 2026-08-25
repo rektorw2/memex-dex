@@ -5,6 +5,12 @@ export * from './orders.js';
 export * from './copy.js';
 export * from './risk.js';
 export * from './wallet-score.js';
+
+// Один токен — один оцениваемый исход, и один контракт
+// результативности со своим знаменателем.
+export * from './favorites-sync.js';
+export * from './wallet-token-outcome.js';
+export * from './wallet-performance.js';
 export * from './auto-rule.js';
 export * from './token-ref.js';
 export * from './copy-pending.js';
@@ -37,6 +43,7 @@ export * from './wallet-confidence.js';
 // четыре независимые оценки вместо одной.
 export * from './economic-trade.js';
 export * from './position-ledger.js';
+export * from './wallet-pnl.js';
 export * from './smart-score-v2.js';
 // Модели кошельков OKX и разбор ответов. Чистая часть интеграции:
 // проверяется тестами без сети и без ключей.
@@ -47,6 +54,10 @@ export * from './okx-ws-model.js';
 export * from './okx-signal.js';
 // История DEX — единственный источник точных количеств.
 export * from './okx-dex-history.js';
+
+// Что считать одной экономической сделкой: идентичность по источнику,
+// сложение fill'ов и сверка истории с живой лентой.
+export * from './economic-identity.js';
 // Полнота истории и позиции с неизвестной себестоимостью.
 export * from './ledger-completeness.js';
 export * from './decimal-fit.js';
@@ -91,6 +102,11 @@ export * from './check-queue.js';
 
 // Чем закончился проход к провайдеру и стоит ли отступить.
 export * from './provider-cycle.js';
+
+// Тарификация OKX: какой endpoint из какой квоты списывается,
+// сколько её на каждом плане и кого тормозить у предела.
+export * from './okx-tiers.js';
+export * from './okx-budget.js';
 export * from './plans-presentation.js';
 export * from './deposit.js';
 export * from './email-verification.js';

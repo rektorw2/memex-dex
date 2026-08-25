@@ -21,6 +21,9 @@ export const BASELINE_MIGRATION = '0_baseline';
 export const ACCESS_MIGRATION = '20260821120000_add_subscriptions_and_trial';
 export const MARKET_AGE_MIGRATION = '20260823040000_add_token_market_age';
 export const CHECK_QUEUE_MIGRATION = '20260823120000_add_check_queue_and_price_age';
+export const TRADE_PROVENANCE_MIGRATION = '20260825090000_add_trade_provenance';
+export const WALLET_SUMMARY_MIGRATION = '20260825120000_add_wallet_summary_contract';
+export const WALLET_ACTIVITY_PNL_MIGRATION = '20260825150000_add_wallet_activity_local_pnl';
 export const OKX_SIGNAL_MIGRATION = '20260823170000_add_okx_signals';
 export const OKX_SIGNAL_ATH_MIGRATION = '20260823180000_add_okx_signal_ath';
 
@@ -38,6 +41,9 @@ export const KNOWN_MIGRATIONS = [
   CHECK_QUEUE_MIGRATION,
   OKX_SIGNAL_MIGRATION,
   OKX_SIGNAL_ATH_MIGRATION,
+  TRADE_PROVENANCE_MIGRATION,
+  WALLET_SUMMARY_MIGRATION,
+  WALLET_ACTIVITY_PNL_MIGRATION,
 ] as const;
 
 export const BASE_USER_COLUMNS = ['id', 'email', 'passwordHash'] as const;
@@ -70,6 +76,52 @@ export const ACCESS_ENUMS = [
 /** Колонки возраста рынка. Обе появляются одной миграцией. */
 export const MARKET_AGE_TOKEN_COLUMNS = ['poolCreatedAt', 'firstSeenAt'] as const;
 
+/**
+ * Происхождение экономической сделки.
+ *
+ * Появились, когда выяснилось, что суммы входили в идентичность
+ * сделки и одна покупка расходилась на несколько записей.
+ */
+export const TRADE_PROVENANCE_COLUMNS = [
+  'source',
+  'sourceEventId',
+  'txHash',
+  'fillCount',
+  'firstFillAt',
+  'lastFillAt',
+  'reconciliation',
+  'supersededBy',
+] as const;
+
+/**
+ * Контракт сводки результативности кошелька.
+ *
+ * Знаменатель доли попаданий стал храниться, а не восстанавливаться
+ * из победителей. Все колонки NULL-able намеренно: пустой
+ * `scoreVersion` — единственный признак строки, посчитанной прежними
+ * правилами, и умолчание уничтожило бы его.
+ */
+export const WALLET_SUMMARY_COLUMNS = [
+  'scorableOutcomes',
+  'pendingOutcomes',
+  'ambiguousOutcomes',
+  'scoreVersion',
+  'scoreComputedAt',
+  'scoreConfidence',
+  'scoreCoverage',
+  'scoreReason',
+] as const;
+
+/** Локальный PnL события ленты; все поля появляются одним переходом. */
+export const WALLET_ACTIVITY_PNL_COLUMNS = [
+  'canonicalTradeKey',
+  'localRealizedPnlUsd',
+  'localCostBasisUsd',
+  'localPnlState',
+  'pnlVersion',
+  'pnlComputedAt',
+] as const;
+
 /** Состояние очереди проверки и возраст котировки. */
 export const CHECK_QUEUE_TOKEN_COLUMNS = [
   'scamCheckAttempts',
@@ -95,6 +147,12 @@ export interface ProductionSchemaSnapshot {
   tokenColumns: string[];
   /** Колонки события Signal нужны для отдельной следующей миграции. */
   okxSignalColumns: string[];
+  /** Колонки происхождения экономической сделки. */
+  economicTradeColumns: string[];
+  /** Колонки сохранённой сводки результативности кошелька. */
+  traderWalletColumns: string[];
+  /** Колонки локального PnL живого события. */
+  walletActivityColumns: string[];
   tables: string[];
   enums: string[];
   /** null означает, что таблицы истории Prisma ещё нет. */
@@ -185,6 +243,9 @@ export function planProductionSchemaRepair(
   const user = new Set(snapshot.userColumns);
   const token = new Set(snapshot.tokenColumns ?? []);
   const okxSignal = new Set(snapshot.okxSignalColumns ?? []);
+  const economicTrade = new Set(snapshot.economicTradeColumns ?? []);
+  const traderWallet = new Set(snapshot.traderWalletColumns ?? []);
+  const walletActivity = new Set(snapshot.walletActivityColumns ?? []);
   const tables = new Set(snapshot.tables);
   const enums = new Set(snapshot.enums);
   const applied = new Set(snapshot.appliedMigrations ?? []);
@@ -280,6 +341,37 @@ export function planProductionSchemaRepair(
         partial: 'PARTIAL_OKX_SIGNAL_ATH_MIGRATION',
         historyAhead: 'OKX_SIGNAL_ATH_HISTORY_CONTRADICTS_SCHEMA',
         schemaAhead: 'OKX_SIGNAL_ATH_SCHEMA_AHEAD_OF_HISTORY',
+      },
+    },
+    {
+      name: TRADE_PROVENANCE_MIGRATION,
+      presence: presenceOf(
+        TRADE_PROVENANCE_COLUMNS.map((column) => economicTrade.has(column)),
+      ),
+      reasons: {
+        partial: 'PARTIAL_TRADE_PROVENANCE_MIGRATION',
+        historyAhead: 'TRADE_PROVENANCE_HISTORY_CONTRADICTS_SCHEMA',
+        schemaAhead: 'TRADE_PROVENANCE_SCHEMA_AHEAD_OF_HISTORY',
+      },
+    },
+    {
+      name: WALLET_SUMMARY_MIGRATION,
+      presence: presenceOf(WALLET_SUMMARY_COLUMNS.map((column) => traderWallet.has(column))),
+      reasons: {
+        partial: 'PARTIAL_WALLET_SUMMARY_MIGRATION',
+        historyAhead: 'WALLET_SUMMARY_HISTORY_CONTRADICTS_SCHEMA',
+        schemaAhead: 'WALLET_SUMMARY_SCHEMA_AHEAD_OF_HISTORY',
+      },
+    },
+    {
+      name: WALLET_ACTIVITY_PNL_MIGRATION,
+      presence: presenceOf(
+        WALLET_ACTIVITY_PNL_COLUMNS.map((column) => walletActivity.has(column)),
+      ),
+      reasons: {
+        partial: 'PARTIAL_WALLET_ACTIVITY_PNL_MIGRATION',
+        historyAhead: 'WALLET_ACTIVITY_PNL_HISTORY_CONTRADICTS_SCHEMA',
+        schemaAhead: 'WALLET_ACTIVITY_PNL_SCHEMA_AHEAD_OF_HISTORY',
       },
     },
   ];

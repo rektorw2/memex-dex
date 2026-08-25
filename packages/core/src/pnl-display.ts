@@ -34,6 +34,8 @@ export type PnlState =
   | 'open_position'
   | 'pending'
   | 'incomplete_history'
+  | 'ambiguous'
+  | 'stale'
   | 'not_applicable';
 
 export interface PnlView {
@@ -65,6 +67,8 @@ const HINTS = {
     'Недостаточно истории — покупка произошла раньше доступного периода, ' +
     'и себестоимость неизвестна',
   stale: 'Величина посчитана давно и могла измениться',
+  stalePrice: 'Рыночная цена позиции устарела — live PnL временно не показывается',
+  ambiguous: 'Несколько сделок подходят одинаково — выбрать одну без догадки нельзя',
 } as const;
 
 // ──────────────────────────── Построение вида ───────────────────────────────
@@ -76,6 +80,10 @@ export interface PnlInput {
   isPending?: boolean;
   /** Себестоимость неизвестна: покупка вне окна истории. */
   hasIncompleteHistory?: boolean;
+  /** Сделку нельзя однозначно сопоставить с канонической историей. */
+  isAmbiguous?: boolean;
+  /** Для открытой позиции есть только устаревшая рыночная цена. */
+  isPriceStale?: boolean;
   /** Позиция открыта — для реализованного результата это норма. */
   isOpen?: boolean;
   /** Когда посчитано. */
@@ -103,6 +111,28 @@ export function pnlView(input: PnlInput): PnlView {
       sign: 0,
       label: 'Недостаточно истории',
       hint: HINTS.incomplete,
+    };
+  }
+
+  if (input.isAmbiguous) {
+    return {
+      state: 'ambiguous',
+      valueUsd: null,
+      isStale: false,
+      sign: 0,
+      label: 'Неоднозначная сделка',
+      hint: HINTS.ambiguous,
+    };
+  }
+
+  if (input.isPriceStale) {
+    return {
+      state: 'stale',
+      valueUsd: null,
+      isStale: true,
+      sign: 0,
+      label: 'Цена устарела',
+      hint: HINTS.stalePrice,
     };
   }
 

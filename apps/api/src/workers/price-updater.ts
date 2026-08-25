@@ -5,14 +5,16 @@ import {
   EMPTY_PROVIDER_REPORT,
   type ChainKey,
   type CycleVerdict,
+  type OkxCallPurpose,
   type ProviderReport,
 } from '@memex/core';
 import { prisma } from '../lib/prisma.js';
 import { getAdapter } from '../chains/index.js';
 import { logger } from '../lib/logger.js';
-import { fetchPriceInfo } from '../services/okx-market.js';
+import { fetchLivePrices } from '../services/okx-market.js';
 import { recordOkxSignalLivePeak } from '../services/okx-signal-ath.js';
 import { hotTokens } from './hot-tokens.js';
+import { okxSlowdown } from '../services/okx-usage.js';
 
 /**
  * Обновление цен.
@@ -48,11 +50,37 @@ import { hotTokens } from './hot-tokens.js';
  * открытую карточку раз в минуту бессмысленно.
  */
 
-/** Открытая карточка получает новый тик раз в секунду. */
-export const HOT_INTERVAL_MS = 1_000;
+/**
+ * Как часто обновляется открытый график.
+ *
+ * Пять секунд, а не секунда. Разница в расходе пятикратная,
+ * а на глаз почти незаметна: цена мем-коина за пять секунд меняется
+ * на доли процента, и график всё равно достраивается локально между
+ * ответами сервера.
+ *
+ * Секунда была выбрана, когда цена шла через Premium `price-info`,
+ * и стоила месячной квоты за сутки. Даже на Basic секундный ритм
+ * при десятке зрителей — это два с половиной миллиона вызовов
+ * в месяц; пятисекундный укладывается в бесплатный план.
+ */
+export const HOT_INTERVAL_MS = 5_000;
 
-/** Холодный круг: щадящий к провайдеру и всё же заметно живой. */
-export const COLD_INTERVAL_MS = 30_000;
+/**
+ * Холодный круг.
+ *
+ * Две минуты, а не тридцать секунд. Расчёт простой и его стоит
+ * держать перед глазами: полторы тысячи токенов — это пятнадцать
+ * пакетов по сто адресов, то есть два вызова на проход при пачке
+ * в двести. Тридцать секунд давали 5 760 вызовов в сутки —
+ * 172 800 в месяц при бесплатной квоте Basic в сто тысяч, то есть
+ * каталог в одиночку не помещался в план.
+ *
+ * Две минуты дают 1 440 в сутки и 43 200 в месяц — примерно
+ * половину фонового бюджета Basic. Полный круг каталога занимает
+ * около пятнадцати минут; это и есть честный срок, который стоит
+ * называть, а не «30 секунд».
+ */
+export const COLD_INTERVAL_MS = 120_000;
 
 /**
  * Сколько токенов берём за холодный проход.
@@ -89,6 +117,9 @@ let cycleStartedAt = Date.now();
 
 /** Неудачных проходов подряд. Растит паузу. */
 let failures = 0;
+
+/** Сколько холодных тиков было при включённом замедлении. */
+let coldSkips = 0;
 
 /**
  * До какого времени провайдера не трогаем.
@@ -196,22 +227,35 @@ interface FetchOutcome {
 
 async function fetchPrices(
   rows: PriceRow[],
-  opts: { rpcFallback?: boolean } = {},
+  opts: { rpcFallback?: boolean; purpose?: OkxCallPurpose } = {},
 ): Promise<FetchOutcome> {
   const prices = new Map<string, number>();
   if (rows.length === 0) return { prices, report: { ...EMPTY_PROVIDER_REPORT } };
 
   const byKey = new Map(rows.map((r) => [`${r.chain}:${r.address}`, r]));
 
-  const batched = await fetchPriceInfo(
+  /*
+   * Basic, а не Premium.
+   *
+   * Здесь была вся стоимость продукта. Живая цена шла через
+   * `price-info`, который относится к Premium (официальная таблица
+   * тарифов, сверено 25.08.2026): горячий цикл звал его раз
+   * в секунду — восемьдесят шесть тысяч Premium-вызовов в сутки
+   * при месячной квоте в сто тысяч.
+   *
+   * `/api/v6/dex/market/price` отдаёт ровно то, что нужно графику
+   * и карточке: последнюю цену и время котировки. Ликвидность,
+   * капитализация и держатели живут в отдельной, редкой очереди
+   * обогащения — им не нужна секундная свежесть.
+   */
+  const batched = await fetchLivePrices(
     rows.map((r) => ({ chain: r.chain as ChainKey, address: r.address })),
-    { fresh: true },
+    opts.purpose ?? 'hot-price',
   ).catch(() => null);
 
-  for (const [key, info] of batched?.prices ?? []) {
+  for (const [key, live] of batched?.prices ?? []) {
     const row = byKey.get(key);
-    const price = info?.priceUsd;
-    if (row && typeof price === 'number' && price > 0) prices.set(row.id, price);
+    if (row) prices.set(row.id, live.priceUsd);
   }
 
   /*
@@ -359,7 +403,7 @@ async function applyPrices(
   rows: PriceRow[],
   observedAt: Date,
   failures: number,
-  opts: { rpcFallback?: boolean } = {},
+  opts: { rpcFallback?: boolean; purpose?: OkxCallPurpose } = {},
 ): Promise<CycleResult> {
   const startedAt = Date.now();
   const { prices, report } = await fetchPrices(rows, opts);
@@ -400,6 +444,15 @@ async function applyPrices(
 export async function updateHotPrices(): Promise<CycleResult> {
   if (providerPaused()) return EMPTY_CYCLE;
 
+  /*
+   * Нет зрителей — нет запросов.
+   *
+   * Это главное свойство горячего цикла и главная причина, по которой
+   * простой просмотр списка больше не переводит токены в горячие.
+   * Пустое приложение обязано стоить ноль: раньше открытая вкладка
+   * GEMS держала первые карточки горячими бесконечно, и «живой
+   * продукт» означал секундный Premium-запрос круглые сутки.
+   */
   const ids = hotTokens();
 
   const withPositions = await prisma.position
@@ -419,7 +472,10 @@ export async function updateHotPrices(): Promise<CycleResult> {
     select: { id: true, chain: true, address: true, symbol: true },
   });
 
-  const result = await applyPrices(rows, new Date(), failures, { rpcFallback: false });
+  const result = await applyPrices(rows, new Date(), failures, {
+    rpcFallback: false,
+    purpose: 'hot-price',
+  });
   observeCycle('hot', result);
   return result;
 }
@@ -435,6 +491,22 @@ export async function updateHotPrices(): Promise<CycleResult> {
  */
 export async function updateColdPrices(): Promise<CycleResult> {
   if (providerPaused()) return EMPTY_CYCLE;
+
+  /*
+   * У предела квоты фон замедляется первым.
+   *
+   * Разница между «каталог обновится позже» и «график перестал
+   * работать» — это вся разница между экономией и сломанным
+   * продуктом. Пропускаем проходы, а не уменьшаем пачку: половина
+   * пачки стоит того же одного запроса.
+   */
+  const slowdown = okxSlowdown('basic');
+
+  if (slowdown === 0) return EMPTY_CYCLE;
+  if (slowdown > 1) {
+    coldSkips++;
+    if (coldSkips % slowdown !== 0) return EMPTY_CYCLE;
+  }
 
   const rows = await prisma.token.findMany({
     where: {
@@ -461,7 +533,7 @@ export async function updateColdPrices(): Promise<CycleResult> {
 
   if (rows.length === 0) return EMPTY_CYCLE;
 
-  const result = await applyPrices(rows, new Date(), failures);
+  const result = await applyPrices(rows, new Date(), failures, { purpose: 'cold-price' });
   observeCycle('cold', result);
   return result;
 }
@@ -519,6 +591,7 @@ export function stopPriceUpdater(): void {
 export function resetPriceUpdaterForTests(): void {
   coldCursor = null;
   failures = 0;
+  coldSkips = 0;
   pausedUntil = 0;
   cycleStartedAt = Date.now();
   hotRunning = false;

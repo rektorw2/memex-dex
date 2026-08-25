@@ -42,6 +42,8 @@ import {
   EMPTY_PROVIDER_REPORT,
   mergeReports,
   parseRetryAfterMs,
+  OKX_MAX_BATCH,
+  type OkxCallPurpose,
   type ProviderReport,
   type NormalizedToken,
   type OkxSignal,
@@ -51,6 +53,7 @@ import {
 import { env } from '../lib/env.js';
 import { logger } from '../lib/logger.js';
 import { cached, withRetry, Concurrency, RateLimit } from '../lib/cache.js';
+import { canSpendOkxCall, recordOkxCall } from './okx-usage.js';
 
 const BASE = 'https://web3.okx.com';
 
@@ -149,8 +152,16 @@ async function call<T>(method: 'GET' | 'POST', path: string, body?: unknown): Pr
 
   if (!res.ok) {
     const err: OkxError = new Error(`OKX ${res.status}`);
-    // 4xx кроме 429 повторять бессмысленно.
-    err.permanent = res.status >= 400 && res.status < 500 && res.status !== 429;
+    /*
+     * 4xx кроме 429 и 402 повторять бессмысленно.
+     *
+     * 402 стоит рядом с 429 не случайно: это «квота исчерпана,
+     * заплатите», и повторять его немедленно так же бесполезно.
+     * Но и постоянным его считать нельзя — квота обновляется первого
+     * числа, и запись «навсегда» пережила бы этот момент.
+     */
+    err.permanent =
+      res.status >= 400 && res.status < 500 && res.status !== 429 && res.status !== 402;
     err.status = res.status;
     // Просьба провайдера подождать. Читается только у 429: у прочих
     // отказов заголовок означает другое.
@@ -184,15 +195,62 @@ export async function safeCall<T>(
   method: 'GET' | 'POST',
   path: string,
   body?: unknown,
+  purpose: OkxCallPurpose = defaultPurposeOf(path),
 ): Promise<T | null> {
+  /*
+   * Учитывается и этот путь тоже.
+   *
+   * Сначала счётчик стоял только в `reportedCall`, и это делало его
+   * бесполезным: через `safeCall` идёт большинство обращений —
+   * свечи, импортёр, поиск, проверка риска. Диагностика показывала бы
+   * тысячу вызовов там, где их сто тысяч, и по ней приняли бы решение
+   * «квота ещё есть».
+   */
+  const budget = canSpendOkxCall(path, purpose);
+  if (!budget.allow) return null;
+
   try {
-    return await pool.run(() =>
+    const value = await pool.run(() =>
       withRetry(() => call<T>(method, path, body), { label: path, attempts: 3 }),
     );
+
+    recordOkxCall(path, purpose, value == null ? 'empty' : 'ok');
+    return value;
   } catch (e: any) {
+    recordOkxCall(
+      path,
+      purpose,
+      e?.status === 429 ? 'rate-limit' : e?.status === 402 ? 'payment-required' : 'error',
+    );
+
     logger.debug({ path, err: e?.message }, 'OKX недоступен');
     return null;
   }
+}
+
+/**
+ * Источник расхода по умолчанию.
+ *
+ * Нужен, чтобы не переписывать полтора десятка мест вызова ради
+ * одного аргумента. Явное указание всегда важнее: у свечей источник
+ * зависит не от пути, а от того, ждёт ли их открытый экран.
+ *
+ * Незнакомый путь считается фоновым обогащением — то есть тем,
+ * что тормозится первым. Осторожная сторона: новый вызов не должен
+ * молча получать пользовательский резерв.
+ */
+function defaultPurposeOf(path: string): OkxCallPurpose {
+  const clean = path.split('?')[0]!;
+
+  if (clean.includes('/market/price')) return 'cold-price';
+  if (clean.includes('/candles')) return 'candles-backfill';
+  if (clean.includes('/signal/')) return 'signal';
+  if (clean.includes('/advanced-info') || clean.includes('/holder')) return 'risk';
+  if (clean.includes('/leaderboard') || clean.includes('/portfolio') || clean.includes('/top-trader')) {
+    return 'wallets';
+  }
+
+  return 'enrichment';
 }
 
 /**
@@ -209,7 +267,15 @@ export async function safeCall<T>(
  */
 export interface CallOutcome<T> {
   value: T | null;
-  kind: 'ok' | 'empty' | 'transient' | 'rate-limit' | 'permanent';
+  /**
+   * `budget` — отказ нашего собственного учёта, а не провайдера.
+   *
+   * Отдельное значение нужно, чтобы вызывающий не спутал его
+   * со сбоем: при отказе бюджета сеть не трогали вовсе, последняя
+   * известная цена в силе, и показывать «источник недоступен»
+   * было бы неправдой.
+   */
+  kind: 'ok' | 'empty' | 'transient' | 'rate-limit' | 'permanent' | 'payment-required' | 'budget';
   retryAfterMs: number | null;
 }
 
@@ -217,7 +283,19 @@ export async function reportedCall<T>(
   method: 'GET' | 'POST',
   path: string,
   body?: unknown,
+  purpose: OkxCallPurpose = 'enrichment',
 ): Promise<CallOutcome<T>> {
+  /*
+   * Бюджет спрашивается до запроса.
+   *
+   * Смысл резерва в том, чтобы фоновая работа не съела последние
+   * проценты квоты, а не в том, чтобы узнать об этом задним числом.
+   * Отказ бюджета — не отказ провайдера: вызывающий обязан сохранить
+   * прежнее значение, а не показать пустой экран.
+   */
+  const budget = canSpendOkxCall(path, purpose);
+  if (!budget.allow) return { value: null, kind: 'budget', retryAfterMs: null };
+
   try {
     /*
      * Здесь намеренно нет локального retry.
@@ -230,12 +308,37 @@ export async function reportedCall<T>(
      */
     const value = await pool.run(() => call<T>(method, path, body));
 
+    recordOkxCall(path, purpose, value == null ? 'empty' : 'ok');
     return { value, kind: value == null ? 'empty' : 'ok', retryAfterMs: null };
   } catch (e: unknown) {
     const err = e as OkxError;
 
+    /*
+     * 402 — отдельный исход, а не «какая-то ошибка».
+     *
+     * Он означает исчерпанную квоту, и вести себя при нём надо
+     * как при 429: отступить всем циклам сразу. Смешать его
+     * с обычным временным сбоем значит продолжать стучаться
+     * в закрытую дверь, каждый раз получая счёт.
+     */
     const kind: CallOutcome<T>['kind'] =
-      err?.status === 429 ? 'rate-limit' : err?.permanent === true ? 'permanent' : 'transient';
+      err?.status === 429
+        ? 'rate-limit'
+        : err?.status === 402
+          ? 'payment-required'
+          : err?.permanent === true
+            ? 'permanent'
+            : 'transient';
+
+    recordOkxCall(
+      path,
+      purpose,
+      kind === 'rate-limit'
+        ? 'rate-limit'
+        : kind === 'payment-required'
+          ? 'payment-required'
+          : 'error',
+    );
 
     // Журнал один на запрос, а не на токен: сто токенов одной пачки
     // дали бы сто одинаковых строк об одной и той же беде.
@@ -514,6 +617,119 @@ function parseBasicInfo(raw: unknown): TokenBasicInfo | null {
           ? tagCommunity
           : null,
   };
+}
+
+// ────────────────────────────── Живая цена (Basic) ──────────────────────────
+
+/**
+ * Только цена и время — и это Basic.
+ *
+ * ─── Почему появилось ───────────────────────────────────────────────
+ *
+ * Живая цена шла через `price-info`, а он относится к Premium
+ * (официальная таблица тарифов, сверено 25.08.2026). Горячий цикл звал
+ * его раз в секунду: восемьдесят шесть тысяч Premium-вызовов в сутки
+ * при месячной квоте в сто тысяч. Месяц заканчивался за день.
+ *
+ * `/api/v6/dex/market/price` возвращает ровно то, что нужно графику
+ * и карточке, — последнюю цену с отметкой времени, — стоит вдвое
+ * дешевле сверх квоты и списывается из отдельной, вчетверо большей
+ * на платных планах квоты Basic.
+ *
+ * ─── Чего он не даёт ────────────────────────────────────────────────
+ *
+ * Ликвидности, капитализации, держателей, оборота и изменений
+ * за период. За ними по-прежнему ходит `price-info` — но раз
+ * в десятки минут и только для тех токенов, которым это правда нужно.
+ */
+export interface LivePrice {
+  chain: ChainKey;
+  address: string;
+  priceUsd: number;
+  /** Время котировки по данным провайдера, а не время нашего запроса. */
+  at: Date | null;
+}
+
+export interface LivePriceResult {
+  prices: Map<string, LivePrice>;
+  report: ProviderReport;
+}
+
+function parseLivePrice(raw: unknown): LivePrice | null {
+  if (raw == null || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+
+  const chain = chainFromIndex(r.chainIndex as string);
+  const address = okxStr(r.tokenContractAddress, 128);
+  const price = okxNum(r.price);
+
+  // Ноль и отрицательное значение отбрасываются: в колонке цены
+  // они читаются как факт, а это ошибка источника.
+  if (!chain || !address || price == null || price <= 0) return null;
+
+  return { chain, address, priceUsd: price, at: okxTime(r.time) };
+}
+
+export async function fetchLivePrices(
+  tokens: Array<{ chain: ChainKey; address: string }>,
+  purpose: OkxCallPurpose = 'hot-price',
+): Promise<LivePriceResult> {
+  const prices = new Map<string, LivePrice>();
+  const reports: ProviderReport[] = [];
+
+  const supported = isOkxConfigured() ? tokens.filter((t) => isOkxSupported(t.chain)) : [];
+
+  // Ненастроенный провайдер — не сбой. Считать его отказом значило бы
+  // отступать вечно там, где ключей попросту нет.
+  if (supported.length === 0) return { prices, report: { ...EMPTY_PROVIDER_REPORT } };
+
+  for (let i = 0; i < supported.length; i += OKX_MAX_BATCH) {
+    const batch = supported.slice(i, i + OKX_MAX_BATCH);
+
+    /*
+     * Тело — массив верхнего уровня, а не объект со списком внутри.
+     * Так описано в документации Get Price, и это отличается
+     * от `price-info`, где список лежит в поле `tokens`.
+     */
+    const body = batch.map((t) => ({
+      chainIndex: OKX_CHAIN_INDEX[t.chain],
+      tokenContractAddress: t.address,
+    }));
+
+    const outcome = await reportedCall<unknown>(
+      'POST',
+      '/api/v6/dex/market/price',
+      body,
+      purpose,
+    );
+
+    let fetched = 0;
+    for (const raw of asArray(outcome.value)) {
+      const price = parseLivePrice(raw);
+      if (price) {
+        prices.set(`${price.chain}:${price.address}`, price);
+        fetched++;
+      }
+    }
+
+    const denied = outcome.kind === 'budget';
+    const failed = outcome.kind === 'rate-limit' || outcome.kind === 'payment-required';
+    const broke = outcome.kind === 'transient' || outcome.kind === 'permanent';
+
+    reports.push({
+      // Отказ собственного бюджета в отчёт провайдера не попадает:
+      // мы его не спрашивали, и объявлять его недоступным неправда.
+      requested: denied ? 0 : batch.length,
+      fetched,
+      missing: denied || failed || broke ? 0 : batch.length - fetched,
+      transient: broke ? batch.length : 0,
+      // 402 «квота исчерпана» ведёт себя как 429: отступают все циклы.
+      rateLimited: failed ? batch.length : 0,
+      retryAfterMs: outcome.retryAfterMs,
+    });
+  }
+
+  return { prices, report: mergeReports(...reports) };
 }
 
 // ─────────────────────────── Торговая информация ────────────────────────────

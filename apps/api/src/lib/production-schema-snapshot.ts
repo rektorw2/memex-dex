@@ -63,10 +63,22 @@ export async function readProductionSchemaSnapshot(
 ): Promise<ProductionSchemaSnapshot> {
   const names = (rows: { name: string }[]) => rows.map((row) => row.name);
 
-  const [userColumns, tokenColumns, okxSignalColumns, tables, enums] = await Promise.all([
+  const [
+    userColumns,
+    tokenColumns,
+    okxSignalColumns,
+    economicTradeColumns,
+    traderWalletColumns,
+    walletActivityColumns,
+    tables,
+    enums,
+  ] = await Promise.all([
     query(COLUMNS_OF, ['User']),
     query(COLUMNS_OF, ['Token']),
     query(COLUMNS_OF, ['OkxSignal']),
+    query(COLUMNS_OF, ['WalletEconomicTrade']),
+    query(COLUMNS_OF, ['TraderWallet']),
+    query(COLUMNS_OF, ['WalletActivity']),
     query(TABLES, []),
     query(ENUMS, []),
   ]);
@@ -84,6 +96,9 @@ export async function readProductionSchemaSnapshot(
     userColumns: names(userColumns),
     tokenColumns: names(tokenColumns),
     okxSignalColumns: names(okxSignalColumns),
+    economicTradeColumns: names(economicTradeColumns),
+    traderWalletColumns: names(traderWalletColumns),
+    walletActivityColumns: names(walletActivityColumns),
     tables: names(tables),
     enums: names(enums),
     appliedMigrations: hasHistory ? names(await query(APPLIED, [])) : null,

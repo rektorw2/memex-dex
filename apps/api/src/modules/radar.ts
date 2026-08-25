@@ -10,7 +10,6 @@ import { radarPerformance } from '../workers/radar-tracker.js';
 import { downsample } from '@memex/core';
 import { riskStateFields } from './radar-risk-state.js';
 import { cached } from '../lib/cache.js';
-import { markHotFromList, LIST_HOT_LIMIT } from '../workers/hot-tokens.js';
 import {
   entitlementOfRequest,
   applyCacheHeaders,
@@ -119,33 +118,19 @@ async function computeRadarSummary(chain?: string) {
   };
 }
 
-/**
- * Перевести находки радара в горячие токены.
+/*
+ * Просмотр находок радара горячий цикл не запускает.
  *
- * Ошибка глотается намеренно: это ускорение обновления цен,
- * а не ответ человеку, и падать из-за него запрос не должен.
+ * Здесь стояла функция, которая переводила первые карточки ленты
+ * в горячие токены. Она и была одним из двух источников
+ * перерасхода: радар открыт постоянно у любого, кто им пользуется,
+ * метка живёт полторы минуты, лента опрашивается каждые несколько
+ * секунд — то есть горячий набор не пустел никогда, и живой цикл
+ * цен обращался к провайдеру круглосуточно.
+ *
+ * Цену находкам даёт холодный круг и запись самого сигнала.
+ * Горячим токен становится, когда человек открыл его график.
  */
-export async function markRadarFindsHot(
-  events: { chain: string; address: string }[],
-): Promise<void> {
-  if (events.length === 0) return;
-
-  try {
-    const rows = await prisma.token.findMany({
-      where: {
-        isHidden: false,
-        isQuote: false,
-        OR: events.map((e) => ({ chain: e.chain as never, address: e.address })),
-      },
-      select: { id: true },
-      take: LIST_HOT_LIMIT,
-    });
-
-    markHotFromList(rows.map((r) => r.id));
-  } catch {
-    // Молча: горячий список — оптимизация, а не обязательство.
-  }
-}
 
 export const radarRoutes: FastifyPluginAsync = async (app) => {
   /**
@@ -237,19 +222,6 @@ export const radarRoutes: FastifyPluginAsync = async (app) => {
       skip: q.offset,
     });
 
-    /*
-     * Свежие находки тоже становятся горячими.
-     *
-     * Радар — про свежесть, и цена суточной давности рядом со словом
-     * «найдено минуту назад» обесценивает раздел целиком.
-     *
-     * Находка хранит сеть и адрес, а не идентификатор токена, поэтому
-     * нужен отдельный запрос. Он ограничен началом выдачи и идёт
-     * по уникальному индексу (chain, address); токены, которых у нас
-     * нет, просто не найдутся — проверять существование отдельно
-     * незачем.
-     */
-    void markRadarFindsHot(events.slice(0, LIST_HOT_LIMIT));
 
     return {
       sources: { okx: isOkxConfigured(), geckoterminal: true },

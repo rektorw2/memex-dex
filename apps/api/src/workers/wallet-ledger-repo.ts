@@ -25,7 +25,12 @@
  */
 
 import { Prisma as P } from '@prisma/client';
-import type { CanonicalTrade, ChainKey } from '@memex/core';
+import {
+  STATS_RECONCILIATION_STATES,
+  WALLET_PNL_VERSION,
+  type CanonicalTrade,
+  type ChainKey,
+} from '@memex/core';
 import { prisma } from '../lib/prisma.js';
 
 export interface SyncJob {
@@ -92,6 +97,19 @@ export interface WalletLedgerRepository {
 
   /** События кошелька, ещё не перенесённые в позиции. */
   pendingActivities(chain: string, wallet: string, limit: number): Promise<PendingActivity[]>;
+
+  /**
+   * Точные сделки, уже занятые другими событиями ленты.
+   *
+   * Локальный Set внутри одного прохода не защищает от дубликата,
+   * пришедшего в следующем проходе. Это чтение и уникальный индекс
+   * в базе вместе держат правило «одна сделка — одно событие».
+   */
+  assignedCanonicalTradeKeys(
+    chain: string,
+    wallet: string,
+    excludeActivityIds: string[],
+  ): Promise<Set<string>>;
 }
 
 export interface ActivityInput {
@@ -125,13 +143,28 @@ export interface PendingActivity {
   tokenAddress: string;
   side: string;
   tradedAt: number;
+  canonicalTradeKey: string | null;
 }
 
 export interface ActivityStateUpdate {
   id: string;
-  state: 'applied' | 'deferred' | 'failed' | 'ignored';
+  /**
+   * `ambiguous` — подходящих сделок несколько, выбрать нельзя.
+   *
+   * Отдельно от `deferred` намеренно. Отложенное разрешится само,
+   * когда история догонит ленту; неоднозначное само не разрешится
+   * и требует разбора. Прежде оба случая молча становились
+   * «подтверждено» по первой попавшейся сделке.
+   */
+  state: 'applied' | 'deferred' | 'ambiguous' | 'failed' | 'ignored';
   applied: boolean;
   errorCode?: string | null;
+  canonicalTradeKey?: string | null;
+  localRealizedPnlUsd?: string | null;
+  localCostBasisUsd?: string | null;
+  localPnlState?: 'available' | 'open_position' | 'pending' | 'incomplete_history' | 'ambiguous';
+  pnlVersion?: number | null;
+  pnlComputedAt?: number | null;
 }
 
 // ────────────────────────── Реализация на Prisma ────────────────────────────
@@ -354,6 +387,18 @@ export class PrismaWalletLedgerRepository implements WalletLedgerRepository {
         .create({
           data: {
             key: t.key,
+            // Происхождение и состав сделки пишутся явно: по строке
+            // должно быть видно, откуда она и из скольких переводов
+            // сложена. Без этого «сумма больше, чем в любой строке
+            // провайдера» выглядит ошибкой расчёта.
+            source: t.source ?? 'okx_dex_history',
+            fillCount: t.fillCount ?? 1,
+            firstFillAt: t.firstFillAt != null ? new Date(t.firstFillAt) : null,
+            lastFillAt: t.lastFillAt != null ? new Date(t.lastFillAt) : null,
+            // Неоднозначная группа сохраняется, но в статистику
+            // не идёт: исключить её честнее, чем подменить
+            // правдоподобным числом.
+            reconciliation: t.ambiguous === true ? 'ambiguous' : 'canonical',
             chain: t.chain as never,
             walletAddress: t.wallet,
             tokenAddress: t.tokenAddress,
@@ -381,7 +426,18 @@ export class PrismaWalletLedgerRepository implements WalletLedgerRepository {
 
   async loadCanonicalTrades(chain: string, wallet: string): Promise<CanonicalTrade[]> {
     const rows = await prisma.walletEconomicTrade.findMany({
-      where: { chain: chain as never, walletAddress: wallet },
+      where: {
+        chain: chain as never,
+        walletAddress: wallet,
+        // Свёрнутые и неоднозначные записи в расчёт не идут.
+        //
+        // `superseded` уже учтена в канонической — считать её второй
+        // раз значит вернуть ровно те дубли, ради устранения которых
+        // всё это и делалось. `ambiguous` не учтена нигде, и это
+        // честнее, чем подставить в позицию число, в котором мы
+        // сами не уверены.
+        reconciliation: { in: [...STATS_RECONCILIATION_STATES] },
+      },
       orderBy: [{ tradedAt: 'asc' }, { key: 'asc' }],
     });
 
@@ -416,9 +472,27 @@ export class PrismaWalletLedgerRepository implements WalletLedgerRepository {
     limit: number,
   ): Promise<PendingActivity[]> {
     const rows = await prisma.walletActivity.findMany({
-      where: { chain: chain as never, walletAddress: wallet, appliedToLedger: false },
+      where: {
+        chain: chain as never,
+        walletAddress: wallet,
+        // После смены правил уже сопоставленное событие тоже должно
+        // получить новый локальный PnL. Иначе миграция оставила бы
+        // всю прежнюю ленту в вечном pending до ручного backfill.
+        OR: [
+          { appliedToLedger: false },
+          { pnlVersion: null },
+          { pnlVersion: { lt: WALLET_PNL_VERSION } },
+        ],
+      },
       take: limit,
-      select: { id: true, tokenAddress: true, side: true, tradedAt: true },
+      orderBy: [{ tradedAt: 'asc' }, { id: 'asc' }],
+      select: {
+        id: true,
+        tokenAddress: true,
+        side: true,
+        tradedAt: true,
+        canonicalTradeKey: true,
+      },
     });
 
     return rows.map((r: (typeof rows)[number]) => ({
@@ -426,7 +500,30 @@ export class PrismaWalletLedgerRepository implements WalletLedgerRepository {
       tokenAddress: r.tokenAddress,
       side: r.side,
       tradedAt: r.tradedAt.getTime(),
+      canonicalTradeKey: r.canonicalTradeKey,
     }));
+  }
+
+  async assignedCanonicalTradeKeys(
+    chain: string,
+    wallet: string,
+    excludeActivityIds: string[],
+  ): Promise<Set<string>> {
+    const rows = await prisma.walletActivity.findMany({
+      where: {
+        chain: chain as never,
+        walletAddress: wallet,
+        canonicalTradeKey: { not: null },
+        ...(excludeActivityIds.length > 0 ? { id: { notIn: excludeActivityIds } } : {}),
+      },
+      select: { canonicalTradeKey: true },
+    });
+
+    return new Set(
+      rows.flatMap((row: (typeof rows)[number]) =>
+        row.canonicalTradeKey == null ? [] : [row.canonicalTradeKey],
+      ),
+    );
   }
 
   async applyActivityStates(updates: ActivityStateUpdate[]): Promise<void> {
@@ -439,6 +536,15 @@ export class PrismaWalletLedgerRepository implements WalletLedgerRepository {
             ledgerState: u.state,
             ledgerAppliedAt: u.applied ? new Date() : null,
             ledgerErrorCode: u.errorCode ?? null,
+            canonicalTradeKey: u.canonicalTradeKey ?? null,
+            localRealizedPnlUsd:
+              u.localRealizedPnlUsd != null ? new P.Decimal(u.localRealizedPnlUsd) : null,
+            localCostBasisUsd:
+              u.localCostBasisUsd != null ? new P.Decimal(u.localCostBasisUsd) : null,
+            localPnlState: u.localPnlState ?? null,
+            pnlVersion: u.pnlVersion ?? null,
+            pnlComputedAt:
+              u.pnlComputedAt != null ? new Date(u.pnlComputedAt) : null,
             ...(u.applied ? {} : { ledgerAttempts: { increment: 1 } }),
           },
         })
