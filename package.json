@@ -9,7 +9,7 @@
   "scripts": {
     "setup": "node scripts/setup.mjs",
     "build": "npm run build -w @memex/core && npm run build -w @memex/api && npm run build -w @memex/web",
-    "test": "npm run test -w @memex/core && npm run test -w @memex/api",
+    "test": "npm run test -w @memex/core && npm run test -w @memex/api && npm run test -w @memex/web",
     "dev": "node scripts/dev.mjs",
     "dev:api": "npm run build -w @memex/core && npm run dev -w @memex/api",
     "dev:web": "npm run dev -w @memex/web",

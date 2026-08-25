@@ -9,7 +9,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { api, ApiError } from './api';
+import { api, ApiError, AUTH_CHANGED_EVENT, hasToken } from './api';
 
 /**
  * Права пользователя в интерфейсе.
@@ -72,6 +72,22 @@ interface AccessContext {
   coldStart: boolean;
   /** Не авторизован. Отличается от «нет прав»: тут поможет вход. */
   anonymous: boolean;
+  /**
+   * В браузере есть токен сессии.
+   *
+   * Отвечает на вопрос, на который `anonymous` до первого ответа
+   * сервера ответить не может. `anonymous` начинается с `true` —
+   * это не «человек гость», а «мы ещё не спрашивали». Пока
+   * различия не было, вошедший человек при каждой загрузке
+   * страницы полсекунды считался гостем, и всё, что зависит
+   * от авторизации, успевало мигнуть чужим состоянием.
+   *
+   * Живёт здесь, а не в каждом компоненте: провайдер прав —
+   * и есть то единственное место, где интерфейс узнаёт, кто перед
+   * ним. Второй ответ на тот же вопрос рано или поздно разошёлся бы
+   * с этим.
+   */
+  hasSession: boolean;
   error: string | null;
   reload: () => Promise<void>;
   can: (capability: string) => boolean;
@@ -83,6 +99,7 @@ const Ctx = createContext<AccessContext>({
   revalidating: false,
   coldStart: false,
   anonymous: true,
+  hasSession: false,
   error: null,
   reload: async () => {},
   can: () => false,
@@ -174,6 +191,34 @@ export function AccessProvider({ children }: { children: ReactNode }) {
     void reload();
   }, [reload]);
 
+  /*
+   * Есть ли токен сессии.
+   *
+   * Читается после монтирования: `sessionStorage` существует только
+   * в браузере, и обращение к нему при отрисовке на сервере
+   * рассинхронизировало бы гидратацию.
+   *
+   * Дальше состояние поддерживается событиями, а не опросом. Своё
+   * событие `AUTH_CHANGED_EVENT` рассылает `api.ts` рядом
+   * с единственной точкой записи токена; `storage` приносит новости
+   * из других вкладок, куда своё событие не долетает.
+   */
+  const [hasSession, setHasSession] = useState(false);
+
+  useEffect(() => {
+    const read = () => setHasSession(hasToken());
+
+    read();
+
+    window.addEventListener(AUTH_CHANGED_EVENT, read);
+    window.addEventListener('storage', read);
+
+    return () => {
+      window.removeEventListener(AUTH_CHANGED_EVENT, read);
+      window.removeEventListener('storage', read);
+    };
+  }, []);
+
   // Загрузка — только пока ответа не было ни разу. Дальше любое
   // обновление идёт фоном, поверх уже известного состояния.
   const loading = !settled;
@@ -185,7 +230,17 @@ export function AccessProvider({ children }: { children: ReactNode }) {
 
   return (
     <Ctx.Provider
-      value={{ access, loading, revalidating, coldStart, anonymous, error, reload, can }}
+      value={{
+        access,
+        loading,
+        revalidating,
+        coldStart,
+        anonymous,
+        hasSession,
+        error,
+        reload,
+        can,
+      }}
     >
       {children}
     </Ctx.Provider>

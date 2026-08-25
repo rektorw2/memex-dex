@@ -1,6 +1,7 @@
 'use client';
 
 import { Suspense, useState } from 'react';
+import { writeStored } from '@/lib/storage';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { withNext, safeNextPath } from '@memex/core';
@@ -61,8 +62,17 @@ function LoginForm() {
       );
 
       setToken(res.accessToken);
-      localStorage.setItem('refreshToken', res.refreshToken);
-      localStorage.setItem('role', res.role);
+
+      /*
+       * Неудачная запись не отменяет успешный вход.
+       *
+       * Сессия живёт на сервере; здесь только копии для интерфейса.
+       * Прямой `setItem` бросал бы в приватном режиме Safari — сразу
+       * после того, как сервер уже принял пароль, — и человек видел бы
+       * ошибку входа при действующей сессии.
+       */
+      writeStored('local', 'refreshToken', res.refreshToken);
+      writeStored('local', 'role', res.role);
 
       // Права перечитываются до перехода: иначе следующая страница
       // отрисуется по состоянию гостя и мигнёт закрытым интерфейсом.

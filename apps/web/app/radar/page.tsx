@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useMemo } from 'react';
+import { useRole } from '@/lib/role';
 import Link from 'next/link';
 import { Requires } from '@/components/Paywall';
 import useSWR from 'swr';
@@ -46,9 +47,8 @@ type View = 'cards' | 'table';
 
 function RadarPageContent() {
   const [tab, setTab] = useState<Tab>('radar');
-  const [isAdmin, setIsAdmin] = useState(false);
-
-  useEffect(() => setIsAdmin(localStorage.getItem('role') === 'ADMIN'), []);
+  // Роль — из общего места, а не своим чтением хранилища.
+  const { isAdmin } = useRole();
 
   return (
     <div className="space-y-4">

@@ -2,7 +2,6 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { AccessBanner } from '@/components/AccessBanner';
 import { AuthNav } from '@/components/AuthNav';
 import { MainNav } from '@/components/MainNav';
 import { MobileNav } from '@/components/MobileNav';
@@ -12,8 +11,8 @@ import { RouteGuard } from '@/components/RouteGuard';
  * Общая рамка приложения.
  *
  * Первый экран намеренно полноэкранный: на нём одна задача и одно
- * действие. Шапка, баннер доступа и футер появляются уже внутри
- * продукта, где человеку нужна навигация и состояние аккаунта.
+ * действие. Шапка и футер появляются уже внутри продукта, где
+ * человеку нужна навигация и состояние аккаунта.
  */
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -39,7 +38,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <Link
             href="/"
             aria-label="Главная"
-            className="absolute left-1/2 -translate-x-1/2 rounded-md text-lg font-bold tracking-tight transition-opacity hover:opacity-80 md:static md:translate-x-0 md:shrink-0"
+            className="absolute left-1/2 -translate-x-1/2 rounded-md text-lg font-bold tracking-tight transition-opacity hover:opacity-80 lg:static lg:translate-x-0 lg:shrink-0"
           >
             me<span className="text-accent">mex</span>
           </Link>
@@ -52,8 +51,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       </header>
 
-      <AccessBanner />
+      {/*
+        Полосы состояния доступа под шапкой больше нет.
 
+        Она занимала высоту на каждой странице, выглядела как системное
+        предупреждение и вмещала два-три предложения там, где хватает
+        одного слова. Состояние доступа переехало в верхнюю панель
+        рядом с режимом торговли: `AccessStatusControl`.
+      */}
       <main className="mx-auto min-w-0 max-w-[1800px] px-4 py-4 sm:px-5 sm:py-5">
         <RouteGuard>{children}</RouteGuard>
       </main>

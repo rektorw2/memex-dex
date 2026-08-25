@@ -11,7 +11,7 @@ import {
   withNext,
   type SellablePlan,
 } from '@memex/core';
-import { rootFetcher } from '@/lib/api';
+import { rootFetcher, hasToken } from '@/lib/api';
 import { useAccess, trialRemainingLabel, formatUntil } from '@/lib/access';
 import { useNextParam } from '@/lib/next-param';
 import { PlanCard } from '@/components/plans/PlanCard';
@@ -71,7 +71,10 @@ function PlansPageContent() {
   // равно подтверждает сервер. Для вошедшего человека гостевые кнопки
   // при этом не мигают во время холодного старта.
   useEffect(() => {
-    setHasLocalSession(Boolean(sessionStorage.getItem('accessToken')));
+    // Тот же вопрос, что у `hasSession` в провайдере прав, и тот же
+    // способ ответа. Прямое чтение хранилища здесь было третьей
+    // копией правила — и падало бы там же, где падал `MobileNav`.
+    setHasLocalSession(hasToken());
   }, []);
 
   // Три независимых запроса вместо одного Promise.all: ошибка одного

@@ -4,7 +4,9 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { SECTIONS } from './MainNav';
+import { AccessStatusControl } from './AccessStatusControl';
 import { useVisibleSections, type Section } from '@/lib/sections';
+import { useRole } from '@/lib/role';
 
 /**
  * Второстепенные пункты нижнего блока.
@@ -85,8 +87,23 @@ const TERMINAL_ICON = (
 
 export function MobileNav() {
   const [open, setOpen] = useState(false);
-  const [isAdmin, setIsAdmin] = useState(false);
   const pathname = usePathname();
+
+  /*
+   * Роль берётся из общего места, а не читается здесь заново.
+   *
+   * Своя копия чтения и уронила этот компонент: `localStorage.getItem`
+   * без защиты падает не только на сервере, но и в приватном режиме
+   * Safari, при запрещённых cookie и в среде без DOM. Вся панель
+   * переставала отрисовываться из-за одной справочной подсказки
+   * о том, показывать ли пункт «Админка».
+   *
+   * `useRole` отвечает на тот же вопрос один раз на всё приложение
+   * и переживает отсутствие хранилища: нет хранилища — нет подсказки,
+   * а не «нет прав» и тем более не «права есть». Права проверяет
+   * сервер, и от содержимого браузера это не зависит.
+   */
+  const { isAdmin } = useRole();
 
   // Только доступные разделы: пункт, ведущий на редирект, читается
   // как поломка продукта, а не как закрытый раздел.
@@ -101,10 +118,6 @@ export function MobileNav() {
   const buttonRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const touchStartX = useRef<number | null>(null);
-
-  useEffect(() => {
-    setIsAdmin(localStorage.getItem('role') === 'ADMIN');
-  }, [pathname]);
 
   // Смена маршрута закрывает панель. Next не перемонтирует компонент
   // при переходе, и без этого панель остаётся висеть поверх новой
@@ -179,7 +192,7 @@ export function MobileNav() {
         aria-label="Открыть меню"
         aria-expanded={open}
         aria-controls="mobile-nav"
-        className="tap grid h-11 w-11 shrink-0 place-items-center rounded-lg text-muted transition-colors hover:bg-accent/10 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent active:bg-accent/15 md:hidden"
+        className="tap grid h-11 w-11 shrink-0 place-items-center rounded-lg text-muted transition-colors hover:bg-accent/10 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent active:bg-accent/15 lg:hidden"
       >
         {/* Три ровные линии без рамки вокруг. Постоянная фиолетовая
             обводка делала кнопку похожей на включённое состояние. */}
@@ -194,7 +207,7 @@ export function MobileNav() {
       <div
         onClick={close}
         aria-hidden
-        className={`fixed inset-0 z-[60] bg-black/65 transition-opacity duration-250 md:hidden ${
+        className={`fixed inset-0 z-[60] bg-black/65 transition-opacity duration-250 lg:hidden ${
           open ? 'opacity-100' : 'pointer-events-none opacity-0'
         }`}
       />
@@ -218,7 +231,7 @@ export function MobileNav() {
           if (start != null && end != null && start - end > 60) close();
           touchStartX.current = null;
         }}
-        className={`safe-bottom fixed inset-y-0 left-0 z-[70] flex w-[320px] max-w-[85vw] flex-col border-r border-border bg-[#0D1117] transition-transform duration-250 ease-out motion-reduce:transition-none md:hidden ${
+        className={`safe-bottom fixed inset-y-0 left-0 z-[70] flex w-[320px] max-w-[85vw] flex-col border-r border-border bg-[#0D1117] transition-transform duration-250 ease-out motion-reduce:transition-none lg:hidden ${
           open ? 'translate-x-0' : '-translate-x-full'
         }`}
         style={{ height: '100dvh', paddingTop: 'env(safe-area-inset-top, 0px)' }}
@@ -237,6 +250,25 @@ export function MobileNav() {
             </svg>
           </button>
         </div>
+
+        {/*
+          Состояние доступа — сразу под заголовком и до разделов.
+
+          На узких экранах верхняя панель отдана логотипу, гамбургеру
+          и аккаунту: индикатор там отбирал место у навигации ровно
+          в той полосе, где её и так подрезало. Здесь ширины хватает
+          на полную подпись.
+
+          Это карточка состояния аккаунта, а не рекламный блок:
+          надпись, состояние и одно понятное продолжение. Гостю
+          компонент не отрисовывает ничего — пустого места под него
+          не остаётся.
+
+          Логика та же, что в шапке: один `accessIndicatorState`,
+          два оформления. Свой набор условий по тарифам здесь
+          разошёлся бы с верхней панелью молча.
+        */}
+        <AccessStatusControl variant="menu" />
 
         {/* Собственная прокрутка: список разделов длиннее экрана
             на невысоких телефонах, а страница под панелью заблокирована. */}

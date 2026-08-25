@@ -53,7 +53,7 @@ export function MainNav() {
     }`;
 
   return (
-    <nav className="hidden min-w-0 gap-1 md:flex">
+    <nav className="hidden min-w-0 gap-1 lg:flex">
       {sections.map((n) => (
         <Link key={n.href} href={n.href} className={linkCls(n.href)}>
           {n.label}

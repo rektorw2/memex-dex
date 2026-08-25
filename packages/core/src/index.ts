@@ -84,6 +84,7 @@ export * from './risk-gate-decision.js';
 export * from './subscription-catalog.js';
 export * from './payment-state.js';
 export * from './payment-provider.js';
+export * from './access-indicator.js';
 export * from './entitlements.js';
 export * from './route-access.js';
 export * from './api-base.js';

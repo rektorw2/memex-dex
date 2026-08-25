@@ -161,14 +161,58 @@ describe('нейтральные исходы доезжают до ответа
 });
 
 describe('подпись расчёта не выдумывается при чтении', () => {
+  const COMPUTED_AT = Date.parse('2026-08-25T10:00:00Z');
+
   it('время расчёта — сохранённое, а не время запроса', async () => {
     rows = [walletRow()];
 
     const w = await firstWallet();
 
-    expect(w.summary.computedAt).toBe(Date.parse('2026-08-25T10:00:00Z'));
-    // Прежде здесь стоял `Date.now()`, то есть момент открытия страницы.
-    expect(Math.abs(w.summary.computedAt - Date.now())).toBeGreaterThan(60_000);
+    // Главное утверждение: наружу уходит именно `scoreComputedAt`
+    // из базы, байт в байт.
+    expect(w.summary.computedAt).toBe(COMPUTED_AT);
+  });
+
+  it('момент запроса на ответ не влияет', async () => {
+    /*
+     * Часы останавливаются ровно на сохранённом времени.
+     *
+     * Прежняя проверка сравнивала сохранённое время с настоящим
+     * `Date.now()` и требовала расхождения хотя бы в минуту. Она
+     * доказывала нужное свойство ровно до того дня, когда реальные
+     * часы совпали с датой из образца, — и тогда краснела на пустом
+     * месте. Тест, зависящий от того, когда его запустили, ничего
+     * не проверяет: он проверяет календарь.
+     *
+     * Здесь наоборот: часы выставлены так, чтобы `Date.now()` дал
+     * тот же ответ, что и сохранённое поле. Если чтение подставит
+     * текущее время, тест этого не заметит, — поэтому дальше идёт
+     * второй прогон с другими часами.
+     */
+    vi.useFakeTimers();
+    vi.setSystemTime(COMPUTED_AT);
+
+    rows = [walletRow()];
+    const same = await firstWallet();
+
+    // Часы уехали на сутки. Сохранённое поле не сдвинулось.
+    vi.setSystemTime(COMPUTED_AT + 86_400_000);
+    const later = await firstWallet();
+
+    vi.useRealTimers();
+
+    expect(same.summary.computedAt).toBe(COMPUTED_AT);
+    expect(later.summary.computedAt).toBe(COMPUTED_AT);
+    expect(later.summary.computedAt).toBe(same.summary.computedAt);
+  });
+
+  it('другое сохранённое время даёт другой ответ', async () => {
+    // Доказывает, что поле действительно читается, а не совпало
+    // случайно с константой в коде.
+    const other = Date.parse('2026-01-15T07:30:00Z');
+    rows = [walletRow({ scoreComputedAt: new Date(other) })];
+
+    expect((await firstWallet()).summary.computedAt).toBe(other);
   });
 
   it('неоднозначные исходы отдаются сохранёнными, а не нулём', async () => {

@@ -1,4 +1,6 @@
 import { apiBaseFor } from '@memex/core';
+import { readStored, writeStored, removeStored } from './storage';
+
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000/api/v1';
 
 export class ApiError extends Error {
@@ -44,11 +46,13 @@ export class NetworkError extends Error {
 }
 
 function getToken(): string | null {
-  if (typeof window === 'undefined') return null;
-  // Токен держим в памяти модуля + sessionStorage.
-  // localStorage сознательно не используем: XSS-утечка долгоживущего
-  // токена на бирже стоит дороже, чем повторный вход после закрытия вкладки.
-  return sessionStorage.getItem('accessToken');
+  // Токен держим в sessionStorage. localStorage сознательно
+  // не используем: XSS-утечка долгоживущего токена на бирже стоит
+  // дороже, чем повторный вход после закрытия вкладки.
+  //
+  // Чтение через `readStored`: недоступное хранилище — это отсутствие
+  // токена, а не повод уронить каждый запрос приложения.
+  return readStored('session', 'accessToken');
 }
 
 /**
@@ -201,18 +205,27 @@ function announceAuthChange(): void {
 }
 
 export function setToken(token: string) {
-  sessionStorage.setItem('accessToken', token);
+  /*
+   * Неудачная запись не отменяет вход.
+   *
+   * В приватном режиме Safari хранилище бросает, и раньше это
+   * ронял бы сам вход — сразу после успешного ответа сервера.
+   * Сессия при этом действительна: она живёт на сервере, а здесь
+   * лишь копия токена. Событие рассылается в любом случае, чтобы
+   * подписчики узнали о входе.
+   */
+  writeStored('session', 'accessToken', token);
   announceAuthChange();
 }
 
 /** Забыть сессию. Единственное место, где токен исчезает. */
 export function clearToken() {
-  sessionStorage.removeItem('accessToken');
+  removeStored('session', 'accessToken');
   announceAuthChange();
 }
 
 export function hasToken(): boolean {
-  return typeof window !== 'undefined' && sessionStorage.getItem('accessToken') != null;
+  return readStored('session', 'accessToken') != null;
 }
 
 export function newIdempotencyKey(): string {

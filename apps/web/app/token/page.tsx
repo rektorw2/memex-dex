@@ -1,6 +1,7 @@
 'use client';
 
 import { Suspense, useState, useEffect } from 'react';
+import { useRole } from '@/lib/role';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import useSWR from 'swr';
@@ -41,13 +42,10 @@ const INTERVALS = ['5m', '1h', '1d'] as const;
 function TokenPage() {
   const id = useSearchParams().get('id');
   const [interval, setInterval] = useState<string>('5m');
-  const [isAdmin, setIsAdmin] = useState(false);
-
-  useEffect(() => {
-    // localStorage доступен только на клиенте; читаем после монтирования,
-    // иначе Next выдаст рассинхрон при гидратации.
-    setIsAdmin(localStorage.getItem('role') === 'ADMIN');
-  }, []);
+  // Роль — из общего места. Своя копия чтения повторила бы дефект,
+  // который уронил `MobileNav`: прямой `localStorage.getItem`
+  // бросает не только на сервере, но и в приватном режиме Safari.
+  const { isAdmin } = useRole();
 
   const { data, error, isLoading, mutate } = useSWR<any>(
     id ? `/tokens/${id}/overview` : null,

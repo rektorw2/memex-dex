@@ -4,6 +4,9 @@ import Link from 'next/link';
 import { useEffect, useState, useRef } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import { api, clearToken } from '@/lib/api';
+import { clearStorage, removeStored } from '@/lib/storage';
+import { useRole } from '@/lib/role';
+import { AccessStatusControl } from '@/components/AccessStatusControl';
 
 /**
  * Правая часть шапки: режим и аккаунт.
@@ -17,15 +20,20 @@ import { api, clearToken } from '@/lib/api';
 export function AuthNav() {
   const router = useRouter();
   const pathname = usePathname();
-  const [role, setRole] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    // sessionStorage доступен только на клиенте — читаем после монтирования,
-    // иначе Next выдаст рассинхрон при гидратации.
-    setRole(sessionStorage.getItem('accessToken') ? localStorage.getItem('role') : null);
-  }, [pathname]);
+  /*
+   * Роль берётся из общего места, а не читается здесь заново.
+   *
+   * Прежде тут стояло собственное `sessionStorage.getItem(...)
+   * ? localStorage.getItem('role') : null` — та же строка, что
+   * в `useRole`, и та же, что была в `MobileNav`. Три копии одного
+   * правила означают три места, где его однажды поправят по-разному,
+   * и три места с одинаковым дефектом: недоступное хранилище роняло
+   * каждое из них.
+   */
+  const { role } = useRole();
 
   useEffect(() => {
     setOpen(false);
@@ -47,12 +55,21 @@ export function AuthNav() {
 
   async function logout() {
     await api('/auth/logout', { method: 'POST' }).catch(() => {});
-    sessionStorage.clear();
-    // Разделы, следящие за сессией, узнают о выходе сразу: `clear()`
-    // события в своей вкладке не рассылает.
+
+    /*
+     * Выход не зависит от того, работает ли хранилище.
+     *
+     * Сессию закрывает запрос выше; здесь только уборка копий.
+     * Прежде прямые вызовы бросали бы в приватном режиме Safari
+     * и оставляли человека на странице с ощущением, что выход
+     * не сработал, — при уже закрытой на сервере сессии.
+     */
+    clearStorage('session');
+    // Разделы, следящие за сессией, узнают о выходе сразу:
+    // `clear()` события в своей вкладке не рассылает.
     clearToken();
-    localStorage.removeItem('role');
-    localStorage.removeItem('refreshToken');
+    removeStored('local', 'role');
+    removeStored('local', 'refreshToken');
     router.push('/login');
   }
 
@@ -83,6 +100,18 @@ export function AuthNav() {
       >
         paper
       </span>
+
+      {/*
+        Состояние доступа рядом с режимом торговли, но отдельно от него.
+
+        Два разных статуса: `paper` отвечает на вопрос «отправляются ли
+        сделки в сеть», этот — «что мне сейчас доступно». Объединить их
+        в один значок значило бы потерять один из ответов.
+
+        Логика живёт в своём компоненте, а не здесь: `AuthNav` и без
+        того отвечает за роль, меню и выход.
+      */}
+      <AccessStatusControl />
 
       <button
         type="button"
