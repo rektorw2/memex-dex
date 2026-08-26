@@ -49,6 +49,17 @@ import type { DexScreenerPair as DexPair } from '../services/dexscreener.js';
  */
 const STABLECOIN_SLACK = 10;
 
+/**
+ * Символ, который можно показывать.
+ *
+ * `???` в базе — не символ, а след прежнего кода. Возвращаем `null`,
+ * чтобы дальше сработала обычная подстановка сокращённого адреса.
+ */
+function normalSymbol(symbol: string | null | undefined): string | null {
+  const value = symbol?.trim();
+  return !value || /^\?+$/.test(value) ? null : value;
+}
+
 
 /**
  * Получить историю напрямую по адресу токена.
@@ -859,7 +870,15 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
           id: t.id,
           chain: t.chain,
           address: t.address,
-          symbol: t.symbol,
+          /*
+           * Символ из базы проходит ту же подстановку.
+           *
+           * В боевой базе уже лежат строки, записанные прежним кодом
+           * с символом `???`. Чинить их отдельной миграцией не нужно:
+           * подстановка на чтении отдаёт сокращённый адрес, а первое
+           * же обогащение перезапишет символ настоящим.
+           */
+          symbol: tokenDisplaySymbol({ symbol: normalSymbol(t.symbol), address: t.address }),
           name: t.name,
           logoUrl: t.logoUrl,
           riskLevel: t.riskLevel,
@@ -944,7 +963,20 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
         data: missing.slice(0, 20).map((b) => ({
           chain: b.chain as never,
           address: b.address,
-          symbol: '???',
+          /*
+           * Здесь и был источник `???` на экране.
+           *
+           * Три знака вопроса записывались прямо в базу как символ
+           * токена. Дальше строка становилась «известной», и ответ
+           * вкладки брал её символ из базы — то есть возвращал `???`
+           * уже по обычному пути, мимо всех подстановок.
+           *
+           * Сокращённый адрес честен и уникален: по нему видно,
+           * о каком именно токене речь, и он не читается как поломка
+           * интерфейса. Настоящий символ подставит обогащение, когда
+           * метаданные разойдутся по агрегаторам.
+           */
+          symbol: tokenDisplaySymbol({ symbol: null, address: b.address }),
           name: b.description?.slice(0, 60) ?? 'Неизвестный токен',
           decimals: b.chain === 'SOLANA' ? 9 : 18,
           logoUrl: b.iconUrl,

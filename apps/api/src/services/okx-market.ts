@@ -49,6 +49,7 @@ import {
   type OkxSignal,
   type ChainKey,
   parseOkxSignal,
+  tokenDisplaySymbol,
 } from '@memex/core';
 import { env } from '../lib/env.js';
 import { logger } from '../lib/logger.js';
@@ -597,7 +598,9 @@ function parseBasicInfo(raw: unknown): TokenBasicInfo | null {
   const address = okxStr(r.tokenContractAddress, 128);
   if (!chain || !address) return null;
 
-  const symbol = okxStr(r.tokenSymbol, 32) ?? '???';
+  // Сокращённый адрес вместо `???`: он честен, уникален и не читается
+  // как поломка интерфейса.
+  const symbol = okxStr(r.tokenSymbol, 32) ?? tokenDisplaySymbol({ symbol: null, address });
   const tagCommunity =
     r.tagList != null && typeof r.tagList === 'object'
       ? (r.tagList as Record<string, unknown>).communityRecognized

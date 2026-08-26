@@ -14,6 +14,11 @@ import { startWalletDiscovery, stopWalletDiscovery } from './wallet-discovery.js
 import { startActivityIngest, stopActivityIngest } from '../services/okx-ws-pool.js';
 import { startLedgerSync, stopLedgerSync } from './wallet-ledger-sync.js';
 import { startOkxSignalIngest, stopOkxSignalIngest } from './okx-signal-ingest.js';
+import { startPaperAgent, stopPaperAgent } from './paper-agent.js';
+import {
+  startPaperAgentNotifications,
+  stopPaperAgentNotifications,
+} from './paper-agent-notifications.js';
 import { logger } from '../lib/logger.js';
 import { prisma } from '../lib/prisma.js';
 import { guardSchemaOnStartup } from '../lib/schema-guard.js';
@@ -39,12 +44,14 @@ startEntitlementSweeper();
  * позиция собирается из неполного набора сделок — то есть выглядит
  * посчитанной, будучи неверной.
  */
-const walletWorkersReady = guardSchemaOnStartup().then((ready) => {
+const walletWorkersReady = guardSchemaOnStartup().then(async (ready) => {
   if (!ready) return false;
 
   startWalletDiscovery();
   startActivityIngest();
   startLedgerSync();
+  await startPaperAgent();
+  startPaperAgentNotifications();
   startOkxSignalIngest();
   return true;
 });
@@ -72,6 +79,8 @@ const shutdown = async () => {
     stopActivityIngest();
     stopLedgerSync();
     stopOkxSignalIngest();
+    stopPaperAgent();
+    stopPaperAgentNotifications();
   }
 
   await prisma.$disconnect();

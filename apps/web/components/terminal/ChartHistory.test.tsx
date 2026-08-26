@@ -25,6 +25,8 @@ const chartApi = vi.hoisted(() => ({
   scrollToRealTimeCalls: 0,
   setDataCalls: [] as unknown[][],
   updateCalls: [] as unknown[],
+  markerCalls: [] as unknown[][],
+  visibleTimeRangeCalls: [] as unknown[],
   removed: 0,
   reset() {
     this.rangeSubscribers = [];
@@ -34,6 +36,8 @@ const chartApi = vi.hoisted(() => ({
     this.scrollToRealTimeCalls = 0;
     this.setDataCalls = [];
     this.updateCalls = [];
+    this.markerCalls = [];
+    this.visibleTimeRangeCalls = [];
     this.removed = 0;
   },
 }));
@@ -51,6 +55,7 @@ vi.mock('lightweight-charts', () => {
       chartApi.visibleRange = r;
       chartApi.setRangeCalls.push(r);
     },
+    setVisibleRange: (r: unknown) => chartApi.visibleTimeRangeCalls.push(r),
     fitContent: () => {
       chartApi.fitContentCalls++;
     },
@@ -63,6 +68,7 @@ vi.mock('lightweight-charts', () => {
     applyOptions: () => undefined,
     setData: (data: unknown[]) => chartApi.setDataCalls.push(data),
     update: (point: unknown) => chartApi.updateCalls.push(point),
+    setMarkers: (markers: unknown[]) => chartApi.markerCalls.push(markers),
   };
 
   return {
@@ -482,5 +488,36 @@ describe('14. секундный график не зацикливается', 
 
     // Старшей истории у секундного ряда нет: один отказ — и всё.
     expect(loadOlder).toHaveBeenCalledOnce();
+  });
+});
+
+describe('15. persisted PAPER BUY/SELL markers', () => {
+  const markers = [
+    { id: 'run-1:buy', side: 'BUY' as const, time: 10_000, strategyLabel: 'Baseline', priceUsd: 1, pnlUsd: null },
+    { id: 'run-2:buy', side: 'BUY' as const, time: 10_000, strategyLabel: 'Shadow', priceUsd: 1.01, pnlUsd: null },
+    { id: 'run-1:sell', side: 'SELL' as const, time: 10_300, strategyLabel: 'Baseline', priceUsd: 2, pnlUsd: 94.8 },
+  ];
+
+  it('несколько стратегий одной свечи не затирают друг друга и имеют текстовый список', () => {
+    renderPanel({ markers });
+    expect(chartApi.markerCalls.at(-1)).toHaveLength(3);
+    expect(chartApi.markerCalls.at(-1)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'run-1:buy', text: expect.stringContaining('PAPER BUY') }),
+      expect.objectContaining({ id: 'run-2:buy', text: expect.stringContaining('Shadow') }),
+      expect.objectContaining({ id: 'run-1:sell', text: expect.stringContaining('PAPER SELL') }),
+    ]));
+    expect(screen.getByRole('list', { name: 'События paper-агента' }).children).toHaveLength(3);
+  });
+
+  it('смена таймфрейма восстанавливает markers на новой series', () => {
+    const view = renderPanel({ markers });
+    view.rerender(<ChartPanel token={token()} chart={{ state: 'ready', candles: base }} interval="15m" onInterval={() => {}} markers={markers} />);
+    expect(chartApi.markerCalls.at(-1)).toHaveLength(3);
+    expect(chartApi.markerCalls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('выбор сделки прокручивает график к её persisted времени', () => {
+    renderPanel({ markers, focusMarkerId: 'run-1:sell' });
+    expect(chartApi.visibleTimeRangeCalls.at(-1)).toMatchObject({ from: expect.any(Number), to: expect.any(Number) });
   });
 });

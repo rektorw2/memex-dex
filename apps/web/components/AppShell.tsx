@@ -1,7 +1,10 @@
 'use client';
 
+import { Suspense } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { logoDestination } from '@memex/core';
+import { useAccess } from '@/lib/access';
 import { AuthNav } from '@/components/AuthNav';
 import { MainNav } from '@/components/MainNav';
 import { MobileNav } from '@/components/MobileNav';
@@ -17,6 +20,25 @@ import { RouteGuard } from '@/components/RouteGuard';
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const isWelcome = pathname === '/';
+
+  /*
+   * Куда ведёт логотип.
+   *
+   * Прежде всегда на `/` — приветственную страницу, которую человек
+   * с оплаченным тарифом видеть не хочет и на которой ему нечего
+   * делать. Решение принимает чистая функция ядра по состоянию
+   * с сервера: ни роль из хранилища, ни наличие токена сами по себе
+   * о доступе не говорят.
+   */
+  const { access, loading, anonymous, hasSession } = useAccess();
+
+  const home = logoDestination({
+    loading,
+    anonymous,
+    hasSession,
+    plan: access?.effectivePlan ?? null,
+    serviceAccess: access?.serviceAccess ?? false,
+  });
 
   if (isWelcome) {
     return (
@@ -36,7 +58,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <MobileNav />
 
           <Link
-            href="/"
+            href={home}
             aria-label="Главная"
             className="absolute left-1/2 -translate-x-1/2 rounded-md text-lg font-bold tracking-tight transition-opacity hover:opacity-80 lg:static lg:translate-x-0 lg:shrink-0"
           >
@@ -46,7 +68,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <MainNav />
 
           <div className="ml-auto flex shrink-0 items-center">
-            <AuthNav />
+            {/*
+              `AuthNav` читает параметр `mode`, чтобы не показывать
+              кнопку уже открытой формы. `useSearchParams` при
+              статическом пререндере требует границы ожидания:
+              без неё сборка падает на странице 404, где параметров
+              нет вовсе.
+
+              Запасной вид — пустое место той же высоты: мигание
+              кнопок в шапке заметнее, чем их появление.
+            */}
+            <Suspense fallback={<span className="h-9" aria-hidden />}>
+              <AuthNav />
+            </Suspense>
           </div>
         </div>
       </header>

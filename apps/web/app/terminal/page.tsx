@@ -1,15 +1,13 @@
 'use client';
 
 import useSWR from 'swr';
-import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
+import { Suspense, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { fetcher, fmtUsd, fmtPrice, fmtPct } from '@/lib/api';
 import { useAccess } from '@/lib/access';
 import {
-  appendLivePrice,
   shouldRequestPrivateData,
   tradePanelState,
-  type LiveChartCandle,
 } from '@memex/core';
 import { TokenLogo } from '@/components/TokenLogo';
 import { TokenList } from '@/components/terminal/TokenList';
@@ -27,24 +25,9 @@ import { SidePanel } from '@/components/terminal/SidePanel';
 import { CHAIN_LABEL, SORT_OPTIONS, QUICK_FILTERS, type Token } from '@/components/terminal/types';
 import { DexScreenerList } from '@/components/terminal/DexScreenerList';
 import { GemsList, type GemToken } from '@/components/terminal/GemsList';
+import { useTerminalChart } from '@/components/terminal/useTerminalChart';
 
 type MarketSource = 'own' | 'gems' | 'dexscreener';
-
-interface LivePrice {
-  priceUsd: string | null;
-  priceChange24h: string | null;
-  observedAt: string | null;
-  serverTime: string;
-  stale: boolean;
-}
-
-interface ChartResponse {
-  state?: string;
-  candles?: LiveChartCandle[];
-  livePriceUsd?: string | null;
-  liveAt?: string | null;
-  live?: boolean;
-}
 
 /**
  * Терминал.
@@ -152,103 +135,12 @@ function Terminal() {
     tokens?.find((t) => !t.isQuote) ??
     null;
 
-  /*
-   * Свечи запрашиваются всегда, когда токен выбран.
-   *
-   * Раньше запрос гасился при `hasChart === false`, то есть при
-   * отсутствии адреса пула, — и человек не получал даже объяснения,
-   * почему графика нет. Причину знает сервер, и узнать её можно
-   * только спросив.
-   *
-   * `keepPreviousData` выключен намеренно: при смене токена или
-   * таймфрейма прежние свечи обязаны исчезнуть, иначе секунду
-   * рисуется чужой график с новым заголовком.
-   */
   const {
-    data: chart,
-    mutate: reloadChart,
-  } = useSWR<ChartResponse>(
-    active ? `/tokens/${active.id}/candles?interval=${interval}` : null,
-    fetcher,
-    { refreshInterval: 15_000, keepPreviousData: false },
-  );
-
-  /*
-   * Одна котировка вместо повторного чтения всей истории.
-   *
-   * Сервер отмечает выбранный токен горячим на каждом таком запросе,
-   * а ценовой воркер обновляет его раз в секунду. Если вкладка закрыта,
-   * запросы прекращаются и горячая метка сама истекает.
-   */
-  const { data: livePrice } = useSWR<LivePrice>(
-    active ? `/tokens/${active.id}/live-price` : null,
-    fetcher,
-    {
-      refreshInterval: 1_000,
-      dedupingInterval: 700,
-      keepPreviousData: false,
-      refreshWhenHidden: false,
-      revalidateOnFocus: true,
-    },
-  );
-
-  /** Секундные свечи существуют ровно пока открыт этот токен. */
-  const [secondSeries, setSecondSeries] = useState<{
-    tokenId: string | null;
-    candles: LiveChartCandle[];
-  }>({ tokenId: null, candles: [] });
-
-  const observedPrice = livePrice?.priceUsd ?? chart?.livePriceUsd ?? active?.priceUsd ?? null;
-  const observedAt = livePrice?.observedAt ?? chart?.liveAt ?? active?.priceUpdatedAt ?? null;
-  // Для секундной линии важен момент показа последней известной цены,
-  // а не только момент, когда провайдер впервые прислал это значение.
-  // Иначе неизменившаяся цена оставляет на оси времени пустой разрыв.
-  const sampledAt = livePrice?.serverTime ?? observedAt;
-  const activeId = active?.id ?? null;
-
-  useEffect(() => {
-    if (!activeId || observedPrice == null || sampledAt == null || livePrice?.stale === true) return;
-
-    setSecondSeries((previous) => {
-      const base = previous.tokenId === activeId ? previous.candles : [];
-      return {
-        tokenId: activeId,
-        // Пять минут секундных наблюдений достаточно для live-вида;
-        // долговременную историю дают старшие таймфреймы.
-        candles: appendLivePrice(base, observedPrice, sampledAt, '1s', 300),
-      };
-    });
-  }, [activeId, livePrice?.stale, observedPrice, sampledAt]);
-
-  const displayedCandles = useMemo(() => {
-    const historical = Array.isArray(chart?.candles) ? chart.candles : [];
-    if (interval === '1s') {
-      return secondSeries.tokenId === activeId && secondSeries.candles.length > 0
-        ? secondSeries.candles
-        : historical;
-    }
-
-    return appendLivePrice(historical, observedPrice, observedAt, interval, 300);
-  }, [activeId, chart?.candles, interval, observedAt, observedPrice, secondSeries]);
-
-  const displayedChart: ChartResponse | undefined = active
-    ? {
-        ...chart,
-        state: displayedCandles.length > 0 ? 'ready' : chart?.state,
-        candles: displayedCandles,
-        liveAt: observedAt,
-        live: livePrice != null && !livePrice.stale,
-      }
-    : undefined;
-
-  const displayedActive: Token | null = active
-    ? {
-        ...active,
-        priceUsd: livePrice?.priceUsd ?? active.priceUsd,
-        priceChange24h: livePrice?.priceChange24h ?? active.priceChange24h,
-        priceUpdatedAt: livePrice?.observedAt ?? active.priceUpdatedAt,
-      }
-    : null;
+    chart: displayedChart,
+    token: displayedActive,
+    loadOlder,
+    reload: reloadChart,
+  } = useTerminalChart(active, interval);
 
   // Ключ null отключает запрос целиком. Пока права ещё загружаются,
   // портфель тоже не спрашиваем: иначе при обновлении страницы
@@ -261,26 +153,6 @@ function Terminal() {
   );
 
   const quoteToken = tokens?.find((t) => t.isQuote && t.chain === active?.chain);
-
-  /**
-   * Страница свечей старше указанного времени.
-   *
-   * Кэш SWR здесь не нужен: страница по паре «токен и курсор»
-   * неизменна, и панель сама помнит, какие курсоры уже запрашивала.
-   * Второй раз один и тот же курсор просто не спрашивается.
-   */
-  const loadOlder = useCallback(
-    async (before: number) => {
-      if (!activeId) return { candles: [], oldest: null };
-
-      const res = await fetcher<{ candles?: LiveChartCandle[]; oldest?: number | null }>(
-        `/tokens/${activeId}/candles?interval=${interval}&before=${before}`,
-      );
-
-      return { candles: res.candles ?? [], oldest: res.oldest ?? null };
-    },
-    [activeId, interval],
-  );
 
   /** Выбор токена на телефоне сразу открывает график. */
   function selectToken(t: Token) {

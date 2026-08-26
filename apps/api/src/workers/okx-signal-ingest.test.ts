@@ -80,6 +80,7 @@ const signal: OkxSignal = {
   holders: 420,
   top10HolderPct: 18,
   walletTypes: ['smart_money'],
+  triggerWalletAddresses: ['Wallet111'],
   triggerWalletCount: 3,
   amountUsd: 1_200,
   soldRatioPct: 0,

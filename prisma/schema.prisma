@@ -46,19 +46,17 @@ enum KycStatus {
 }
 
 model User {
-  id           String    @id @default(cuid())
-  email        String    @unique
+  id           String   @id @default(cuid())
+  email        String   @unique
   passwordHash String
   totpSecret   String? // 2FA, обязателен для вывода средств
-  role         UserRole  @default(USER)
+  role         UserRole @default(USER)
 
   /**
    * Когда подтверждён адрес почты.
-   *
    * Не булево поле: «когда» отвечает и на вопрос «подтверждена ли»,
    * и на вопрос «когда именно», а второй понадобится при разборе
    * попыток получить бесплатный период по чужому адресу.
-   *
    * От него зависит выдача пробного периода. Без подтверждения
    * правило «один раз на пользователя» превратилось бы в «один раз
    * на адрес, который не надо подтверждать», то есть ни во что.
@@ -67,11 +65,9 @@ model User {
 
   /**
    * Код подтверждения почты: хеш, срок и число попыток.
-   *
    * Сам код не хранится. Утечка базы не должна давать возможность
    * подтвердить чужой адрес — а именно это она и означала бы,
    * лежи там шесть цифр открытым текстом.
-   *
    * Три поля вместо отдельной таблицы: код у пользователя всегда
    * один, живёт пятнадцать минут и переживает разве что перезагрузку
    * страницы. Таблица со своей жизнью здесь была бы дороже пользы.
@@ -81,40 +77,40 @@ model User {
   emailCodeExpires  DateTime?
   emailCodeAttempts Int       @default(0)
 
-  /** Чат Telegram для уведомлений радара. Привязывается кодом из бота. */
-  telegramChatId String?
-  telegramLinkCode String? @unique
-  kycStatus    KycStatus @default(NONE)
-  kycRef       String? // id провайдера (Sumsub/Persona)
-  isFrozen     Boolean   @default(false)
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  /**
+   * Чат Telegram для уведомлений радара. Привязывается кодом из бота.
+   */
+  telegramChatId   String?
+  telegramLinkCode String?   @unique
+  kycStatus        KycStatus @default(NONE)
+  kycRef           String? // id провайдера (Sumsub/Persona)
+  isFrozen         Boolean   @default(false)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
-  wallets       Wallet[]
-  balances      Balance[]
-  orders        Order[]
-  trades        Trade[]
-  positions     Position[]
-  withdrawals   Withdrawal[]
-  feeEntries    FeeLedger[]
-  subscriptions CopySubscription[] @relation("follower")
-  followers     CopySubscription[] @relation("leader")
-  calls         Call[]
-  sessions      Session[]
-  auditLogs     AuditLog[]
-  radarSubs     RadarSubscription[]
-  apiKeys       ApiKey[]
+  wallets         Wallet[]
+  balances        Balance[]
+  orders          Order[]
+  trades          Trade[]
+  positions       Position[]
+  withdrawals     Withdrawal[]
+  feeEntries      FeeLedger[]
+  subscriptions   CopySubscription[]  @relation("follower")
+  followers       CopySubscription[]  @relation("leader")
+  calls           Call[]
+  sessions        Session[]
+  auditLogs       AuditLog[]
+  radarSubs       RadarSubscription[]
+  apiKeys         ApiKey[]
   walletFavorites WalletFavorite[]
 
   /**
    * Оплаченные планы.
-   *
    * Имя не `subscriptions`: оно уже занято подписками копитрейдинга,
    * и это не совпадение, а два разных смысла одного слова. Там —
    * «повторять за этим человеком», здесь — «оплачено до такого-то
    * числа». Одно имя на оба однажды приведёт к тому, что отмена
    * оплаты остановит копирование или наоборот.
-   *
    * Колонки `plan` в User нет намеренно. План — не свойство человека,
    * а срочный договор с началом, концом и историей. Колонка хранила бы
    * только последнее значение: на вопрос «что у него было в прошлый
@@ -123,8 +119,10 @@ model User {
    */
   planSubscriptions Subscription[]
 
-  /** Связь с платёжным провайдером и оплаты подписок. */
-  paymentCustomers PaymentCustomer[]
+  /**
+   * Связь с платёжным провайдером и оплаты подписок.
+   */
+  paymentCustomers     PaymentCustomer[]
   subscriptionPayments SubscriptionPayment[]
 
   @@index([role])
@@ -132,7 +130,6 @@ model User {
 
 /**
  * Кошелёк в избранном у пользователя.
- *
  * Отдельно от CopySubscription намеренно. Та связывает пользователя
  * с пользователем ради повторения сделок — это отношение с деньгами
  * и рисками. Здесь другое: наблюдение за чужим адресом в сети,
@@ -140,7 +137,6 @@ model User {
  * Слить их в одну таблицу значило бы получить сущность, у которой
  * половина полей всегда пуста, и обе стороны отношения означают
  * разное в зависимости от строки.
- *
  * Ключ — сеть плюс нормализованный адрес. Один и тот же набор
  * символов в Ethereum и в BNB Chain принадлежит разным владельцам;
  * считать их одним кошельком значит показывать человеку чужую
@@ -151,10 +147,9 @@ model WalletFavorite {
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  chain Chain
+  chain         Chain
   /**
    * Адрес в нормальной форме.
-   *
    * Для EVM — в нижнем регистре, для Solana — как есть: там регистр
    * значим, и приведение сделало бы адрес другим. Нормализация
    * выполняется до записи, потому что уникальность проверяет база,
@@ -162,7 +157,9 @@ model WalletFavorite {
    */
   walletAddress String
 
-  /** Заметка пользователя. Не показывается никому, кроме него. */
+  /**
+   * Заметка пользователя. Не показывается никому, кроме него.
+   */
   note String?
 
   createdAt DateTime @default(now())
@@ -172,15 +169,15 @@ model WalletFavorite {
 }
 
 model Session {
-  id           String   @id @default(cuid())
-  userId       String
-  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  refreshHash  String   @unique
-  userAgent    String?
-  ip           String?
-  expiresAt    DateTime
-  revokedAt    DateTime?
-  createdAt    DateTime @default(now())
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshHash String    @unique
+  userAgent   String?
+  ip          String?
+  expiresAt   DateTime
+  revokedAt   DateTime?
+  createdAt   DateTime  @default(now())
 
   @@index([userId])
 }
@@ -210,35 +207,37 @@ model Token {
   // OHLCV существует у пары, а не у токена — у одного токена может быть
   // десяток пулов с разной ценой, и брать надо самый ликвидный.
   poolAddress String?
-  /** Источник появления в списке: auto — импортёр, manual — админ. */
+  /**
+   * Источник появления в списке: auto — импортёр, manual — админ.
+   */
   source      String? @default("manual")
-  /** Скрыт из витрины вручную, при этом остаётся в истории сделок. */
+  /**
+   * Скрыт из витрины вручную, при этом остаётся в истории сделок.
+   */
   isHidden    Boolean @default(false)
 
   // Риск-метрики, обновляются воркером
-  liquidityUsd    Decimal? @db.Decimal(24, 8)
-  volume24hUsd    Decimal? @db.Decimal(24, 8)
-  priceUsd        Decimal? @db.Decimal(38, 18)
+  liquidityUsd   Decimal?  @db.Decimal(24, 8)
+  volume24hUsd   Decimal?  @db.Decimal(24, 8)
+  priceUsd       Decimal?  @db.Decimal(38, 18)
   /**
    * Когда цена получена от провайдера.
-   *
    * Не `updatedAt`: тот двигает любая запись в строку, включая
    * проверку контракта, и по нему нельзя отличить свежую котировку
    * от свежей строки. Без отдельного поля интерфейс не может ни
    * показать возраст цены, ни пометить её устаревшей, а воркер —
    * отличить горячий токен от холодного.
-   *
    * Пустое значение означает «цена ни разу не обновлялась после
    * импорта», и выдавать её за свежую нельзя.
    */
-  priceUpdatedAt  DateTime?
-  priceChange24h  Decimal? @db.Decimal(12, 4)
-  fdvUsd          Decimal? @db.Decimal(24, 8)
-  holders         Int?
-  isHoneypot      Boolean  @default(false)
-  lpBurnedPct     Decimal? @db.Decimal(8, 4)
-  topHolderPct    Decimal? @db.Decimal(8, 4)
-  riskScore       Int? // 0-100, чем выше — тем опаснее
+  priceUpdatedAt DateTime?
+  priceChange24h Decimal?  @db.Decimal(12, 4)
+  fdvUsd         Decimal?  @db.Decimal(24, 8)
+  holders        Int?
+  isHoneypot     Boolean   @default(false)
+  lpBurnedPct    Decimal?  @db.Decimal(8, 4)
+  topHolderPct   Decimal?  @db.Decimal(8, 4)
+  riskScore      Int? // 0-100, чем выше — тем опаснее
 
   // ─── Допуск в терминал ──────────────────────────────────────────────
   // Отдельно от riskScore: тот отвечает «насколько опасно», этот —
@@ -249,49 +248,52 @@ model Token {
    * BLOCK | WARN | OK. Оставлено для совместимости со старыми записями;
    * новая логика пишет riskLevel.
    */
-  scamVerdict   String?
-  /** Причины блокировки и поводы для осторожности. */
-  scamReasons   Json?
+  scamVerdict String?
+  /**
+   * Причины блокировки и поводы для осторожности.
+   */
+  scamReasons Json?
 
   /**
    * Уровень риска: verified | low | medium | high | blocked | pending.
-   *
    * Отдельно от scamVerdict, потому что различает больше состояний.
    * «Проверен и известен» и «ничего плохого не нашли» — разные
    * утверждения, и первое можно показывать без оговорок, второе нет.
    */
-  riskLevel     String?
-  /** Машиночитаемые коды причин: HONEYPOT, FAKE_SYMBOL и прочие. */
-  riskCodes     String[]
-  /** Токен есть в реестре подтверждённых адресов. */
-  isRegistered  Boolean @default(false)
-  /** Когда последний раз проверяли контракт и поведение пула. */
-  scamCheckedAt DateTime?
+  riskLevel        String?
+  /**
+   * Машиночитаемые коды причин: HONEYPOT, FAKE_SYMBOL и прочие.
+   */
+  riskCodes        String[]
+  /**
+   * Токен есть в реестре подтверждённых адресов.
+   */
+  isRegistered     Boolean   @default(false)
+  /**
+   * Когда последний раз проверяли контракт и поведение пула.
+   */
+  scamCheckedAt    DateTime?
   /**
    * Версия правил, по которым выставлен вердикт.
-   *
    * Без неё изменение правил не влияло ни на что: у проверенного токена
    * стоит отметка времени, и следующая проверка откладывается на сутки —
    * даже если за это время появилось правило, которое его блокирует.
    * Именно так подделки под NVDA пережили добавление проверки на них.
    */
-  scamRulesVersion Int @default(0)
+  scamRulesVersion Int       @default(0)
 
   /**
    * Неудачных попыток проверки подряд.
-   *
    * Хранится в базе, а не в памяти воркера: перезапуск обнулял бы
    * счётчик, и токен, который стабильно роняет проверку, начинал бы
    * круг заново после каждого деплоя. Именно такие записи и выедают
    * пропускную способность очереди, оставаясь незаметными.
-   *
    * Успешная проверка обнуляет счётчик.
    */
   scamCheckAttempts Int @default(0)
 
   /**
    * Раньше этого времени повторять нет смысла.
-   *
    * Экспоненциальная задержка с разбросом. Разброс обязателен: сотня
    * токенов, упавших на одном таймауте провайдера, без него повторит
    * запрос одновременно и уронит его снова — уже своими силами.
@@ -300,7 +302,6 @@ model Token {
 
   /**
    * Последняя попытка упёрлась в недоступность источников.
-   *
    * Отдельно от вердикта намеренно. Сбой сети — факт о сети, а не
    * о токене, и раньше он превращался в `blocked`: правило «ни один
    * источник не знает токен» не отличало пустой ответ от неответа.
@@ -309,22 +310,22 @@ model Token {
 
   // Счётчики сделок из DexScreener: единственный признак ханипота,
   // видимый без вызова контракта.
-  buys24h       Int?
-  sells24h      Int?
-  /** Ссылки на сайт и соцсети, если источник их отдал. */
-  socials       Json?
+  buys24h  Int?
+  sells24h Int?
+  /**
+   * Ссылки на сайт и соцсети, если источник их отдал.
+   */
+  socials  Json?
 
-  metricsUpdated  DateTime?
+  metricsUpdated DateTime?
 
   /**
    * Когда появился сам рынок, по данным провайдера.
-   *
    * Не путать с `createdAt`: тот отвечает на вопрос «когда мы завели
    * запись», а этот — «сколько лет торгуется токен». Разница
    * не косметическая: список «Новые» строился по `createdAt`
    * и показывал старые токены, импортированные сегодня, а на новизну
    * здесь покупают.
-   *
    * Может отсутствовать: не всякий провайдер сообщает время пула.
    * Неизвестный возраст не выдаётся за малый.
    */
@@ -332,7 +333,6 @@ model Token {
 
   /**
    * Когда мы впервые увидели токен на рынке.
-   *
    * Приближение возраста для случаев, где провайдер молчит о пуле.
    * Хуже `poolCreatedAt`, но честнее `createdAt`: запись могли
    * пересоздать, а первое наблюдение остаётся.
@@ -341,13 +341,13 @@ model Token {
 
   createdAt DateTime @default(now())
 
-  balances  Balance[]
-  ordersIn  Order[]    @relation("tokenIn")
-  ordersOut Order[]    @relation("tokenOut")
-  positions Position[]
-  calls     Call[]
-  candles   Candle[]
-  research  TokenResearch?
+  balances   Balance[]
+  ordersIn   Order[]        @relation("tokenIn")
+  ordersOut  Order[]        @relation("tokenOut")
+  positions  Position[]
+  calls      Call[]
+  candles    Candle[]
+  research   TokenResearch?
   okxSignals OkxSignal[]
 
   @@unique([chain, address])
@@ -372,7 +372,6 @@ model Token {
 
 /**
  * Одно событие официальной ленты OKX Signal.
- *
  * Отдельно от Token: один токен появляется в Signal много раз, и
  * повторный вход Smart Money — новое событие, а не обновление названия
  * токена. История нужна и для порядка «новые сверху», и для измерения
@@ -385,7 +384,7 @@ model OkxSignal {
   chain   Chain
   address String
   tokenId String?
-  token   Token? @relation(fields: [tokenId], references: [id], onDelete: SetNull)
+  token   Token?  @relation(fields: [tokenId], references: [id], onDelete: SetNull)
 
   symbol  String
   name    String
@@ -394,28 +393,397 @@ model OkxSignal {
   signaledAt DateTime
   receivedAt DateTime @default(now())
 
-  priceUsd       Decimal? @db.Decimal(38, 18)
-  marketCapUsd   Decimal? @db.Decimal(24, 8)
+  priceUsd       Decimal?  @db.Decimal(38, 18)
+  marketCapUsd   Decimal?  @db.Decimal(24, 8)
   // Максимальная наблюдавшаяся цена после этого конкретного сигнала.
   // Это не lifetime ATH токена: два сигнала одного токена имеют
   // разные точки отсчёта и независимо накапливают свой пик.
-  peakPriceUsd   Decimal? @db.Decimal(38, 18)
+  peakPriceUsd   Decimal?  @db.Decimal(38, 18)
   peakObservedAt DateTime?
   holders        Int?
-  top10HolderPct Decimal? @db.Decimal(8, 4)
+  top10HolderPct Decimal?  @db.Decimal(8, 4)
 
-  walletTypes       String[]
-  triggerWalletCount Int?
-  amountUsd          Decimal? @db.Decimal(24, 8)
-  soldRatioPct       Decimal? @db.Decimal(8, 4)
-  source             String
+  walletTypes            String[]
+  /**
+   * Адреса кошельков-триггеров, если OKX прислал их в событии.
+   */
+  triggerWalletAddresses String[] @default([])
+  triggerWalletCount     Int?
+  amountUsd              Decimal? @db.Decimal(24, 8)
+  soldRatioPct           Decimal? @db.Decimal(8, 4)
+  source                 String
 
   createdAt DateTime @default(now())
+
+  paperAgentRuns PaperAgentRun[]
 
   @@index([signaledAt])
   @@index([chain, signaledAt])
   @@index([tokenId, signaledAt])
   @@index([chain, address, signaledAt])
+}
+
+/**
+ * Главный выключатель автономного агента.
+ * Он управляет только симуляцией. Даже включённая строка не имеет силы,
+ * если процесс запущен с EXECUTION_MODE != paper: это проверяется до старта
+ * воркера и отдельным контрактным тестом.
+ */
+model PaperAgentControl {
+  id                            String   @id @default("primary")
+  isEnabled                     Boolean  @default(false)
+  baselineStrategyKey           String   @default("okx-signal-v2-baseline")
+  telegramShadowEnabled         Boolean  @default(false)
+  /**
+   * Phase 3 остаётся не настроенной, пока администратор явно не выберет режим.
+   */
+  activeAllocationMode          String?
+  activeAllocationPolicyKey     String?
+  activeAllocationPolicyVersion Int?
+  learningModeEnabled           Boolean  @default(false)
+  createdAt                     DateTime @default(now())
+  updatedAt                     DateTime @updatedAt
+}
+
+/**
+ * Неизменяемая версия baseline либо одного shadow-эксперимента.
+ */
+model PaperAgentStrategy {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  version   Int
+  label     String
+  kind      String
+  isEnabled Boolean  @default(true)
+  config    Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  runs PaperAgentRun[]
+
+  @@index([kind, isEnabled])
+}
+
+/**
+ * Одно решение одной версии стратегии по одному событию OKX Signal.
+ * Уникальность signal+strategy — защита и от повторного WS-события, и от
+ * параллельной обработки, и от рестарта посередине перехода состояния.
+ */
+model PaperAgentRun {
+  id         String             @id @default(cuid())
+  signalId   String
+  signal     OkxSignal          @relation(fields: [signalId], references: [id], onDelete: Cascade)
+  strategyId String
+  strategy   PaperAgentStrategy @relation(fields: [strategyId], references: [id], onDelete: Restrict)
+
+  providerKey String
+  tokenId     String?
+  chain       Chain
+  address     String
+  symbol      String
+  source      String
+
+  state        String
+  decisionCode String?
+  errorCode    String?
+
+  signaledAt DateTime
+  receivedAt DateTime
+  decidedAt  DateTime?
+  latencyMs  Int?
+
+  poolCreatedAt          DateTime?
+  tokenAgeMs             Int?
+  walletTypes            String[]
+  triggerWalletAddresses String[]  @default([])
+  signalAmountUsd        Decimal?  @db.Decimal(24, 8)
+  signalPriceUsd         Decimal?  @db.Decimal(38, 18)
+  signalMarketCapUsd     Decimal?  @db.Decimal(24, 8)
+  decisionPriceUsd       Decimal?  @db.Decimal(38, 18)
+  priceSource            String?
+  warnings               Json?
+
+  positionUsd            Decimal?  @db.Decimal(24, 8)
+  costModelKey           String?
+  tradeFeeBps            Int?
+  entrySlippageBps       Int?
+  exitSlippageBps        Int?
+  networkFeeUsdPerSide   Decimal?  @db.Decimal(24, 8)
+  feeBps                 Int?
+  slippageBps            Int?
+  entryAt                DateTime?
+  entrySourcePriceUsd    Decimal?  @db.Decimal(38, 18)
+  entryExecutionPriceUsd Decimal?  @db.Decimal(38, 18)
+  entryQuantity          Decimal?  @db.Decimal(38, 18)
+  entryTradingFeeUsd     Decimal?  @db.Decimal(24, 8)
+  entryNetworkFeeUsd     Decimal?  @db.Decimal(24, 8)
+  entrySlippageUsd       Decimal?  @db.Decimal(24, 8)
+  entryFeeUsd            Decimal?  @db.Decimal(24, 8)
+  targetSourcePriceUsd   Decimal?  @db.Decimal(38, 18)
+
+  currentSourcePriceUsd    Decimal?  @db.Decimal(38, 18)
+  currentExecutionPriceUsd Decimal?  @db.Decimal(38, 18)
+  unrealizedPnlUsd         Decimal?  @db.Decimal(24, 8)
+  peakSourcePriceUsd       Decimal?  @db.Decimal(38, 18)
+  maxMultiple              Decimal?  @db.Decimal(18, 8)
+  maxDrawdownPct           Decimal?  @db.Decimal(12, 6)
+  lastMarkedAt             DateTime?
+
+  exitAt                DateTime?
+  exitReason            String?
+  exitSourcePriceUsd    Decimal?  @db.Decimal(38, 18)
+  exitExecutionPriceUsd Decimal?  @db.Decimal(38, 18)
+  exitTradingFeeUsd     Decimal?  @db.Decimal(24, 8)
+  exitNetworkFeeUsd     Decimal?  @db.Decimal(24, 8)
+  exitSlippageUsd       Decimal?  @db.Decimal(24, 8)
+  exitFeeUsd            Decimal?  @db.Decimal(24, 8)
+  totalCostsUsd         Decimal?  @db.Decimal(24, 8)
+  grossExitUsd          Decimal?  @db.Decimal(24, 8)
+  netExitUsd            Decimal?  @db.Decimal(24, 8)
+  realizedPnlUsd        Decimal?  @db.Decimal(24, 8)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  notifications PaperAgentNotification[]
+  allocations   PaperAgentAllocation[]
+
+  @@unique([signalId, strategyId])
+  @@index([state, updatedAt])
+  @@index([strategyId, createdAt])
+  @@index([tokenId, state])
+  @@index([providerKey])
+}
+
+/**
+ * Transactional outbox и одновременно сохранённое in-app уведомление.
+ * Секретов транспорта здесь нет: только безопасный payload и состояние доставки.
+ */
+model PaperAgentNotification {
+  id       String         @id @default(cuid())
+  eventKey String         @unique
+  runId    String?
+  run      PaperAgentRun? @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  eventType       String
+  strategyKey     String?
+  strategyVersion Int?
+  isBaselineEvent Boolean @default(false)
+  payload         Json
+
+  inAppStatus      String    @default("PENDING")
+  inAppDeliveredAt DateTime?
+  isRead           Boolean   @default(false)
+  readAt           DateTime?
+
+  telegramEligible      Boolean   @default(false)
+  telegramStatus        String    @default("DISABLED")
+  telegramAttempts      Int       @default(0)
+  telegramNextAttemptAt DateTime?
+  telegramLastAttemptAt DateTime?
+  telegramDeliveredAt   DateTime?
+  telegramErrorCode     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([inAppStatus, createdAt])
+  @@index([isRead, createdAt])
+  @@index([telegramStatus, telegramNextAttemptAt])
+  @@index([strategyKey, eventType, createdAt])
+  @@index([runId, createdAt])
+}
+
+/**
+ * Неизменяемая версия политики распределения PAPER-капитала.
+ * Новая версия создаётся отдельной строкой; существующая не переписывается.
+ */
+model PaperAgentAllocationPolicy {
+  id          String  @id @default(cuid())
+  policyKey   String
+  version     Int
+  mode        String
+  riskProfile String?
+  label       String
+  limits      Json
+
+  scorePolicyKey     String
+  scorePolicyVersion Int
+
+  status            String    @default("SYSTEM")
+  source            String    @default("SYSTEM")
+  hypothesisMetrics Json?
+  sampleSize        Int?
+  periodStart       DateTime?
+  periodEnd         DateTime?
+  reviewedAt        DateTime?
+  reviewedBy        String?
+  promotedAt        DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@unique([policyKey, version])
+  @@index([mode, status])
+  @@index([status, createdAt])
+}
+
+/**
+ * Отдельный капиталовый контур. ACTIVE и SHADOW не делят баланс и лимиты:
+ * эксперимент не может съесть слот или резерв рабочего режима.
+ */
+model PaperAgentAccountSession {
+  id                 String  @id @default(cuid())
+  kind               String
+  mode               String
+  status             String  @default("ACTIVE")
+  policyKey          String
+  policyVersion      Int
+  riskProfile        String?
+  policySnapshot     Json
+  scorePolicyKey     String
+  scorePolicyVersion Int
+
+  reservePct             Decimal @db.Decimal(8, 4)
+  maxExposurePct         Decimal @db.Decimal(8, 4)
+  maxPositionPct         Decimal @db.Decimal(8, 4)
+  maxOpenPositions       Int
+  minimumPositionUsd     Decimal @db.Decimal(24, 8)
+  dailyEntryLimit        Int
+  drawdownStopPct        Decimal @db.Decimal(8, 4)
+  allowPartialAllocation Boolean
+
+  initialCapitalUsd  Decimal  @db.Decimal(24, 8)
+  freeBalanceUsd     Decimal  @db.Decimal(24, 8)
+  reservedBalanceUsd Decimal  @db.Decimal(24, 8)
+  inPositionsUsd     Decimal  @db.Decimal(24, 8)
+  realizedPnlUsd     Decimal  @db.Decimal(24, 8)
+  unrealizedPnlUsd   Decimal  @db.Decimal(24, 8)
+  tradingFeesUsd     Decimal  @db.Decimal(24, 8)
+  slippageUsd        Decimal  @db.Decimal(24, 8)
+  networkCostsUsd    Decimal  @db.Decimal(24, 8)
+  equityUsd          Decimal  @db.Decimal(24, 8)
+  peakEquityUsd      Decimal  @db.Decimal(24, 8)
+  drawdownPct        Decimal  @db.Decimal(12, 6)
+  openPositions      Int      @default(0)
+  dailyEntries       Int      @default(0)
+  dailyEntriesDate   DateTime
+  ledgerVersion      Int      @default(0)
+  lastRecalculatedAt DateTime @default(now())
+
+  resetFromId String?
+  resetFrom   PaperAgentAccountSession?  @relation("PaperAgentSessionReset", fields: [resetFromId], references: [id], onDelete: SetNull)
+  resets      PaperAgentAccountSession[] @relation("PaperAgentSessionReset")
+
+  closedAt  DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  allocations PaperAgentAllocation[]
+  ledger      PaperAgentCapitalLedger[]
+
+  @@index([kind, status])
+  @@index([mode, status])
+  @@index([policyKey, policyVersion])
+  @@index([resetFromId])
+}
+
+/**
+ * Одно решение одного капиталового контура по одному Phase 1/2 run.
+ */
+model PaperAgentAllocation {
+  id        String                   @id @default(cuid())
+  sessionId String
+  session   PaperAgentAccountSession @relation(fields: [sessionId], references: [id], onDelete: Restrict)
+  runId     String
+  run       PaperAgentRun            @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  isShadow         Boolean
+  state            String
+  decisionCode     String
+  mode             String
+  policyKey        String
+  policyVersion    Int
+  riskProfile      String?
+  policySnapshot   Json
+  inputFacts       Json
+  signalScore      Int
+  signalBand       String
+  allocationReason String
+
+  allocatedUsd     Decimal? @db.Decimal(24, 8)
+  capitalPct       Decimal? @db.Decimal(12, 6)
+  freeAfterUsd     Decimal  @db.Decimal(24, 8)
+  reserveAfterUsd  Decimal  @db.Decimal(24, 8)
+  exposureAfterUsd Decimal  @db.Decimal(24, 8)
+
+  entryAt                DateTime?
+  entrySourcePriceUsd    Decimal?  @db.Decimal(38, 18)
+  entryExecutionPriceUsd Decimal?  @db.Decimal(38, 18)
+  entryQuantity          Decimal?  @db.Decimal(38, 18)
+  targetSourcePriceUsd   Decimal?  @db.Decimal(38, 18)
+
+  currentSourcePriceUsd Decimal?  @db.Decimal(38, 18)
+  unrealizedPnlUsd      Decimal?  @db.Decimal(24, 8)
+  peakSourcePriceUsd    Decimal?  @db.Decimal(38, 18)
+  maxMultiple           Decimal?  @db.Decimal(18, 8)
+  maxDrawdownPct        Decimal?  @db.Decimal(12, 6)
+  lastMarkedAt          DateTime?
+
+  exitAt                DateTime?
+  exitReason            String?
+  exitSourcePriceUsd    Decimal?  @db.Decimal(38, 18)
+  exitExecutionPriceUsd Decimal?  @db.Decimal(38, 18)
+  grossExitUsd          Decimal?  @db.Decimal(24, 8)
+  netExitUsd            Decimal?  @db.Decimal(24, 8)
+  realizedPnlUsd        Decimal?  @db.Decimal(24, 8)
+  tradingFeesUsd        Decimal?  @db.Decimal(24, 8)
+  slippageUsd           Decimal?  @db.Decimal(24, 8)
+  networkCostsUsd       Decimal?  @db.Decimal(24, 8)
+  totalCostsUsd         Decimal?  @db.Decimal(24, 8)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  ledger PaperAgentCapitalLedger[]
+
+  @@unique([runId, sessionId])
+  @@index([sessionId, state])
+  @@index([state, updatedAt])
+  @@index([runId])
+}
+
+/**
+ * Неизменяемая проводка со снимками до/после атомарного изменения капитала.
+ */
+model PaperAgentCapitalLedger {
+  id           String                   @id @default(cuid())
+  eventKey     String                   @unique
+  sessionId    String
+  session      PaperAgentAccountSession @relation(fields: [sessionId], references: [id], onDelete: Restrict)
+  allocationId String?
+  allocation   PaperAgentAllocation?    @relation(fields: [allocationId], references: [id], onDelete: SetNull)
+
+  eventType String
+  amountUsd Decimal @db.Decimal(24, 8)
+
+  freeBeforeUsd        Decimal @db.Decimal(24, 8)
+  freeAfterUsd         Decimal @db.Decimal(24, 8)
+  reservedBeforeUsd    Decimal @db.Decimal(24, 8)
+  reservedAfterUsd     Decimal @db.Decimal(24, 8)
+  inPositionsBeforeUsd Decimal @db.Decimal(24, 8)
+  inPositionsAfterUsd  Decimal @db.Decimal(24, 8)
+  realizedPnlAfterUsd  Decimal @db.Decimal(24, 8)
+  equityAfterUsd       Decimal @db.Decimal(24, 8)
+  tradingFeesAfterUsd  Decimal @db.Decimal(24, 8)
+  slippageAfterUsd     Decimal @db.Decimal(24, 8)
+  networkCostsAfterUsd Decimal @db.Decimal(24, 8)
+  metadata             Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([sessionId, createdAt])
+  @@index([allocationId, createdAt])
+  @@index([eventType, createdAt])
 }
 
 model Candle {
@@ -453,13 +821,13 @@ model Wallet {
 
   // Приватный ключ НИКОГДА не хранится в открытом виде.
   // Envelope encryption: DEK шифрует ключ, KMS шифрует DEK.
-  encryptedKey    Bytes? // AES-256-GCM ciphertext
-  keyNonce        Bytes?
-  keyAuthTag      Bytes?
-  wrappedDek      Bytes? // DEK, зашифрованный мастер-ключом KMS
-  kmsKeyId        String?
-  derivationPath  String? // если HD-кошелёк
-  isActive        Boolean @default(true)
+  encryptedKey   Bytes? // AES-256-GCM ciphertext
+  keyNonce       Bytes?
+  keyAuthTag     Bytes?
+  wrappedDek     Bytes? // DEK, зашифрованный мастер-ключом KMS
+  kmsKeyId       String?
+  derivationPath String? // если HD-кошелёк
+  isActive       Boolean @default(true)
 
   createdAt DateTime @default(now())
 
@@ -563,16 +931,16 @@ model Order {
   status OrderStatus @default(PENDING)
   source OrderSource @default(MANUAL)
 
-  amountIn     Decimal  @db.Decimal(38, 18) // сколько отдаём
-  filledIn     Decimal  @default(0) @db.Decimal(38, 18)
-  filledOut    Decimal  @default(0) @db.Decimal(38, 18)
+  amountIn     Decimal   @db.Decimal(38, 18) // сколько отдаём
+  filledIn     Decimal   @default(0) @db.Decimal(38, 18)
+  filledOut    Decimal   @default(0) @db.Decimal(38, 18)
   // Обе цены — в долларах за торгуемый токен, а не в единицах tokenIn.
   // Именно так их шлёт интерфейс и так сравнивает воркер отложенных
   // ордеров: он берёт token.priceUsd и сопоставляет напрямую.
-  limitPrice   Decimal? @db.Decimal(38, 18)
-  triggerPrice Decimal? @db.Decimal(38, 18) // цена срабатывания стопа/тейка, USD
+  limitPrice   Decimal?  @db.Decimal(38, 18)
+  triggerPrice Decimal?  @db.Decimal(38, 18) // цена срабатывания стопа/тейка, USD
   trailingBps  Int? // для trailing stop
-  slippageBps  Int      @default(100)
+  slippageBps  Int       @default(100)
   expiresAt    DateTime?
 
   // связь с копитрейдингом
@@ -614,12 +982,12 @@ model Trade {
   valueUsd  Decimal @db.Decimal(24, 8)
 
   // исполнение
-  route         Json? // маршрут агрегатора
-  aggregator    String? // jupiter | 0x | odos
-  txSignature   String? @unique
-  blockNumber   BigInt?
-  networkFeeUsd Decimal? @db.Decimal(24, 8)
-  slippageBps   Int?
+  route          Json? // маршрут агрегатора
+  aggregator     String? // jupiter | 0x | odos
+  txSignature    String?  @unique
+  blockNumber    BigInt?
+  networkFeeUsd  Decimal? @db.Decimal(24, 8)
+  slippageBps    Int?
   priceImpactBps Int?
 
   // комиссии
@@ -627,9 +995,9 @@ model Trade {
   performanceFeeUsd Decimal @default(0) @db.Decimal(24, 8)
   realizedPnlUsd    Decimal @default(0) @db.Decimal(24, 8) // только для SELL
 
-  status    TradeStatus @default(SUBMITTED)
-  error     String?
-  createdAt DateTime    @default(now())
+  status      TradeStatus @default(SUBMITTED)
+  error       String?
+  createdAt   DateTime    @default(now())
   confirmedAt DateTime?
 
   fees FeeLedger[]
@@ -647,11 +1015,11 @@ model Position {
   tokenId String
   token   Token  @relation(fields: [tokenId], references: [id])
 
-  quantity      Decimal @default(0) @db.Decimal(38, 18)
-  avgCostUsd    Decimal @default(0) @db.Decimal(38, 18) // средневзвешенная цена входа
-  costBasisUsd  Decimal @default(0) @db.Decimal(24, 8)
+  quantity       Decimal @default(0) @db.Decimal(38, 18)
+  avgCostUsd     Decimal @default(0) @db.Decimal(38, 18) // средневзвешенная цена входа
+  costBasisUsd   Decimal @default(0) @db.Decimal(24, 8)
   realizedPnlUsd Decimal @default(0) @db.Decimal(24, 8)
-  feesPaidUsd   Decimal @default(0) @db.Decimal(24, 8)
+  feesPaidUsd    Decimal @default(0) @db.Decimal(24, 8)
 
   // источник позиции — важно: performance fee берётся только с копитрейд-объёма
   copiedQuantity Decimal @default(0) @db.Decimal(38, 18)
@@ -669,7 +1037,6 @@ model Position {
 /**
  * Результат разбора токена: проверяемые факты из открытых источников
  * и отдельно — трактовка модели.
- *
  * Эти две части сознательно не смешиваются. Факт «активен mint authority»
  * проверяем и воспроизводим; вывод «команда выглядит анонимной» — суждение,
  * которое может быть ошибочным. Пользователь должен видеть, где что.
@@ -680,27 +1047,43 @@ model TokenResearch {
   token   Token  @relation(fields: [tokenId], references: [id], onDelete: Cascade)
 
   // ─── Проверяемые факты ───────────────────────────────────────────────
-  /** Ответ сканера безопасности: mint/freeze authority, налоги, ханипот. */
+  /**
+   * /** Ответ сканера безопасности: mint/freeze authority, налоги, ханипот.
+   */
   securityFlags Json?
-  /** Ссылки на соцсети и сайт проекта, найденные в открытых источниках. */
+  /**
+   * Ссылки на соцсети и сайт проекта, найденные в открытых источниках.
+   */
   socials       Json?
-  /** Распределение по держателям: топ-10, доля создателя, число адресов. */
+  /**
+   * Распределение по держателям: топ-10, доля создателя, число адресов.
+   */
   holderStats   Json?
-  /** Источники фактов: имя сервиса и время получения. */
+  /**
+   * Источники фактов: имя сервиса и время получения.
+   */
   factSources   Json?
 
   // ─── Трактовка модели ────────────────────────────────────────────────
   aiSummary     String? @db.Text
-  /** Репутационный риск 0-100. Отдельно от технического riskScore токена. */
+  /**
+   * Репутационный риск 0-100. Отдельно от технического riskScore токена.
+   */
   aiRiskScore   Int?
   aiRiskFactors Json?
-  /** positive | neutral | negative | unknown */
+  /**
+   * positive | neutral | negative | unknown
+   */
   aiSentiment   String?
-  /** Ссылки, на которые опиралась модель. */
+  /**
+   * Ссылки, на которые опиралась модель.
+   */
   aiSources     Json?
   aiModel       String?
 
-  /** ok — всё собрано, partial — часть источников недоступна, failed — нет данных. */
+  /**
+   * ok — всё собрано, partial — часть источников недоступна, failed — нет данных.
+   */
   status    String   @default("ok")
   error     String?
   createdAt DateTime @default(now())
@@ -713,7 +1096,6 @@ model TokenResearch {
 
 /**
  * Обнаруженный новый токен.
- *
  * Отдельная таблица, а не флаг у Token: радар видит гораздо больше, чем
  * попадает в витрину. Большинство новых пулов — мусор, который не должен
  * засорять список торгуемых токенов, но должен остаться в истории, чтобы
@@ -726,84 +1108,111 @@ model RadarEvent {
   symbol  String
   name    String
 
-  poolAddress   String?
-  priceUsd      Decimal? @db.Decimal(38, 18)
-  liquidityUsd  Decimal? @db.Decimal(24, 8)
-  volume24hUsd  Decimal? @db.Decimal(24, 8)
-  fdvUsd        Decimal? @db.Decimal(24, 8)
-  /** Возраст пула на момент обнаружения, часы. */
-  poolAgeHours  Decimal? @db.Decimal(12, 4)
+  poolAddress  String?
+  priceUsd     Decimal? @db.Decimal(38, 18)
+  liquidityUsd Decimal? @db.Decimal(24, 8)
+  volume24hUsd Decimal? @db.Decimal(24, 8)
+  fdvUsd       Decimal? @db.Decimal(24, 8)
+  /**
+   * Возраст пула на момент обнаружения, часы.
+   */
+  poolAgeHours Decimal? @db.Decimal(12, 4)
 
-  /** Кто нашёл: okx | geckoterminal. */
-  source     String
-  riskScore  Int?
-  riskFlags  Json?
+  /**
+   * Кто нашёл: okx | geckoterminal.
+   */
+  source    String
+  riskScore Int?
+  riskFlags Json?
 
   /**
    * Уровень и коды причин из того же движка, что у терминала.
-   *
    * До этого радар считал риск отдельно — по ликвидности, объёму
    * и возрасту пула, — и один токен мог быть «низкий риск» в радаре
    * и «заблокирован» в терминале. Для человека это выглядит как
    * поломка, и справедливо: два раздела одного продукта не могут
    * расходиться в том, опасен токен или нет.
-   *
    * riskFlags оставлены для старых записей, но новые пишут сюда.
    */
-  riskLevel  String?
-  riskCodes  String[]
-  /** Версия правил, по которым выставлен уровень. */
-  riskRulesVersion Int @default(0)
+  riskLevel        String?
+  riskCodes        String[]
+  /**
+   * Версия правил, по которым выставлен уровень.
+   */
+  riskRulesVersion Int      @default(0)
 
   // ─── Отслеживание результата ────────────────────────────────────────
   // Ценность радара определяется не тем, сколько токенов он нашёл,
   // а тем, что с ними стало после. Поэтому фиксируем состояние в момент
   // обнаружения и следим за ним дальше.
 
-  /** Капитализация в момент обнаружения — база для расчёта кратности. */
+  /**
+   * Капитализация в момент обнаружения — база для расчёта кратности.
+   */
   mcapAtSignalUsd Decimal? @db.Decimal(24, 8)
   currentMcapUsd  Decimal? @db.Decimal(24, 8)
-  /** Максимум капитализации за всё время наблюдения. */
+  /**
+   * Максимум капитализации за всё время наблюдения.
+   */
   peakMcapUsd     Decimal? @db.Decimal(24, 8)
 
-  currentPriceUsd Decimal? @db.Decimal(38, 18)
-  /** Во сколько раз выросла капитализация к текущему моменту. */
-  currentMultiple Decimal? @db.Decimal(12, 4)
-  /** Максимальная достигнутая кратность. Именно её показывают как результат. */
-  peakMultiple    Decimal? @db.Decimal(12, 4)
-  /** Когда был достигнут пик — показывает, успел ли бы человек выйти. */
+  currentPriceUsd Decimal?  @db.Decimal(38, 18)
+  /**
+   * Во сколько раз выросла капитализация к текущему моменту.
+   */
+  currentMultiple Decimal?  @db.Decimal(12, 4)
+  /**
+   * Максимальная достигнутая кратность. Именно её показывают как результат.
+   */
+  peakMultiple    Decimal?  @db.Decimal(12, 4)
+  /**
+   * Когда был достигнут пик — показывает, успел ли бы человек выйти.
+   */
   peakAt          DateTime?
 
   currentHolders  Int?
   holdersAtSignal Int?
   currentTop10Pct Decimal? @db.Decimal(8, 4)
 
-  /** Точки для мини-графика: [{t, p, m}] — время, цена, капитализация. */
-  pricePoints   Json?
-  lastCheckedAt DateTime?
-  /** Когда последний раз забирали сделки пула для разметки кошельков. */
-  walletsCheckedAt DateTime?
+  /**
+   * Точки для мини-графика: [{t, p, m}] — время, цена, капитализация.
+   */
+  pricePoints       Json?
+  lastCheckedAt     DateTime?
+  /**
+   * Когда последний раз забирали сделки пула для разметки кошельков.
+   */
+  walletsCheckedAt  DateTime?
   /**
    * Свод по кошелькам, посчитанный воркером и сохранённый здесь.
-   *
    * Денормализация сознательная: лента радара показывает до полусотни
    * карточек, и считать сигнал запросом на каждую означало бы полсотни
    * агрегаций на открытие страницы.
    */
-  smartBuyers       Int     @default(0)
-  smartBuyVolumeUsd Decimal @default(0) @db.Decimal(24, 8)
-  whaleBuyers       Int     @default(0)
-  /** Сила сигнала 0-100 с учётом давности покупок. */
-  walletSignalScore Int     @default(0)
-  /** Наблюдение прекращено: пул умер либо прошло слишком много времени. */
-  isTracking    Boolean @default(true)
+  smartBuyers       Int       @default(0)
+  smartBuyVolumeUsd Decimal   @default(0) @db.Decimal(24, 8)
+  whaleBuyers       Int       @default(0)
+  /**
+   * Сила сигнала 0-100 с учётом давности покупок.
+   */
+  walletSignalScore Int       @default(0)
+  /**
+   * Наблюдение прекращено: пул умер либо прошло слишком много времени.
+   */
+  isTracking        Boolean   @default(true)
 
-  /** Уведомления по событию уже разосланы. */
-  notified   Boolean  @default(false)
-  /** Токен заведён в витрину по этому событию. */
+  /**
+   * Уведомления по событию уже разосланы.
+   */
+  notified      Boolean @default(false)
+  /**
+   * Токен заведён в витрину по этому событию.
+   */
   listedTokenId String?
 
-  /** Решения автоправила по этой находке. */
+  /**
+   * Решения автоправила по этой находке.
+   */
   fires AutoRuleFire[]
 
   firstSeenAt DateTime @default(now())
@@ -814,7 +1223,6 @@ model RadarEvent {
   @@index([isTracking, lastCheckedAt])
   @@index([isTracking, walletsCheckedAt])
   @@index([peakMultiple])
-
   // Индексы под сортировки ленты. Без них база при каждом обновлении
   // читает таблицу целиком и сортирует в памяти — на тысяче находок
   // это уже заметно, а растёт она непрерывно.
@@ -833,12 +1241,10 @@ model RadarEvent {
 
 /**
  * Кошелёк, замеченный в сделках по отслеживаемым токенам.
- *
  * Метка «смарт» здесь не покупается у поставщика и не берётся из чужого
  * списка — она вычисляется из наших же наблюдений: кошелёк покупал токены,
  * которые потом выросли. Это единственный способ, который можно проверить
  * и объяснить, а не принять на веру.
- *
  * Ключевое ограничение: метка не выдаётся, пока сделок мало. На выборке
  * из трёх покупок «100% попаданий» — это шум, а не навык.
  */
@@ -847,16 +1253,24 @@ model TraderWallet {
   chain   Chain
   address String
 
-  /** Человеческая метка, если известна: биржа, маркетмейкер, известный фонд. */
+  /**
+   * Человеческая метка, если известна: биржа, маркетмейкер, известный фонд.
+   */
   knownAs String?
 
   // ─── Накопленная статистика ─────────────────────────────────────────
-  /** Сколько разных токенов покупал среди отслеживаемых. */
+  /**
+   * /** Сколько разных токенов покупал среди отслеживаемых.
+   */
   tokensBought Int @default(0)
-  /** Покупки, после которых токен вырастал минимум вдвое. */
+  /**
+   * Покупки, после которых токен вырастал минимум вдвое.
+   */
   wins2x       Int @default(0)
   wins5x       Int @default(0)
-  /** Покупки, после которых токен терял более 80%. */
+  /**
+   * Покупки, после которых токен терял более 80%.
+   */
   rugs         Int @default(0)
 
   // ─── Контракт сводки ────────────────────────────────────────────────
@@ -869,41 +1283,65 @@ model TraderWallet {
   // NULL означает «ещё не пересчитан новыми правилами», а не ноль.
   // Умолчание стёрло бы разницу между честным нулём и старой строкой.
 
-  /** Знаменатель доли попаданий: токены с подведённым достоверным исходом. */
+  /**
+   * Знаменатель доли попаданий: токены с подведённым достоверным исходом.
+   */
   scorableOutcomes  Int?
-  /** Ждут наблюдений. Не проигрыши. */
+  /**
+   * Ждут наблюдений. Не проигрыши.
+   */
   pendingOutcomes   Int?
-  /** База кратности недостоверна: в оценку не идут. */
+  /**
+   * База кратности недостоверна: в оценку не идут.
+   */
   ambiguousOutcomes Int?
 
-  /** Версия правил расчёта. Пусто — строка досталась от прежних правил. */
-  scoreVersion    Int?
-  /** Когда сводка была посчитана на самом деле, а не когда прочитана. */
-  scoreComputedAt DateTime?
-  /** none | low | medium | high */
-  scoreConfidence String?
-  /** complete | partial | empty | stale */
-  scoreCoverage   String?
-  /** Почему оценки нет, если её нет. */
-  scoreReason     String?
-  /** Совокупный объём покупок в долларах. */
-  volumeUsd    Decimal @default(0) @db.Decimal(24, 8)
-  /** Средняя пиковая кратность по его покупкам. */
-  avgPeakMultiple Decimal? @db.Decimal(12, 4)
-  /** Медианное время между запуском пула и его покупкой, часы. */
-  medianEntryHours Decimal? @db.Decimal(12, 4)
+  /**
+   * Версия правил расчёта. Пусто — строка досталась от прежних правил.
+   */
+  scoreVersion     Int?
+  /**
+   * Когда сводка была посчитана на самом деле, а не когда прочитана.
+   */
+  scoreComputedAt  DateTime?
+  /**
+   * none | low | medium | high
+   */
+  scoreConfidence  String?
+  /**
+   * complete | partial | empty | stale
+   */
+  scoreCoverage    String?
+  /**
+   * Почему оценки нет, если её нет.
+   */
+  scoreReason      String?
+  /**
+   * Совокупный объём покупок в долларах.
+   */
+  volumeUsd        Decimal   @default(0) @db.Decimal(24, 8)
+  /**
+   * Средняя пиковая кратность по его покупкам.
+   */
+  avgPeakMultiple  Decimal?  @db.Decimal(12, 4)
+  /**
+   * Медианное время между запуском пула и его покупкой, часы.
+   */
+  medianEntryHours Decimal?  @db.Decimal(12, 4)
 
   /**
    * Итоговая оценка 0-100. Считается только при достаточной выборке,
    * иначе остаётся null — отсутствие оценки честнее выдуманной.
    */
   score Int?
-  /** smart | whale | early | none */
+  /**
+   * smart | whale | early | none
+   */
   label String @default("none")
 
-  firstSeenAt DateTime @default(now())
+  firstSeenAt  DateTime @default(now())
   lastActiveAt DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  updatedAt    DateTime @updatedAt
 
   trades WalletTrade[]
 
@@ -916,7 +1354,6 @@ model TraderWallet {
 
 /**
  * Отдельная покупка кошелька по отслеживаемому токену.
- *
  * Хранится вместе с капитализацией на момент сделки: без неё невозможно
  * посчитать, во сколько раз вырос токен ПОСЛЕ входа, а именно это
  * отличает удачную покупку от покупки на пике.
@@ -926,23 +1363,31 @@ model WalletTrade {
   walletId String
   wallet   TraderWallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
 
-  chain         Chain
-  tokenAddress  String
-  radarEventId  String?
+  chain        Chain
+  tokenAddress String
+  radarEventId String?
 
-  /** BUY | SELL */
-  side       String
-  amountUsd  Decimal  @db.Decimal(24, 8)
-  priceUsd   Decimal? @db.Decimal(38, 18)
-  /** Капитализация в момент сделки — база для оценки исхода. */
+  /**
+   * BUY | SELL
+   */
+  side           String
+  amountUsd      Decimal  @db.Decimal(24, 8)
+  priceUsd       Decimal? @db.Decimal(38, 18)
+  /**
+   * Капитализация в момент сделки — база для оценки исхода.
+   */
   mcapAtTradeUsd Decimal? @db.Decimal(24, 8)
-  /** Возраст пула на момент покупки: чем раньше вход, тем ценнее сигнал. */
-  poolAgeHours Decimal? @db.Decimal(12, 4)
+  /**
+   * Возраст пула на момент покупки: чем раньше вход, тем ценнее сигнал.
+   */
+  poolAgeHours   Decimal? @db.Decimal(12, 4)
 
-  txHash String?
+  txHash   String?
   tradedAt DateTime
 
-  /** Исход, проставляется позже: во сколько раз вырос токен после сделки. */
+  /**
+   * Исход, проставляется позже: во сколько раз вырос токен после сделки.
+   */
   outcomeMultiple Decimal?  @db.Decimal(12, 4)
   outcomeAt       DateTime?
 
@@ -957,34 +1402,33 @@ model WalletTrade {
 
 /**
  * Ключ для программного доступа.
- *
  * Нужен, чтобы скрипт мог работать от имени аккаунта: наполнять радар
  * находками, читать позиции, ставить ордера. Отдельная сущность,
  * а не пользовательский JWT, по двум причинам.
- *
  * Первая: JWT живёт минуты и обновляется через refresh-сессию, привязанную
  * к браузеру. Скрипт на сервере так не умеет.
- *
  * Вторая, важнее: у ключа своя область прав. Скрипту, который торгует,
  * незачем уметь менять пароль или выводить средства. Область задаётся
  * при создании и потом не расширяется.
- *
  * Вывод средств не входит ни в одну область и не может быть выдан ключу
  * в принципе. Это не настройка, а свойство системы: ключ хранится в файле
  * на чужой машине, его нельзя защитить вторым фактором, и единственная
  * надёжная гарантия — отсутствие самой возможности.
- *
  * Хранится SHA-256 от ключа. Утечка базы не даёт доступа.
  */
 model ApiKey {
   id     String @id @default(cuid())
   name   String
-  /** Владелец. Действия ключа выполняются от его имени. */
+  /**
+   * Владелец. Действия ключа выполняются от его имени.
+   */
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   tokenHash String @unique
-  /** Первые символы — чтобы отличать ключи в списке. Не секрет. */
+  /**
+   * Первые символы — чтобы отличать ключи в списке. Не секрет.
+   */
   prefix    String
 
   /**
@@ -1003,8 +1447,8 @@ model ApiKey {
   maxOrderUsd Decimal? @db.Decimal(24, 8)
 
   lastUsedAt DateTime?
-  usedCount  Int      @default(0)
-  createdAt  DateTime @default(now())
+  usedCount  Int       @default(0)
+  createdAt  DateTime  @default(now())
 
   @@index([isActive])
   @@index([userId])
@@ -1014,12 +1458,10 @@ model ApiKey {
 
 /**
  * Правило автоматической публикации.
- *
  * В системе существует ровно одна активная запись: правил несколько
  * означало бы, что на одну находку могут сработать два — и надо решать,
  * какое из них главнее. Пока такой потребности нет, единственное правило
  * убирает целый класс вопросов.
- *
  * Выключено по умолчанию и стартует в режиме наблюдения. Автоматика,
  * включённая сразу в боевом режиме, на первом же часу публикует всё,
  * что прошло недонастроенный фильтр, — и это видят пользователи.
@@ -1028,7 +1470,9 @@ model AutoRule {
   id   String @id @default(cuid())
   name String @default("Основное правило")
 
-  /** Главный выключатель. */
+  /**
+   * Главный выключатель.
+   */
   isEnabled Boolean @default(false)
   /**
    * Режим наблюдения: правило считается и пишет в журнал, но ничего
@@ -1037,16 +1481,24 @@ model AutoRule {
    */
   isDryRun  Boolean @default(true)
 
-  /** Сети, на которых правило работает. Пусто — все поддерживаемые. */
+  /**
+   * Сети, на которых правило работает. Пусто — все поддерживаемые.
+   */
   chains Chain[]
 
   // ─── Условие по кошелькам: основной триггер ─────────────────────────
-  /** Минимум размеченных кошельков с историей среди покупателей. */
-  minSmartBuyers      Int     @default(2)
-  /** Минимальная сила сигнала 0-100 с учётом давности покупок. */
-  minSignalStrength   Int     @default(40)
-  /** Минимальная суммарная покупка размеченных кошельков, USD. */
-  minSmartVolumeUsd   Decimal @default(3000) @db.Decimal(24, 8)
+  /**
+   * /** Минимум размеченных кошельков с историей среди покупателей.
+   */
+  minSmartBuyers    Int     @default(2)
+  /**
+   * Минимальная сила сигнала 0-100 с учётом давности покупок.
+   */
+  minSignalStrength Int     @default(40)
+  /**
+   * Минимальная суммарная покупка размеченных кошельков, USD.
+   */
+  minSmartVolumeUsd Decimal @default(3000) @db.Decimal(24, 8)
 
   // ─── Страховочные условия ───────────────────────────────────────────
   // Сигнал по кошелькам не отменяет базовой проверки токена: смарт-деньги
@@ -1058,22 +1510,34 @@ model AutoRule {
   maxPoolAgeHours Int     @default(72)
 
   // ─── Ограничители ───────────────────────────────────────────────────
-  /** Не более скольких коллов в сутки. Защита от лавины в активный час. */
+  /**
+   * /** Не более скольких коллов в сутки. Защита от лавины в активный час.
+   */
   maxCallsPerDay  Int @default(5)
-  /** Пауза между публикациями, минуты. */
+  /**
+   * Пауза между публикациями, минуты.
+   */
   cooldownMinutes Int @default(60)
 
   // ─── Параметры создаваемого колла ───────────────────────────────────
-  /** Цели в процентах от цены входа, например [50, 100, 200]. */
-  targetPcts     Json    @default("[50, 100, 200]")
-  /** Стоп-лосс в процентах ниже входа. */
-  stopLossPct    Int     @default(35)
-  suggestedPct   Decimal @default(2) @db.Decimal(8, 4)
-  timeHorizon    String  @default("1-3 дня")
-  /** Включать ли копитрейдинг у создаваемых коллов. */
-  isCopyEnabled  Boolean @default(false)
-  /** От чьего имени публикуются коллы. */
-  authorId       String?
+  /**
+   * /** Цели в процентах от цены входа, например [50, 100, 200].
+   */
+  targetPcts    Json    @default("[50, 100, 200]")
+  /**
+   * Стоп-лосс в процентах ниже входа.
+   */
+  stopLossPct   Int     @default(35)
+  suggestedPct  Decimal @default(2) @db.Decimal(8, 4)
+  timeHorizon   String  @default("1-3 дня")
+  /**
+   * Включать ли копитрейдинг у создаваемых коллов.
+   */
+  isCopyEnabled Boolean @default(false)
+  /**
+   * От чьего имени публикуются коллы.
+   */
+  authorId      String?
 
   lastFiredAt DateTime?
   createdAt   DateTime  @default(now())
@@ -1084,7 +1548,6 @@ model AutoRule {
 
 /**
  * Журнал решений правила.
- *
  * Записываются и срабатывания, и отказы с причиной. Журнал только
  * успешных срабатываний не позволяет понять, почему правило молчит —
  * а это самый частый вопрос к любой автоматике.
@@ -1100,14 +1563,22 @@ model AutoRuleFire {
   address      String
   symbol       String
 
-  /** FIRED | DRY_RUN | SKIPPED */
-  outcome String
-  /** Человеческое объяснение решения. */
-  reason  String   @db.Text
-  /** Снимок значений, на которых принято решение. */
+  /**
+   * FIRED | DRY_RUN | SKIPPED
+   */
+  outcome  String
+  /**
+   * Человеческое объяснение решения.
+   */
+  reason   String @db.Text
+  /**
+   * Снимок значений, на которых принято решение.
+   */
   snapshot Json?
 
-  /** Созданный колл, если он был создан. */
+  /**
+   * Созданный колл, если он был создан.
+   */
   callId String?
 
   createdAt DateTime @default(now())
@@ -1122,23 +1593,29 @@ enum RadarChannel {
   TELEGRAM
 }
 
-/** Подписка пользователя на уведомления радара со своими порогами. */
+/**
+ * Подписка пользователя на уведомления радара со своими порогами.
+ */
 model RadarSubscription {
   id     String @id @default(cuid())
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  channel RadarChannel @default(IN_APP)
-  isActive Boolean     @default(true)
+  channel  RadarChannel @default(IN_APP)
+  isActive Boolean      @default(true)
 
   chains          Chain[]
   minLiquidityUsd Decimal? @db.Decimal(24, 8)
   minVolume24hUsd Decimal? @db.Decimal(24, 8)
   maxRiskScore    Int?
-  /** Не уведомлять о пулах старше указанного возраста. */
+  /**
+   * Не уведомлять о пулах старше указанного возраста.
+   */
   maxPoolAgeHours Int?
 
-  /** Защита от лавины: не больше указанного числа сообщений в час. */
+  /**
+   * Защита от лавины: не больше указанного числа сообщений в час.
+   */
   maxAlertsPerHour Int      @default(20)
   sentLastHour     Int      @default(0)
   windowStartedAt  DateTime @default(now())
@@ -1176,23 +1653,23 @@ model Call {
   token    Token  @relation(fields: [tokenId], references: [id])
   chain    Chain
 
-  title     String
-  thesis    String   @db.Text // почему проект имеет потенциал
-  risk      CallRisk @default(HIGH)
-  status    CallStatus @default(DRAFT)
+  title  String
+  thesis String     @db.Text // почему проект имеет потенциал
+  risk   CallRisk   @default(HIGH)
+  status CallStatus @default(DRAFT)
 
-  entryPriceUsd  Decimal  @db.Decimal(38, 18)
-  targets        Json // [{ priceUsd, pct }] — лестница тейков
-  stopLossUsd    Decimal? @db.Decimal(38, 18)
-  suggestedPct   Decimal? @db.Decimal(8, 4) // рекомендуемая доля портфеля
-  timeHorizon    String? // "1-3 дня", "свинг"
-  links          Json? // сайт, twitter, dexscreener
+  entryPriceUsd Decimal  @db.Decimal(38, 18)
+  targets       Json // [{ priceUsd, pct }] — лестница тейков
+  stopLossUsd   Decimal? @db.Decimal(38, 18)
+  suggestedPct  Decimal? @db.Decimal(8, 4) // рекомендуемая доля портфеля
+  timeHorizon   String? // "1-3 дня", "свинг"
+  links         Json? // сайт, twitter, dexscreener
 
   // авто-фиксация результата
-  peakPriceUsd  Decimal? @db.Decimal(38, 18)
-  peakMultiple  Decimal? @db.Decimal(12, 4)
+  peakPriceUsd   Decimal? @db.Decimal(38, 18)
+  peakMultiple   Decimal? @db.Decimal(12, 4)
   closedPriceUsd Decimal? @db.Decimal(38, 18)
-  resultPct     Decimal? @db.Decimal(12, 4)
+  resultPct      Decimal? @db.Decimal(12, 4)
 
   isCopyEnabled Boolean @default(false) // включает fan-out подписчикам
 
@@ -1238,45 +1715,43 @@ model CopySubscription {
 
   /**
    * Когда копировать отложенные ордера лидера.
-   *
    * ON_FILL — рыночная копия в момент срабатывания лимитки лидера.
-   *   Вход гарантирован, но по цене на секунды позже и хуже.
+   * Вход гарантирован, но по цене на секунды позже и хуже.
    * MIRROR — такая же лимитка ставится сразу.
-   *   Цена входа та же, что у лидера, но исполнение не гарантировано,
-   *   и средства заморожены всё время жизни ордера.
-   *
+   * Цена входа та же, что у лидера, но исполнение не гарантировано,
+   * и средства заморожены всё время жизни ордера.
    * По умолчанию ON_FILL: заморозка средств — не то, что человек ожидает
    * получить, не выбрав этого явно.
    */
-  pendingMode CopyPendingMode @default(ON_FILL)
+  pendingMode    CopyPendingMode @default(ON_FILL)
   /**
    * Предел доли капитала под заморозкой в зеркалируемых ордерах.
    * Без него десяток лимиток лидера связывает все средства подписчика,
    * и на выход из открытых позиций денег не остаётся.
    */
-  maxLockedShare Decimal? @default(0.5) @db.Decimal(5, 4)
+  maxLockedShare Decimal?        @default(0.5) @db.Decimal(5, 4)
 
-  fixedUsd      Decimal? @db.Decimal(24, 8)
-  pctEquity     Decimal? @db.Decimal(8, 4) // например 5.0 = 5% капитала на сделку
-  maxPerTradeUsd Decimal? @db.Decimal(24, 8)
-  maxOpenPositions Int    @default(10)
+  fixedUsd          Decimal? @db.Decimal(24, 8)
+  pctEquity         Decimal? @db.Decimal(8, 4) // например 5.0 = 5% капитала на сделку
+  maxPerTradeUsd    Decimal? @db.Decimal(24, 8)
+  maxOpenPositions  Int      @default(10)
   dailyLossLimitUsd Decimal? @db.Decimal(24, 8)
-  allowedChains Chain[]
-  minLiquidityUsd Decimal? @db.Decimal(24, 8)
-  maxRiskScore  Int? // не копировать токены опаснее порога
+  allowedChains     Chain[]
+  minLiquidityUsd   Decimal? @db.Decimal(24, 8)
+  maxRiskScore      Int? // не копировать токены опаснее порога
 
   // Экономика: 10% от прибыли, договор фиксируется на момент подписки
-  performanceFeeBps Int @default(1000)
+  performanceFeeBps Int     @default(1000)
   highWaterMarkUsd  Decimal @default(0) @db.Decimal(24, 8)
 
   // накопительные метрики
-  copiedTrades  Int     @default(0)
-  grossPnlUsd   Decimal @default(0) @db.Decimal(24, 8)
-  feesPaidUsd   Decimal @default(0) @db.Decimal(24, 8)
+  copiedTrades Int     @default(0)
+  grossPnlUsd  Decimal @default(0) @db.Decimal(24, 8)
+  feesPaidUsd  Decimal @default(0) @db.Decimal(24, 8)
 
   acceptedTermsAt DateTime // юридически: согласие с условиями комиссии
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   @@unique([followerId, leaderId])
   @@index([leaderId, status])
@@ -1299,11 +1774,11 @@ enum FeeStatus {
 }
 
 model FeeLedger {
-  id      String @id @default(cuid())
+  id      String  @id @default(cuid())
   userId  String
-  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
   tradeId String?
-  trade   Trade? @relation(fields: [tradeId], references: [id], onDelete: SetNull)
+  trade   Trade?  @relation(fields: [tradeId], references: [id], onDelete: SetNull)
 
   subscriptionId String?
   leaderId       String?
@@ -1312,16 +1787,16 @@ model FeeLedger {
   status FeeStatus @default(ACCRUED)
 
   // Полная прозрачность расчёта — для споров и аудита
-  basisPnlUsd   Decimal @db.Decimal(24, 8) // прибыль, с которой считалась комиссия
-  feeBps        Int
-  amountUsd     Decimal @db.Decimal(24, 8)
-  amountToken   Decimal @db.Decimal(38, 18)
-  feeTokenId    String?
-  leaderShareUsd Decimal @default(0) @db.Decimal(24, 8) // сплит лидер/платформа
+  basisPnlUsd      Decimal @db.Decimal(24, 8) // прибыль, с которой считалась комиссия
+  feeBps           Int
+  amountUsd        Decimal @db.Decimal(24, 8)
+  amountToken      Decimal @db.Decimal(38, 18)
+  feeTokenId       String?
+  leaderShareUsd   Decimal @default(0) @db.Decimal(24, 8) // сплит лидер/платформа
   platformShareUsd Decimal @default(0) @db.Decimal(24, 8)
 
   calcSnapshot Json? // avgCost, qty, exitPrice — воспроизводимость расчёта
-  createdAt    DateTime @default(now())
+  createdAt    DateTime  @default(now())
   settledAt    DateTime?
 
   @@index([userId, createdAt])
@@ -1343,8 +1818,8 @@ model Deposit {
   confirmations Int     @default(0)
   isCredited    Boolean @default(false)
 
-  createdAt   DateTime  @default(now())
-  creditedAt  DateTime?
+  createdAt  DateTime  @default(now())
+  creditedAt DateTime?
 
   @@index([userId])
 }
@@ -1367,12 +1842,12 @@ model Withdrawal {
   tokenId String
   chain   Chain
 
-  amount      Decimal @db.Decimal(38, 18)
-  feeAmount   Decimal @default(0) @db.Decimal(38, 18)
-  toAddress   String
-  status      WithdrawalStatus @default(REQUESTED)
-  txSignature String?
-  reviewedBy  String?
+  amount       Decimal          @db.Decimal(38, 18)
+  feeAmount    Decimal          @default(0) @db.Decimal(38, 18)
+  toAddress    String
+  status       WithdrawalStatus @default(REQUESTED)
+  txSignature  String?
+  reviewedBy   String?
   rejectReason String?
 
   createdAt   DateTime  @default(now())
@@ -1385,15 +1860,15 @@ model Withdrawal {
 // ─────────────────────────────── Аудит ──────────────────────────────────────
 
 model AuditLog {
-  id       String  @id @default(cuid())
-  actorId  String?
-  actor    User?   @relation(fields: [actorId], references: [id], onDelete: SetNull)
-  action   String // call.publish, withdrawal.approve, user.freeze, fee.waive
-  entity   String
-  entityId String?
-  before   Json?
-  after    Json?
-  ip       String?
+  id        String   @id @default(cuid())
+  actorId   String?
+  actor     User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  action    String // call.publish, withdrawal.approve, user.freeze, fee.waive
+  entity    String
+  entityId  String?
+  before    Json?
+  after     Json?
+  ip        String?
   createdAt DateTime @default(now())
 
   @@index([entity, entityId])
@@ -1409,17 +1884,17 @@ model IdempotencyKey {
   @@index([createdAt])
 }
 
-
 /**
  * Живая сделка отслеживаемого кошелька.
- *
  * Отдельно от WalletTrade намеренно. Там — разобранные экономические
  * операции, участвующие в расчёте; здесь сырой поток от провайдера,
  * который ещё предстоит разобрать. Смешивать их значило бы пускать
  * непроверенное в статистику.
  */
 model WalletActivity {
-  /** Устойчивый ключ события. Он же защита от повторной записи. */
+  /**
+   * Устойчивый ключ события. Он же защита от повторной записи.
+   */
   id String @id
 
   chain         Chain
@@ -1427,37 +1902,46 @@ model WalletActivity {
   tokenAddress  String
   tokenSymbol   String?
 
-  /** BUY | SELL */
-  side          String
-  quoteSymbol   String?
-  quoteAmount   Decimal? @db.Decimal(38, 18)
-  priceUsd      Decimal? @db.Decimal(38, 18)
-  marketCapUsd  Decimal? @db.Decimal(24, 8)
-  /** Только для продаж: у покупки результата ещё нет. */
+  /**
+   * BUY | SELL
+   */
+  side           String
+  quoteSymbol    String?
+  quoteAmount    Decimal? @db.Decimal(38, 18)
+  priceUsd       Decimal? @db.Decimal(38, 18)
+  marketCapUsd   Decimal? @db.Decimal(24, 8)
+  /**
+   * Только для продаж: у покупки результата ещё нет.
+   */
   realizedPnlUsd Decimal? @db.Decimal(24, 8)
 
-  txHash      String?
-  trackerType Int?
-  /** okx_websocket | okx_rest */
-  source      String
-  /** Насколько полон разбор события, 0-1. */
+  txHash            String?
+  trackerType       Int?
+  /**
+   * okx_websocket | okx_rest
+   */
+  source            String
+  /**
+   * Насколько полон разбор события, 0-1.
+   */
   parsingConfidence Decimal @default(1) @db.Decimal(4, 3)
 
   /**
    * Событие учтено в позициях кошелька.
-   *
    * Ставится true только тогда, когда для него нашлась
    * каноническая сделка из истории DEX с точным количеством
    * и пересчёт позиции прошёл успешно. Сам факт сохранения
    * события основанием не является: лента отслеживания не даёт
    * количества купленного токена, и учесть её напрямую нельзя.
    */
-  appliedToLedger Boolean @default(false)
-  /** pending | matched | applied | ignored | deferred | failed */
-  ledgerState     String  @default("pending")
+  appliedToLedger Boolean   @default(false)
+  /**
+   * pending | matched | applied | ignored | deferred | failed
+   */
+  ledgerState     String    @default("pending")
   ledgerAppliedAt DateTime?
   ledgerErrorCode String?
-  ledgerAttempts  Int     @default(0)
+  ledgerAttempts  Int       @default(0)
 
   // ─── Локальный результат ─────────────────────────────────────────
   //
@@ -1466,15 +1950,25 @@ model WalletActivity {
   // считается по канонической сделке и нашей средневзвешенной
   // себестоимости.
 
-  /** Ключ точной сделки, с которой сопоставлено событие ленты. */
-  canonicalTradeKey   String? @unique
-  /** Локальный реализованный PnL этой SELL. У BUY всегда NULL. */
-  localRealizedPnlUsd Decimal? @db.Decimal(30, 10)
-  /** Локальная себестоимость проданного количества. */
-  localCostBasisUsd   Decimal? @db.Decimal(30, 10)
-  /** available | open_position | pending | incomplete_history | ambiguous */
+  /**
+   * Ключ точной сделки, с которой сопоставлено событие ленты.
+   */
+  canonicalTradeKey   String?   @unique
+  /**
+   * Локальный реализованный PnL этой SELL. У BUY всегда NULL.
+   */
+  localRealizedPnlUsd Decimal?  @db.Decimal(30, 10)
+  /**
+   * Локальная себестоимость проданного количества.
+   */
+  localCostBasisUsd   Decimal?  @db.Decimal(30, 10)
+  /**
+   * available | open_position | pending | incomplete_history | ambiguous
+   */
   localPnlState       String?
-  /** Версия правил расчёта. NULL означает «ещё не пересчитано». */
+  /**
+   * Версия правил расчёта. NULL означает «ещё не пересчитано».
+   */
   pnlVersion          Int?
   pnlComputedAt       DateTime?
 
@@ -1494,11 +1988,9 @@ model WalletActivity {
 
 /**
  * Состояние фоновых поисков.
- *
  * Одна строка на задачу. Нужна для двух вещей сразу: не дать двум
  * экземплярам API запустить один поиск одновременно и показать
  * администратору, когда поиск последний раз удавался.
- *
  * Второе важнее, чем кажется: замерший поиск и спокойный рынок
  * выглядят одинаково — пустым списком.
  */
@@ -1508,7 +2000,9 @@ model JobState {
   isRunning       Boolean   @default(false)
   lastStartedAt   DateTime?
   lastCompletedAt DateTime?
-  /** Последний проход, завершившийся без ошибки. */
+  /**
+   * Последний проход, завершившийся без ошибки.
+   */
   lastSuccessAt   DateTime?
   durationMs      Int?
   itemCount       Int?
@@ -1517,20 +2011,19 @@ model JobState {
   updatedAt DateTime @updatedAt
 }
 
-
 /**
  * Каноническая сделка из истории DEX.
- *
  * Единственный источник точных количеств. Лента отслеживания
  * и WebSocket дают направление, цену и количество котировочного
  * токена, но не количество купленного — вычислять его делением
  * нельзя, это разные валюты.
- *
  * Числа хранятся строками: количество с восемнадцатью знаками
  * после запятой в double теряет точность молча.
  */
 model WalletEconomicTrade {
-  /** Ключ из кошелька, токена, направления, времени и сумм. */
+  /**
+   * Ключ из кошелька, токена, направления, времени и сумм.
+   */
   key String @id
 
   chain         Chain
@@ -1538,16 +2031,20 @@ model WalletEconomicTrade {
   tokenAddress  String
   tokenSymbol   String?
 
-  /** BUY | SELL */
-  side       String
-  amount     Decimal  @db.Decimal(40, 18)
-  valueUsd   Decimal  @db.Decimal(30, 10)
-  price      Decimal  @db.Decimal(40, 20)
-  marketCapUsd Decimal? @db.Decimal(30, 10)
-  /** Результат по версии OKX. Для сверки, в расчёт не идёт. */
+  /**
+   * BUY | SELL
+   */
+  side           String
+  amount         Decimal  @db.Decimal(40, 18)
+  valueUsd       Decimal  @db.Decimal(30, 10)
+  price          Decimal  @db.Decimal(40, 20)
+  marketCapUsd   Decimal? @db.Decimal(30, 10)
+  /**
+   * Результат по версии OKX. Для сверки, в расчёт не идёт.
+   */
   providerPnlUsd Decimal? @db.Decimal(30, 10)
 
-  provider  String   @default("okx_dex_history")
+  provider String @default("okx_dex_history")
 
   // ─── Происхождение и идентичность ───────────────────────────────────
   //
@@ -1556,12 +2053,13 @@ model WalletEconomicTrade {
   // Теперь ключ их не содержит, а происхождение хранится явно —
   // иначе по строке нельзя сказать, откуда она и можно ли ей верить.
 
-  /** `okx_live` или `okx_dex_history`. У источников разная идентичность. */
+  /**
+   * `okx_live` или `okx_dex_history`. У источников разная идентичность.
+   */
   source String @default("okx_dex_history")
 
   /**
    * Идентификатор события у провайдера, если он его отдаёт.
-   *
    * История DEX не отдаёт ни его, ни хеша транзакции — сверено
    * по документации. Поле оставлено под живую ленту и под будущее.
    */
@@ -1569,7 +2067,6 @@ model WalletEconomicTrade {
 
   /**
    * Хеш транзакции. Есть только у живой ленты.
-   *
    * Именно он даёт сильную идентичность, поэтому по нему стоит
    * частичный уникальный индекс. Обычный unique здесь не защитил бы:
    * NULL не конфликтует с NULL, и строки истории дублировались бы
@@ -1577,23 +2074,28 @@ model WalletEconomicTrade {
    */
   txHash String?
 
-  /** Сколько переводов провайдера сложено в эту сделку. */
+  /**
+   * Сколько переводов провайдера сложено в эту сделку.
+   */
   fillCount Int @default(1)
 
-  /** Время первого и последнего перевода группы. */
+  /**
+   * Время первого и последнего перевода группы.
+   */
   firstFillAt DateTime?
   lastFillAt  DateTime?
 
   /**
    * Состояние сверки: canonical | confirmed | ambiguous | superseded.
-   *
    * В статистику идут только первые два. `superseded` — старая
    * запись, свёрнутая в каноническую: история не удаляется, но
    * и вторым разом не считается.
    */
   reconciliation String @default("canonical")
 
-  /** Ключ канонической сделки, в которую свёрнута эта запись. */
+  /**
+   * Ключ канонической сделки, в которую свёрнута эта запись.
+   */
   supersededBy String?
 
   tradedAt  DateTime
@@ -1609,27 +2111,29 @@ model WalletEconomicTrade {
 
 /**
  * Кошельки, которым нужен пересчёт позиций.
- *
  * Очередь с объединением: десять событий одного кошелька за двадцать
  * секунд должны дать один запрос к истории, а не десять.
  */
 model WalletSyncQueue {
-  /** chain:wallet */
+  /**
+   * chain:wallet
+   */
   id String @id
 
   chain         Chain
   walletAddress String
 
-  /** Когда пересчитывать: обновляется при каждом новом событии. */
-  dueAt      DateTime
-  attempts   Int      @default(0)
+  /**
+   * Когда пересчитывать: обновляется при каждом новом событии.
+   */
+  dueAt         DateTime
+  attempts      Int       @default(0)
   lastErrorCode String?
-  lastSyncAt DateTime?
+  lastSyncAt    DateTime?
   lastSuccessAt DateTime?
 
   /**
    * Поколение задачи.
-   *
    * Растёт с каждым новым событием. Воркер запоминает его при
    * захвате и снимает задачу только при совпадении: иначе за время
    * выгрузки истории пришло новое событие, и снятие стёрло бы
@@ -1640,7 +2144,6 @@ model WalletSyncQueue {
 
   /**
    * Аренда задачи.
-   *
    * Захват делается условным обновлением, а не парой «найти
    * и обновить»: два экземпляра API увидели бы одну строку и оба
    * сочли бы, что забрали её. Просроченная аренда перехватывается —
@@ -1661,7 +2164,6 @@ model WalletSyncQueue {
 
 /**
  * Коды планов.
- *
  * Технические, не публичные. Названия и цены живут там, где их может
  * менять маркетинг; здесь только то, от чего зависит доступ. Те же
  * строки в packages/core/src/entitlements.ts — расхождение между
@@ -1671,12 +2173,13 @@ model WalletSyncQueue {
 enum PlanCode {
   /**
    * Ни оплаты, ни действующего пробного периода.
-   *
    * Не «ничего нельзя»: продать своё, вывести своё и посмотреть свой
    * баланс можно всегда. Закрыты поиск, новые покупки и автоматика.
    */
   EXPIRED
-  /** Пробный период. Пять суток, один раз за всё время. */
+  /**
+   * Пробный период. Пять суток, один раз за всё время.
+   */
   TRIAL
   PRO
   SEMI_AUTO
@@ -1685,7 +2188,6 @@ enum PlanCode {
 
 /**
  * Состояние договора.
- *
  * Истёкшее и отменённое различаются намеренно. К ограничению прав
  * ведут оба, но разговор с человеком и решение по возврату —
  * разные, и восстановить причину задним числом из одного лишь
@@ -1699,14 +2201,15 @@ enum SubscriptionStatus {
 
 /**
  * Откуда взялся план.
- *
  * PROMO и ADMIN_GRANT отделены от оплаты не ради статистики.
  * Выданный вручную доступ рано или поздно приходится объяснять,
  * и «кто-то поставил FULL_AUTO» — не объяснение.
  */
 enum SubscriptionSource {
   PAYMENT
-  /** Пробный период. Отдельно от промо: он не акция, а часть продукта. */
+  /**
+   * Пробный период. Отдельно от промо: он не акция, а часть продукта.
+   */
   TRIAL
   ADMIN_GRANT
   PROMO
@@ -1715,12 +2218,10 @@ enum SubscriptionSource {
 
 /**
  * Оплаченный план на срок.
- *
  * О платёжном провайдере таблица знает ровно две строки: как его
  * зовут и под каким номером у него лежит эта подписка. Провайдера
  * однажды поменяют, и переписывать из-за этого правила доступа
  * не придётся.
- *
  * Записи не удаляются и не переписываются задним числом: история
  * планов — это то, чем отвечают на претензию по списанию.
  */
@@ -1733,7 +2234,9 @@ model Subscription {
   status SubscriptionStatus @default(ACTIVE)
 
   startsAt    DateTime  @default(now())
-  /** Когда права заканчиваются. null — бессрочно. */
+  /**
+   * Когда права заканчиваются. null — бессрочно.
+   */
   expiresAt   DateTime?
   cancelledAt DateTime?
 
@@ -1741,36 +2244,35 @@ model Subscription {
 
   /**
    * Номер у провайдера.
-   *
    * Нужен для сверки и для защиты от двойного начисления по одному
    * событию: повторный webhook — норма, а не сбой, и рассчитывать
    * на то, что он придёт однажды, нельзя.
    */
   externalReference String?
 
-  /** Кто выдал, если выдали вручную. Для PAYMENT остаётся пустым. */
+  /**
+   * Кто выдал, если выдали вручную. Для PAYMENT остаётся пустым.
+   */
   createdByUserId String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  audits EntitlementAudit[]
-  /** Платёж, которым выдана эта подписка. */
+  audits  EntitlementAudit[]
+  /**
+   * Платёж, которым выдана эта подписка.
+   */
   payment SubscriptionPayment?
 
-  /*
+  /**
    * Об ограничении «один активный план на пользователя».
-   *
    * Оно есть, но описано не здесь: Prisma не умеет частичные
    * индексы, поэтому строка
-   *
-   *   CREATE UNIQUE INDEX "Subscription_one_active_per_user"
-   *     ON "Subscription" ("userId") WHERE "status" = 'ACTIVE';
-   *
+   * CREATE UNIQUE INDEX "Subscription_one_active_per_user"
+   * ON "Subscription" ("userId") WHERE "status" = 'ACTIVE';
    * добавлена в миграцию add_subscriptions_and_delayed_snapshots
    * вручную. Postgres проверяет её на каждой вставке, поэтому два
    * одновременных платежа не могут создать две активные подписки.
-   *
    * Первый вариант этой схемы обходился без частичного индекса:
    * была колонка activeUserId, равная userId у действующего договора
    * и пустая у прочих, под обычным @unique. Работало бы то же самое,
@@ -1779,7 +2281,6 @@ model Subscription {
    * однажды, оно перестало бы что-либо гарантировать, продолжая
    * выглядеть как гарантия. Частичный индекс выражает правило прямо
    * и синхронизировать не с чем.
-   *
    * Плата за это — объект, о котором Prisma не знает. Он живёт
    * в SQL миграции, воспроизводится в теневой базе вместе с ней
    * и потому не считается расхождением; но `migrate diff` от базы
@@ -1787,47 +2288,46 @@ model Subscription {
    * знает об этом исключении поимённо.
    */
 
-  /*
+  /**
    * О пробном периоде.
-   *
    * «Один пробный период на пользователя за всё время» тоже описано
    * не здесь, и по той же причине — Prisma не умеет частичные
    * индексы:
-   *
-   *   CREATE UNIQUE INDEX "Subscription_one_trial_per_user"
-   *     ON "Subscription" ("userId") WHERE "plan" = 'TRIAL';
-   *
+   * CREATE UNIQUE INDEX "Subscription_one_trial_per_user"
+   * ON "Subscription" ("userId") WHERE "plan" = 'TRIAL';
    * Именно «за всё время», а не «одновременно». Разница стоит денег:
    * ограничение на один *действующий* пробный период обходится
    * ожиданием пяти суток и повторной активацией, и обходится
    * бесконечно.
-   *
    * Обычное `@@unique([userId, plan])` тут не годится: оно заодно
    * запретило бы купить PRO во второй раз после отмены первого,
    * то есть сломало бы обычную покупку ради защиты от повторного
    * пробного периода.
-   *
    * Побочное следствие: строку пробного периода нельзя удалять.
    * Она и есть память о том, что период уже был.
    */
 
-  /** Действующий план пользователя и история его планов. */
-  @@index([userId, status, startsAt])
-  /** Кого пора перевести на бесплатный: срок вышел, статус ещё ACTIVE. */
-  @@index([status, expiresAt])
-  /** Что выдавали руками и кто это делал. */
-  @@index([source, createdByUserId])
   @@unique([source, externalReference])
+  /**
+   * Действующий план пользователя и история его планов.
+   */
+  @@index([userId, status, startsAt])
+  /**
+   * Кого пора перевести на бесплатный: срок вышел, статус ещё ACTIVE.
+   */
+  @@index([status, expiresAt])
+  /**
+   * Что выдавали руками и кто это делал.
+   */
+  @@index([source, createdByUserId])
 }
 
 /**
  * Журнал смены плана.
- *
  * Отвечает на вопросы, которые задают позже и по одному: почему
  * доступ пропал, кто выдал повышенный план, когда именно человек
  * перестал получать мгновенные данные. Ответ «наверное, истекла»
  * ни на один из них не годится.
- *
  * Связи с User намеренно нет, только идентификатор. Журнал должен
  * пережить удаление аккаунта: разбирательства начинаются как раз
  * после ухода человека, и каскад стёр бы единственное свидетельство.
@@ -1836,25 +2336,32 @@ model EntitlementAudit {
   id     String @id @default(cuid())
   userId String
 
-  /** Договор, которого касается запись. null для системных переходов. */
+  /**
+   * Договор, которого касается запись. null для системных переходов.
+   */
   subscriptionId String?
   subscription   Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
 
-  /** Что было и что стало. Оба поля обязательны: «стало FREE» без
-      «было FULL_AUTO» не отвечает ни на один вопрос. */
+  /**
+   * Что было и что стало. Оба поля обязательны: «стало FREE» без
+   * «было FULL_AUTO» не отвечает ни на один вопрос.
+   */
   previousPlan PlanCode
   nextPlan     PlanCode
 
-  /** Человекочитаемая причина: истечение, отмена, оплата, выдача. */
+  /**
+   * Человекочитаемая причина: истечение, отмена, оплата, выдача.
+   */
   reason String
   source SubscriptionSource
 
-  /** Кто выполнил действие. null означает, что его выполнило время. */
+  /**
+   * Кто выполнил действие. null означает, что его выполнило время.
+   */
   actorUserId String?
 
   /**
    * Подробности перехода.
-   *
    * Только то, что не является персональными данными и не является
    * секретом: идентификатор события провайдера, код причины, срок.
    * Ни платёжных реквизитов, ни заголовков запроса — журнал читают
@@ -1884,11 +2391,9 @@ enum PaymentProvider {
 
 /**
  * Состояние платежа.
- *
  * Собственное, а не провайдерское. Bridge однажды переименует статус
  * или добавит новый, и если в базе лежит его строка, менять придётся
  * схему, отчёты и правила выдачи доступа разом.
- *
  * Движение только вперёд — за этим следит packages/core/payment-state.
  */
 enum PaymentState {
@@ -1916,7 +2421,6 @@ enum KycState {
 
 /**
  * Связь пользователя с платёжным провайдером.
- *
  * Хранится минимум: идентификаторы и статусы. Ни документов,
  * ни налоговых номеров, ни адресов, ни ответов анкеты — всё это
  * остаётся у провайдера, для того размещённая проверка личности
@@ -1928,9 +2432,13 @@ model PaymentCustomer {
   user     User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   provider PaymentProvider @default(BRIDGE)
 
-  /** Идентификатор ссылки на проверку у провайдера. */
-  externalKycLinkId String?
-  /** Идентификатор клиента у провайдера. Появляется после проверки. */
+  /**
+   * Идентификатор ссылки на проверку у провайдера.
+   */
+  externalKycLinkId  String?
+  /**
+   * Идентификатор клиента у провайдера. Появляется после проверки.
+   */
   externalCustomerId String?
 
   kycState    KycState @default(NOT_STARTED)
@@ -1938,7 +2446,6 @@ model PaymentCustomer {
 
   /**
    * Ссылки на размещённые у провайдера страницы.
-   *
    * Не секреты, но и не вечные: провайдер меняет их при пересоздании
    * проверки. Хранятся, чтобы человек мог вернуться к незаконченной
    * проверке, не начиная заново.
@@ -1951,14 +2458,15 @@ model PaymentCustomer {
 
   payments SubscriptionPayment[]
 
-  /** Один клиент на пользователя у каждого провайдера. */
+  /**
+   * Один клиент на пользователя у каждого провайдера.
+   */
   @@unique([userId, provider])
   @@index([externalCustomerId])
 }
 
 /**
  * Оплата подписки.
- *
  * Цена, срок и сеть записываются в момент создания и больше
  * не меняются. Если завтра тариф подорожает, уже начатый платёж
  * обязан завершиться по старой цене: человек видел одну сумму,
@@ -1975,24 +2483,29 @@ model SubscriptionPayment {
   plan PlanCode
 
   // ─── Снимок каталога на момент покупки ──────────────────────────
-  /** Цена в валюте расчёта. Строка: деньги не считают через Float. */
+  /**
+   * /** Цена в валюте расчёта. Строка: деньги не считают через Float.
+   */
   priceAmount   Decimal @db.Decimal(24, 8)
   priceCurrency String
   termDays      Int
 
-  /** Чем платит человек и сколько. */
+  /**
+   * Чем платит человек и сколько.
+   */
   sourceCurrency String
   sourceAmount   Decimal @db.Decimal(24, 8)
 
-  /** Куда приходит результат конвертации. */
+  /**
+   * Куда приходит результат конвертации.
+   */
   destinationCurrency String
   destinationChain    String
   destinationAddress  String
 
-  provider PaymentProvider @default(BRIDGE)
+  provider           PaymentProvider @default(BRIDGE)
   /**
    * Идентификатор операции у провайдера.
-   *
    * У Bridge это перевод, у Coinbase — транзакция Onramp. Поле одно
    * намеренно: смысл у них общий — «то, что провайдер считает нашей
    * операцией», — и уникальное ограничение ниже одинаково защищает
@@ -2002,47 +2515,48 @@ model SubscriptionPayment {
 
   /**
    * Ссылка на платёж для размещённой страницы оплаты.
-   *
    * Уникальна на каждую покупку, а не на пользователя: по ней
    * запрашивается состояние транзакции, и постоянный идентификатор
    * человека вернул бы все его покупки разом. Вторая покупка того же
    * плана слилась бы с первой.
-   *
    * Персональных данных не содержит: строка уходит в адресную строку
    * браузера и оседает в истории и журналах прокси.
    */
   partnerUserRef String? @unique
 
-  /** До какого момента годна ссылка на оплату. Токен не хранится. */
+  /**
+   * До какого момента годна ссылка на оплату. Токен не хранится.
+   */
   checkoutExpiresAt DateTime?
   /**
    * Наш ключ идемпотентности.
-   *
    * Уходит провайдеру заголовком и хранится здесь. Повтор запроса
    * с тем же ключом не создаёт второй перевод — ни у нас, ни у него.
    */
-  clientReference String @unique
+  clientReference   String    @unique
 
   state PaymentState @default(CREATED)
 
-  /** Инструкции для перевода. Показываются только владельцу платежа. */
+  /**
+   * Инструкции для перевода. Показываются только владельцу платежа.
+   */
   depositMessage       String?
   depositBankName      String?
   depositAccountNumber String?
   depositRoutingNumber String?
 
-  /** Что получилось на самом деле. Заполняется по завершении. */
+  /**
+   * Что получилось на самом деле. Заполняется по завершении.
+   */
   deliveredAmount Decimal? @db.Decimal(24, 8)
   providerFee     Decimal? @db.Decimal(24, 8)
   exchangeFee     Decimal? @db.Decimal(24, 8)
 
   /**
    * Фактическая покупка со стороны провайдера.
-   *
    * Отдельно от снимка каталога: там записано, что человек заказывал,
    * здесь — что он купил. Расхождение между ними и есть повод
    * для ручного разбора, и увидеть его можно, только храня оба.
-   *
    * Явные колонки, а не JSON: по этим значениям принимается решение
    * о выдаче подписки, и прятать их в бесструктурное поле значит
    * лишиться и проверок типов, и возможности что-либо посчитать.
@@ -2051,24 +2565,36 @@ model SubscriptionPayment {
   purchaseCurrency String?
   purchaseNetwork  String?
 
-  /** Сколько человек заплатил деньгами и в какой валюте. */
+  /**
+   * Сколько человек заплатил деньгами и в какой валюте.
+   */
   paymentSubtotal Decimal? @db.Decimal(24, 8)
   paymentTotal    Decimal? @db.Decimal(24, 8)
   paymentCurrency String?
-  /** Комиссия сети, которую провайдер удержал деньгами. */
-  networkFee Decimal? @db.Decimal(24, 8)
+  /**
+   * Комиссия сети, которую провайдер удержал деньгами.
+   */
+  networkFee      Decimal? @db.Decimal(24, 8)
 
-  /** Адрес, на который провайдер отправил покупку. */
+  /**
+   * Адрес, на который провайдер отправил покупку.
+   */
   deliveredToAddress String?
-  /** Вид транзакции у провайдера. Нужен для проверки допустимости. */
-  providerTxType String?
-  destinationTxHash String?
-  receiptUrl        String?
+  /**
+   * Вид транзакции у провайдера. Нужен для проверки допустимости.
+   */
+  providerTxType     String?
+  destinationTxHash  String?
+  receiptUrl         String?
 
-  /** Почему платёж отправлен на разбор. Для поддержки, не для клиента. */
+  /**
+   * Почему платёж отправлен на разбор. Для поддержки, не для клиента.
+   */
   reviewReason String?
 
-  /** Подписка, выданная этим платежом. Ровно одна. */
+  /**
+   * Подписка, выданная этим платежом. Ровно одна.
+   */
   grantedSubscriptionId String?       @unique
   grantedSubscription   Subscription? @relation(fields: [grantedSubscriptionId], references: [id], onDelete: SetNull)
 
@@ -2078,7 +2604,6 @@ model SubscriptionPayment {
 
   /**
    * Один перевод у провайдера — один наш платёж.
-   *
    * Защита от того, что два наших платежа окажутся привязаны
    * к одному переводу и один перевод выдаст доступ дважды.
    */
@@ -2089,11 +2614,9 @@ model SubscriptionPayment {
 
 /**
  * Полученное событие провайдера.
- *
  * Существует ради одного: повторная доставка не должна выдавать
  * подписку второй раз. Провайдер повторяет вебхуки при любой
  * неуверенности в доставке — это норма, а не сбой.
- *
  * Тело события не хранится. В нём персональные данные и подробности
  * платежа, а для идемпотентности хватает идентификатора.
  */
@@ -2101,16 +2624,26 @@ model WebhookReceipt {
   id       String          @id @default(cuid())
   provider PaymentProvider @default(BRIDGE)
 
-  /** Идентификатор события у провайдера. Ключ идемпотентности. */
-  eventId String
-  /** Тип события: transfer.updated и подобные. */
-  eventType String
-  /** Когда событие создано у провайдера. */
+  /**
+   * Идентификатор события у провайдера. Ключ идемпотентности.
+   */
+  eventId        String
+  /**
+   * Тип события: transfer.updated и подобные.
+   */
+  eventType      String
+  /**
+   * Когда событие создано у провайдера.
+   */
   eventCreatedAt DateTime
 
-  /** Что мы с ним сделали. */
-  outcome String
-  /** Наш платёж, если событие удалось сопоставить. */
+  /**
+   * Что мы с ним сделали.
+   */
+  outcome   String
+  /**
+   * Наш платёж, если событие удалось сопоставить.
+   */
   paymentId String?
 
   receivedAt DateTime @default(now())

@@ -28,6 +28,8 @@ export interface OkxSignal {
   holders: number | null;
   top10HolderPct: number | null;
   walletTypes: OkxWalletCategory[];
+  /** Кошельки, чья покупка создала сигнал, если провайдер их раскрыл. */
+  triggerWalletAddresses: string[];
   triggerWalletCount: number | null;
   amountUsd: number | null;
   soldRatioPct: number | null;
@@ -158,16 +160,17 @@ export function parseOkxSignal(raw: unknown): OkxSignal | null {
   const walletTypes = parseSignalWalletTypes(r.walletType);
   const triggerWalletCount = okxInt(r.triggerWalletCount);
   const amountUsd = okxNum(r.amountUsd);
-  // Адреса не сохраняются, но входят в ключ события. Без них две
+  // Адреса сохраняются для аудита решения и входят в ключ события. Без них две
   // независимые покупки одного токена в одну миллисекунду с одинаковой
   // суммой могли бы ошибочно схлопнуться. Сортировка делает REST и WS
   // одинаковыми, даже если провайдер переставил адреса местами.
-  const triggerAddressesKey = String(r.triggerWalletAddress ?? '')
+  const triggerWalletAddresses = String(r.triggerWalletAddress ?? '')
     .split(',')
     .map((value) => value.trim())
     .filter(Boolean)
-    .sort()
-    .join(',');
+    .filter((value, index, values) => values.indexOf(value) === index)
+    .sort();
+  const triggerAddressesKey = triggerWalletAddresses.join(',');
 
   const providerKey = `okx-signal:${stableHash([
     chain,
@@ -194,6 +197,7 @@ export function parseOkxSignal(raw: unknown): OkxSignal | null {
       okxNum(token.top10HolderPercent ?? token.top10HolderPercentage),
     ),
     walletTypes,
+    triggerWalletAddresses,
     triggerWalletCount,
     amountUsd,
     soldRatioPct: normalizePct(okxNum(r.soldRatioPercent ?? r.soldRatioPercentage)),

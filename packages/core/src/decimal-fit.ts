@@ -86,3 +86,141 @@ export function sharePctOrNull(value: number | null | undefined): number | null 
   if (value < 0 || value > 100) return null;
   return decimalOrNull(value, DECIMAL_COLUMN.share);
 }
+
+// ───────────────────── Экономическая сделка кошелька ────────────────────────
+
+/**
+ * Колонки `WalletEconomicTrade`.
+ *
+ * Значения приходят от провайдера строками и раньше оборачивались
+ * в `Decimal` напрямую. `Decimal` границ колонки не знает — их знает
+ * только Postgres, и узнаёт о нарушении он в момент записи:
+ *
+ *     22003: numeric field overflow
+ *     A field with precision 40, scale 18 must round to an absolute
+ *     value less than 10^22
+ *
+ * Падала при этом вся вставка, а вместе с ней прерывался обход
+ * кошелька: одна битая строка провайдера стоила всех остальных.
+ */
+export const TRADE_COLUMN = {
+  /** `amount` — количество токена. */
+  amount: { precision: 40, scale: 18 },
+  /** `valueUsd`, `marketCapUsd`, `providerPnlUsd`. */
+  money: { precision: 30, scale: 10 },
+  /** `price` — цена за единицу. */
+  price: { precision: 40, scale: 20 },
+} as const;
+
+/** Почему сделка отклонена. Код, а не текст: он уходит в счётчик. */
+export type TradeFitReason =
+  | 'AMOUNT_OUT_OF_RANGE'
+  | 'VALUE_OUT_OF_RANGE'
+  | 'PRICE_OUT_OF_RANGE'
+  | 'AMOUNT_NOT_A_NUMBER'
+  | 'VALUE_NOT_A_NUMBER'
+  | 'PRICE_NOT_A_NUMBER';
+
+export interface TradeFitResult {
+  /** Сделку можно записывать. */
+  ok: boolean;
+  /** Код причины отказа. Заполнен только при `ok === false`. */
+  reason: TradeFitReason | null;
+  /**
+   * Необязательные поля, которые не поместились и станут `null`.
+   *
+   * Политика здесь другая, чем у обязательных, и это осознанно.
+   * Капитализация и PnL провайдера — сведения о сделке, а не сама
+   * сделка: без них строка остаётся верной, а `null` дальше по цепочке
+   * честно читается как «база неизвестна» и выводит исход из оценки.
+   * Отбрасывать из-за них всю сделку значило бы терять факт покупки
+   * ради необязательной подробности.
+   */
+  droppedOptional: string[];
+}
+
+/**
+ * Число из строки провайдера.
+ *
+ * Пустое и нечисловое — не ноль, а `null`.
+ *
+ * Ограничение, о котором надо знать: `Number` хранит около семнадцати
+ * значащих цифр, а колонка `numeric(40, 18)` допускает двадцать две
+ * до запятой. У самой границы проверка поэтому неточна и ошибается
+ * в сторону отказа. Это безопасная сторона: Postgres на пределе тоже
+ * откажет, а разница в одну единицу последнего разряда у величины
+ * порядка 10^22 на решение о сделке не влияет.
+ */
+function numeric(value: string | number | null | undefined): number | null {
+  if (value == null || value === '') return null;
+
+  const n = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Помещается ли сделка в колонки таблицы.
+ *
+ * ─── Чего здесь нет ─────────────────────────────────────────────────
+ *
+ * Обрезания до максимума. Записать вместо непомещающегося количества
+ * `10^22 - 1` значит придумать финансовую величину, которой не было,
+ * и отличить её потом от настоящей будет нечем. Отказ честнее.
+ *
+ * Экспоненциальная запись, `NaN` и `Infinity` тоже сюда попадают:
+ * провайдер присылает строки, и `"1e300"` внешне ничем не отличается
+ * от нормального числа.
+ */
+export function fitEconomicTrade(trade: {
+  amount: string | number | null | undefined;
+  valueUsd: string | number | null | undefined;
+  price: string | number | null | undefined;
+  marketCapUsd?: string | number | null;
+  providerPnlUsd?: string | number | null;
+}): TradeFitResult {
+  const droppedOptional: string[] = [];
+
+  const required = [
+    ['amount', trade.amount, TRADE_COLUMN.amount, 'AMOUNT'],
+    ['valueUsd', trade.valueUsd, TRADE_COLUMN.money, 'VALUE'],
+    ['price', trade.price, TRADE_COLUMN.price, 'PRICE'],
+  ] as const;
+
+  for (const [, raw, column, prefix] of required) {
+    const value = numeric(raw);
+
+    // Отсутствующее обязательное поле — это не переполнение,
+    // и различать их в счётчике полезно: первое означает пробел
+    // у провайдера, второе — величину вне нашей схемы.
+    if (value == null) {
+      return {
+        ok: false,
+        reason: `${prefix}_NOT_A_NUMBER` as TradeFitReason,
+        droppedOptional,
+      };
+    }
+
+    if (!fitsDecimal(value, column.precision, column.scale)) {
+      return {
+        ok: false,
+        reason: `${prefix}_OUT_OF_RANGE` as TradeFitReason,
+        droppedOptional,
+      };
+    }
+  }
+
+  for (const [name, raw] of [
+    ['marketCapUsd', trade.marketCapUsd],
+    ['providerPnlUsd', trade.providerPnlUsd],
+  ] as const) {
+    if (raw == null || raw === '') continue;
+
+    const value = numeric(raw);
+
+    if (value == null || !fitsDecimal(value, TRADE_COLUMN.money.precision, TRADE_COLUMN.money.scale)) {
+      droppedOptional.push(name);
+    }
+  }
+
+  return { ok: true, reason: null, droppedOptional };
+}

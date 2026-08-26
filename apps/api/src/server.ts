@@ -4,7 +4,7 @@ import helmet from '@fastify/helmet';
 import jwt from '@fastify/jwt';
 import rateLimit from '@fastify/rate-limit';
 import websocket from '@fastify/websocket';
-import { ZodError } from 'zod';
+import { sendError } from './lib/error-handler.js';
 
 import { env } from './lib/env.js';
 import { logger } from './lib/logger.js';
@@ -28,6 +28,7 @@ import { walletIntelRoutes } from './modules/wallets-intel.js';
 import { walletFavoriteRoutes } from './modules/wallet-favorites.js';
 import { autoRuleRoutes } from './modules/auto-rule.js';
 import { ingestRoutes } from './modules/ingest.js';
+import { paperAgentRoutes } from './modules/paper-agent.js';
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -95,25 +96,9 @@ export async function buildServer() {
   );
 
   // Единый формат ошибок: клиент не должен парсить пять разных структур.
-  app.setErrorHandler((error: unknown, req, reply) => {
-    if (error instanceof ZodError) {
-      return reply.code(400).send({
-        error: 'Некорректные данные запроса',
-        details: error.flatten().fieldErrors,
-      });
-    }
-
-    const err = error as { statusCode?: number; message?: string };
-    const status = err.statusCode ?? 500;
-
-    if (status >= 500) {
-      req.log.error({ err: error }, 'внутренняя ошибка');
-      // Наружу не отдаём стек и внутренние сообщения: текст исключения
-      // может содержать строку подключения или фрагмент запроса.
-      return reply.code(500).send({ error: 'Внутренняя ошибка сервера' });
-    }
-    return reply.code(status).send({ error: err.message ?? 'Ошибка запроса' });
-  });
+  // Разбор ошибок вынесен отдельно: тест, поднимающий один модуль
+  // маршрутов, обязан получать те же коды, что и боевой сервер.
+  app.setErrorHandler(sendError);
 
   // ─── WebSocket: цены, статусы ордеров, новые коллы ───────────────────────
   // Структурный тип вместо импорта из 'ws': пакета @types/ws в зависимостях
@@ -160,6 +145,7 @@ export async function buildServer() {
   await app.register(walletFavoriteRoutes, { prefix: '/api/v1' });
   await app.register(autoRuleRoutes, { prefix: '/api/v1' });
   await app.register(ingestRoutes, { prefix: '/api/v1' });
+  await app.register(paperAgentRoutes, { prefix: '/api/v1' });
   await app.register(adminRoutes, { prefix: '/api/v1' });
 
   return app;
@@ -217,18 +203,24 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     let stopSchemaWorkers: (() => void) | null = null;
 
     if (schemaReady) {
-      const [pool, ledger, discovery, walletRisk, okxSignal] = await Promise.all([
+      const [pool, ledger, discovery, walletRisk, okxSignal, paperAgent, paperNotifications] = await Promise.all([
         import('./services/okx-ws-pool.js'),
         import('./workers/wallet-ledger-sync.js'),
         import('./workers/wallet-discovery.js'),
         import('./workers/radar-risk.js'),
         import('./workers/okx-signal-ingest.js'),
+        import('./workers/paper-agent.js'),
+        import('./workers/paper-agent-notifications.js'),
       ]);
 
       pool.startActivityIngest();
       ledger.startLedgerSync();
       discovery.startWalletDiscovery();
       walletRisk.startRadarRisk();
+      // Сначала готовим потребителя, затем открываем Signal WebSocket:
+      // первое событие не должно попасть в зазор между двумя стартами.
+      await paperAgent.startPaperAgent();
+      paperNotifications.startPaperAgentNotifications();
       okxSignal.startOkxSignalIngest();
 
       stopSchemaWorkers = () => {
@@ -237,6 +229,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         discovery.stopWalletDiscovery();
         walletRisk.stopRadarRisk();
         okxSignal.stopOkxSignalIngest();
+        paperAgent.stopPaperAgent();
+        paperNotifications.stopPaperAgentNotifications();
       };
     } else {
       // Остальное API продолжает работать: недоступность одной

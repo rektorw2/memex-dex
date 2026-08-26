@@ -102,6 +102,81 @@ export const REGISTRY: RegistryEntry[] = [
     symbol: 'USDT', name: 'Tether USD', tags: ['stablecoin'],
   },
 
+  /*
+   * ─── Стейблкоины, добавленные после разбора боевой витрины ──────
+   *
+   * Список из семи адресов покрывал только USDC и USDT на четырёх
+   * сетях, и всё остальное доходило до витрины: Tether на Base,
+   * DAI, USDe, USDS, BUSD, FDUSD, PYUSD, мостовой USDbC. Витрина
+   * «во что зайти» первыми строками показывала доллары — по объёму
+   * и ликвидности они обгоняют всё именно потому, что доллары.
+   *
+   * Каждый адрес ниже подтверждён ответом провайдера: имя и символ
+   * взяты из `baseToken`/`quoteToken` живых пар, а не из памяти
+   * и не переписаны из чужого списка.
+   */
+
+  // Ethereum
+  {
+    chain: 'ETHEREUM',
+    address: '0x6b175474e89094c44da98b954eedeac495271d0f',
+    symbol: 'DAI', name: 'Dai Stablecoin', tags: ['stablecoin'],
+  },
+  {
+    chain: 'ETHEREUM',
+    address: '0x4c9edd5852cd905f086c759e8383e09bff1e68b3',
+    symbol: 'USDe', name: 'USDe', tags: ['stablecoin'],
+  },
+  {
+    chain: 'ETHEREUM',
+    address: '0xdc035d45d973e3ec169d2276ddab16f1e407384f',
+    symbol: 'USDS', name: 'USDS Stablecoin', tags: ['stablecoin'],
+  },
+
+  // Base
+  {
+    chain: 'BASE',
+    address: '0xfde4c96c8593536e31f229ea8f37b2ada2699bb2',
+    symbol: 'USDT', name: 'Tether USD', tags: ['stablecoin'],
+  },
+  {
+    // Мостовой доллар Base. Отдельный контракт, отдельный адрес —
+    // и для витрины он такой же доллар, как и родной USDC.
+    chain: 'BASE',
+    address: '0xd9aaec86b65d86f6a7b5b1b0c42ffa531710b6ca',
+    symbol: 'USDbC', name: 'USD Base Coin', tags: ['stablecoin'],
+  },
+  {
+    // Евро, а не доллар, но природа та же: привязка к валюте.
+    chain: 'BASE',
+    address: '0x60a3e35cc302bfa44cb288bc5a4f316fdb1adb42',
+    symbol: 'EURC', name: 'EURC', tags: ['stablecoin'],
+  },
+
+  // BNB Chain
+  {
+    chain: 'BNB',
+    address: '0xe9e7cea3dedca5984780bafc599bd69add087d56',
+    symbol: 'BUSD', name: 'BUSD Token', tags: ['stablecoin'],
+  },
+  {
+    chain: 'BNB',
+    address: '0xc5f0f7b66764f6ec8c8dff7ba683102295e16409',
+    symbol: 'FDUSD', name: 'First Digital USD', tags: ['stablecoin'],
+  },
+
+  // Solana
+  {
+    chain: 'SOLANA',
+    address: '2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo',
+    symbol: 'PYUSD', name: 'PayPal USD', tags: ['stablecoin'],
+  },
+  {
+    chain: 'SOLANA',
+    address: 'USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA',
+    symbol: 'USDS', name: 'USDS', tags: ['stablecoin'],
+  },
+
   // ─── Обёрнутые нативные ─────────────────────────────────────────
   {
     chain: 'SOLANA',

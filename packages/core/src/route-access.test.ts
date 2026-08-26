@@ -92,6 +92,7 @@ describe('что открыто гостю', () => {
     '/access',
     '/admin',
     '/admin/auto',
+    '/admin/agent',
     '/onboarding',
   ])('%s гостю закрыт', (path) => {
     const v = guard(path, guest);
@@ -172,6 +173,7 @@ describe('администратор', () => {
   it('попадает с ролью', () => {
     expect(guard('/admin', admin)).toEqual({ kind: 'allow' });
     expect(guard('/admin/auto', admin)).toEqual({ kind: 'allow' });
+    expect(guard('/admin/agent', admin)).toEqual({ kind: 'allow' });
   });
 
   it('сторож не выводит возможности из роли', () => {

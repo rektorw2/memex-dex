@@ -2,7 +2,8 @@
 
 import Link from 'next/link';
 import { useEffect, useState, useRef } from 'react';
-import { useRouter, usePathname } from 'next/navigation';
+import { useRouter, usePathname, useSearchParams } from 'next/navigation';
+import { guestHeaderActions } from '@memex/core';
 import { api, clearToken } from '@/lib/api';
 import { clearStorage, removeStored } from '@/lib/storage';
 import { useRole } from '@/lib/role';
@@ -20,6 +21,7 @@ import { AccessStatusControl } from '@/components/AccessStatusControl';
 export function AuthNav() {
   const router = useRouter();
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const [open, setOpen] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);
 
@@ -74,19 +76,37 @@ export function AuthNav() {
   }
 
   if (!role) {
+    /*
+     * Кнопка, дублирующая уже открытую форму, — не подсказка, а шум.
+     *
+     * На `/login?mode=register` предлагать регистрацию бессмысленно:
+     * форма уже перед человеком, и нажатие ничего не меняет. Режим
+     * читается из параметра, а не из пути: вход и регистрация живут
+     * на одном маршруте и различаются только им.
+     */
+    const actions = guestHeaderActions({
+      pathname,
+      mode: searchParams?.get('mode') ?? null,
+      hasSession: false,
+    });
+
     return (
       <div className="flex items-center gap-2">
         {/* Обёртка отвечает за responsive-видимость. `btn-ghost`
             сам задаёт display и раньше перебивал `hidden`, из-за чего
             «Регистрация» наезжала на центрированный логотип телефона. */}
-        <span className="hidden sm:inline-flex">
-          <Link href="/login?mode=register" className="btn-ghost tap text-sm">
-            Регистрация
+        {actions.showRegister && (
+          <span className="hidden sm:inline-flex">
+            <Link href="/login?mode=register" className="btn-ghost tap text-sm">
+              Регистрация
+            </Link>
+          </span>
+        )}
+        {actions.showLogin && (
+          <Link href="/login" className="btn-primary tap text-sm">
+            Войти
           </Link>
-        </span>
-        <Link href="/login" className="btn-primary tap text-sm">
-          Войти
-        </Link>
+        )}
       </div>
     );
   }

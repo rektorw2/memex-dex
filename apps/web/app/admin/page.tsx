@@ -19,9 +19,14 @@ export default function AdminPage() {
         {/* Автопубликация вынесена отдельной страницей, а не вкладкой:
             это единственный раздел, где настройка начинает действовать
             без дальнейшего участия человека. */}
-        <Link href="/admin/auto" className="btn-ghost text-xs">
-          Автопубликация коллов
-        </Link>
+        <div className="flex flex-wrap gap-2">
+          <Link href="/admin/agent" className="btn-ghost text-xs">
+            Paper-агент
+          </Link>
+          <Link href="/admin/auto" className="btn-ghost text-xs">
+            Автопубликация коллов
+          </Link>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">

@@ -92,6 +92,24 @@ const okxSignalAth = fs.readFileSync(
   'utf8',
 );
 
+/** Автономный paper-агент: только новые таблицы и адреса Signal. */
+const paperAgent = fs.readFileSync(
+  `${R}/prisma/migrations/20260826100000_add_paper_agent/migration.sql`,
+  'utf8',
+);
+
+/** Phase 2: manual default, explicit costs and notification outbox. */
+const paperAgentPhase2 = fs.readFileSync(
+  `${R}/prisma/migrations/20260826110000_add_paper_agent_phase2/migration.sql`,
+  'utf8',
+);
+
+/** Phase 3: isolated Fixed/Autopilot capital accounts and immutable ledger. */
+const paperAgentPhase3 = fs.readFileSync(
+  `${R}/prisma/migrations/20260826120000_add_paper_agent_phase3/migration.sql`,
+  'utf8',
+);
+
 // ── Проверяется ли вообще то, что лежит в репозитории ──────────────
 /*
  * Файл называет миграции поимённо, и это его слабое место: миграция
@@ -113,6 +131,9 @@ const KNOWN = [
   '20260825090000_add_trade_provenance',
   '20260825120000_add_wallet_summary_contract',
   '20260825150000_add_wallet_activity_local_pnl',
+  '20260826100000_add_paper_agent',
+  '20260826110000_add_paper_agent_phase2',
+  '20260826120000_add_paper_agent_phase3',
 ];
 
 const onDisk = fs
@@ -1021,6 +1042,215 @@ check(
   duplicateCanonicalTrade != null,
   'ограничение сработало',
 );
+
+// ───────────────────── Автономный paper-агент ────────────────────────────
+
+console.log('\n=== Автономный paper-агент ===');
+await clean.exec(paperAgent);
+
+const agentTables = (await clean.query(`
+  SELECT tablename FROM pg_tables
+  WHERE schemaname='public'
+    AND tablename IN ('PaperAgentControl','PaperAgentStrategy','PaperAgentRun')
+  ORDER BY 1
+`)).rows.map((row) => row.tablename);
+check('все три таблицы paper-агента созданы', agentTables.length === 3, agentTables.join(', '));
+
+const signalAddresses = (await clean.query(`
+  SELECT "triggerWalletAddresses" FROM "OkxSignal" WHERE id='sig-1'
+`)).rows[0]?.triggerWalletAddresses;
+check('старые сигналы получают пустой список адресов, а не NULL',
+  Array.isArray(signalAddresses) && signalAddresses.length === 0);
+
+await clean.exec(`
+  INSERT INTO "PaperAgentStrategy"
+    ("id","key","version","label","kind","config","updatedAt")
+  VALUES ('strategy-1','baseline-v1',1,'Baseline','BASELINE','{}',NOW());
+  INSERT INTO "PaperAgentRun"
+    ("id","signalId","strategyId","providerKey","tokenId","chain","address","symbol",
+     "source","state","signaledAt","receivedAt","walletTypes","updatedAt")
+  VALUES ('run-1','sig-1','strategy-1','provider-1','t-queue','SOLANA',
+          'SignalAddress111111111111111111111111111','GEM','okx_websocket','RECEIVED',
+          NOW(),NOW(),ARRAY['smart_money'],NOW());
+`);
+
+let duplicateRun = null;
+try {
+  await clean.exec(`
+    INSERT INTO "PaperAgentRun"
+      ("id","signalId","strategyId","providerKey","chain","address","symbol",
+       "source","state","signaledAt","receivedAt","walletTypes","updatedAt")
+    VALUES ('run-2','sig-1','strategy-1','provider-1','SOLANA','A','GEM',
+            'okx_rest','RECEIVED',NOW(),NOW(),ARRAY[]::text[],NOW());
+  `);
+} catch (error) {
+  duplicateRun = error;
+}
+check('одно событие не создаёт две позиции одной стратегии', duplicateRun != null,
+  duplicateRun ? 'ограничение сработало' : 'дубликат записан');
+
+const agentIndexes = (await clean.query(`
+  SELECT indexname FROM pg_indexes
+  WHERE tablename='PaperAgentRun'
+    AND indexname IN ('PaperAgentRun_signalId_strategyId_key',
+                      'PaperAgentRun_state_updatedAt_idx',
+                      'PaperAgentRun_tokenId_state_idx')
+`)).rows;
+check('у paper-агента есть уникальность и индексы сопровождения', agentIndexes.length === 3,
+  String(agentIndexes.length));
+
+// ───────────────────── Paper-агент Phase 2 ───────────────────────────────
+
+console.log('\n=== Paper-агент Phase 2 ===');
+await clean.exec(paperAgentPhase2);
+
+const controlDefault = (await clean.query(`
+  SELECT column_default FROM information_schema.columns
+  WHERE table_name='PaperAgentControl' AND column_name='isEnabled'
+`)).rows[0]?.column_default;
+check('новая база начинает с выключенным агентом', /false/i.test(String(controlDefault)), String(controlDefault));
+
+const phase2Tables = (await clean.query(`
+  SELECT tablename FROM pg_tables
+  WHERE schemaname='public' AND tablename='PaperAgentNotification'
+`)).rows;
+check('transactional outbox создан', phase2Tables.length === 1);
+
+const phase2RunColumns = (await clean.query(`
+  SELECT column_name FROM information_schema.columns
+  WHERE table_name='PaperAgentRun'
+    AND column_name IN ('costModelKey','tradeFeeBps','entrySlippageBps','exitSlippageBps',
+                        'networkFeeUsdPerSide','entryTradingFeeUsd','entryNetworkFeeUsd',
+                        'entrySlippageUsd','exitTradingFeeUsd','exitNetworkFeeUsd',
+                        'exitSlippageUsd','totalCostsUsd')
+`)).rows;
+check('все поля снимка расходов добавлены', phase2RunColumns.length === 12, String(phase2RunColumns.length));
+
+await clean.exec(`
+  INSERT INTO "PaperAgentNotification"
+    ("id","eventKey","runId","eventType","payload","updatedAt")
+  VALUES ('notice-1','run-1:PAPER_BUY:v2','run-1','PAPER_BUY','{}',NOW());
+`);
+let duplicateNotice = null;
+try {
+  await clean.exec(`
+    INSERT INTO "PaperAgentNotification"
+      ("id","eventKey","runId","eventType","payload","updatedAt")
+    VALUES ('notice-2','run-1:PAPER_BUY:v2','run-1','PAPER_BUY','{}',NOW());
+  `);
+} catch (error) {
+  duplicateNotice = error;
+}
+check('одно событие уведомления не записывается дважды', duplicateNotice != null,
+  duplicateNotice ? 'ограничение сработало' : 'дубликат записан');
+
+// Имитируем существующую инсталляцию, где Phase 2 агент был включён.
+// Phase 3 обязана безопасно вернуть его в OFF до явной настройки капитала.
+await clean.exec(`
+  INSERT INTO "PaperAgentControl" ("id","isEnabled","updatedAt")
+  VALUES ('primary',true,NOW())
+  ON CONFLICT ("id") DO UPDATE SET "isEnabled"=true,"updatedAt"=NOW();
+`);
+
+// ───────────────────── Paper-агент Phase 3 ───────────────────────────────
+
+console.log('\n=== Paper-агент Phase 3 ===');
+await clean.exec(paperAgentPhase3);
+
+const phase3Tables = (await clean.query(`
+  SELECT tablename FROM pg_tables
+  WHERE schemaname='public'
+    AND tablename IN ('PaperAgentAllocationPolicy','PaperAgentAccountSession',
+                      'PaperAgentAllocation','PaperAgentCapitalLedger')
+  ORDER BY 1
+`)).rows.map((row) => row.tablename);
+check('все четыре таблицы распределения капитала созданы', phase3Tables.length === 4,
+  phase3Tables.join(', '));
+
+const phase3Control = (await clean.query(`
+  SELECT "isEnabled","activeAllocationMode","learningModeEnabled"
+  FROM "PaperAgentControl" WHERE id='primary'
+`)).rows[0];
+check('Phase 3 не включает агента и не выбирает режим сама',
+  phase3Control != null &&
+    phase3Control.isEnabled === false &&
+    phase3Control.activeAllocationMode === null &&
+    phase3Control.learningModeEnabled === false);
+
+const legacyPhase2Run = (await clean.query(`
+  SELECT "state","symbol","strategyId" FROM "PaperAgentRun" WHERE id='run-1'
+`)).rows[0];
+const legacyPhase2Allocations = (await clean.query(`
+  SELECT COUNT(*)::int AS count FROM "PaperAgentAllocation" WHERE "runId"='run-1'
+`)).rows[0]?.count;
+check('Phase 3 сохраняет legacy run без пересчёта и выдуманной аллокации',
+  legacyPhase2Run?.state === 'RECEIVED' &&
+    legacyPhase2Run?.symbol === 'GEM' &&
+    legacyPhase2Run?.strategyId === 'strategy-1' &&
+    legacyPhase2Allocations === 0,
+  `state=${legacyPhase2Run?.state}, allocations=${legacyPhase2Allocations}`);
+
+await clean.exec(`
+  INSERT INTO "PaperAgentAllocationPolicy"
+    ("id","policyKey","version","mode","label","limits","scorePolicyKey","scorePolicyVersion")
+  VALUES ('policy-1','fixed-test',1,'FIXED','Fixed','{}','score',1);
+  INSERT INTO "PaperAgentAccountSession"
+    ("id","kind","mode","policyKey","policyVersion","policySnapshot",
+     "scorePolicyKey","scorePolicyVersion","reservePct","maxExposurePct",
+     "maxPositionPct","maxOpenPositions","minimumPositionUsd","dailyEntryLimit",
+     "drawdownStopPct","allowPartialAllocation","initialCapitalUsd","freeBalanceUsd",
+     "reservedBalanceUsd","inPositionsUsd","realizedPnlUsd","unrealizedPnlUsd",
+     "tradingFeesUsd","slippageUsd","networkCostsUsd","equityUsd","peakEquityUsd",
+     "drawdownPct","dailyEntriesDate","updatedAt")
+  VALUES ('account-1','ACTIVE','FIXED','fixed-test',1,'{}','score',1,30,70,25,4,5,100,100,
+          false,100,70,30,0,0,0,0,0,0,100,100,0,NOW(),NOW());
+  INSERT INTO "PaperAgentAllocation"
+    ("id","sessionId","runId","isShadow","state","decisionCode","mode","policyKey",
+     "policyVersion","policySnapshot","inputFacts","signalScore","signalBand",
+     "allocationReason","allocatedUsd","capitalPct","freeAfterUsd","reserveAfterUsd",
+     "exposureAfterUsd","updatedAt")
+  VALUES ('allocation-1','account-1','run-1',false,'OPEN','ALLOCATED','FIXED','fixed-test',1,
+          '{}','{}',50,'MEDIUM','FIXED_MEDIUM_POSITION',25,25,45,30,25,NOW());
+  INSERT INTO "PaperAgentCapitalLedger"
+    ("id","eventKey","sessionId","allocationId","eventType","amountUsd",
+     "freeBeforeUsd","freeAfterUsd","reservedBeforeUsd","reservedAfterUsd",
+     "inPositionsBeforeUsd","inPositionsAfterUsd","realizedPnlAfterUsd","equityAfterUsd",
+     "tradingFeesAfterUsd","slippageAfterUsd","networkCostsAfterUsd")
+  VALUES ('ledger-1','allocation-1:OPEN','account-1','allocation-1','OPEN',25,
+          70,45,30,30,0,25,0,100,0,0,0);
+`);
+
+let duplicateAllocation = null;
+try {
+  await clean.exec(`
+    INSERT INTO "PaperAgentAllocation"
+      ("id","sessionId","runId","isShadow","state","decisionCode","mode","policyKey",
+       "policyVersion","policySnapshot","inputFacts","signalScore","signalBand",
+       "allocationReason","freeAfterUsd","reserveAfterUsd","exposureAfterUsd","updatedAt")
+    VALUES ('allocation-2','account-1','run-1',false,'SKIPPED','LIMIT','FIXED','fixed-test',1,
+            '{}','{}',0,'WEAK','duplicate',45,30,25,NOW());
+  `);
+} catch (error) {
+  duplicateAllocation = error;
+}
+check('один run получает не больше одного решения на капиталовый контур',
+  duplicateAllocation != null, duplicateAllocation ? 'ограничение сработало' : 'дубликат записан');
+
+let duplicateLedger = null;
+try {
+  await clean.exec(`
+    INSERT INTO "PaperAgentCapitalLedger"
+      ("id","eventKey","sessionId","eventType","amountUsd","freeBeforeUsd","freeAfterUsd",
+       "reservedBeforeUsd","reservedAfterUsd","inPositionsBeforeUsd","inPositionsAfterUsd",
+       "realizedPnlAfterUsd","equityAfterUsd","tradingFeesAfterUsd","slippageAfterUsd",
+       "networkCostsAfterUsd")
+    VALUES ('ledger-2','allocation-1:OPEN','account-1','OPEN',25,70,45,30,30,0,25,0,100,0,0,0);
+  `);
+} catch (error) {
+  duplicateLedger = error;
+}
+check('повтор капиталовой проводки блокируется eventKey', duplicateLedger != null,
+  duplicateLedger ? 'ограничение сработало' : 'дубликат записан');
 
 console.log(`\nИтог: ${failures === 0 ? 'все проверки пройдены' : failures + ' проверок не прошли'}`);
 process.exit(failures === 0 ? 0 : 1);

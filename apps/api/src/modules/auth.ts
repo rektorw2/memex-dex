@@ -1,30 +1,81 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
+import {
+  normalizeEmail,
+  emailLooksValid,
+  passwordIssue,
+  totpIssue,
+  PASSWORD_HINT,
+  PASSWORD_MAX,
+} from '@memex/core';
 import argon2 from 'argon2';
 import { authenticator } from 'otplib';
 import crypto from 'node:crypto';
 import { prisma } from '../lib/prisma.js';
 import { hashToken } from '../lib/crypto.js';
 
+/*
+ * Схемы приводят вход к сравнимому виду до всякой проверки.
+ *
+ * `User@Example.com`, ` user@example.com ` и `user@example.com` —
+ * один ящик. Без нормализации человек регистрируется одним
+ * написанием, входит другим и получает «неверный email или пароль»
+ * при верном пароле.
+ */
+const emailField = z
+  .string()
+  .transform(normalizeEmail)
+  .refine(emailLooksValid, { message: 'Некорректный адрес почты' });
+
 const registerSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(10, 'Пароль минимум 10 символов'),
+  email: emailField,
+  password: z
+    .string()
+    .refine((v) => passwordIssue(v) == null, { message: PASSWORD_HINT }),
 });
 
 const loginSchema = z.object({
-  email: z.string().email(),
-  password: z.string(),
-  totp: z.string().length(6).optional(),
+  email: emailField,
+  // На входе длина не проверяется: старый аккаунт мог быть заведён
+  // по прежним правилам, и отказывать ему в доступе из-за новой
+  // нижней границы значит запереть человека снаружи.
+  password: z.string().min(1).max(PASSWORD_MAX),
+  totp: z
+    .string()
+    .refine((v) => totpIssue(v) == null, { message: 'Код 2FA — ровно шесть цифр' })
+    .optional(),
 });
 
 export const authRoutes: FastifyPluginAsync = async (app) => {
   app.post('/auth/register', { config: { rateLimit: { max: 5, timeWindow: '15m' } } }, async (req, reply) => {
     const body = registerSchema.parse(req.body);
 
+    /*
+     * Существующий адрес получает явный отказ.
+     *
+     * Прежде здесь стоял `201 { ok: true }` — сознательная защита
+     * от перебора зарегистрированных адресов. Цена оказалась выше
+     * пользы: интерфейс читал 201 как успех и показывал «Аккаунт
+     * создан» человеку, у которого аккаунт уже есть. Он уходил
+     * ждать письма, которого не будет, вместо того чтобы войти.
+     *
+     * Перебор при этом всё равно возможен: форма входа отвечает
+     * по-разному на существующий и несуществующий адрес по времени
+     * ответа, а сброс пароля — по самому факту письма. Защитой
+     * здесь работает ограничение частоты: пять попыток
+     * за пятнадцать минут.
+     *
+     * Пароль существующего аккаунта не проверяется: регистрация
+     * не является скрытым входом.
+     */
     const existing = await prisma.user.findUnique({ where: { email: body.email } });
-    // Одинаковый ответ независимо от существования аккаунта — не даём
-    // перебирать зарегистрированные email.
-    if (existing) return reply.code(201).send({ ok: true });
+
+    if (existing) {
+      return reply.code(409).send({
+        error: 'Аккаунт уже существует — войдите',
+        code: 'ACCOUNT_ALREADY_EXISTS',
+      });
+    }
 
     const passwordHash = await argon2.hash(body.password, {
       type: argon2.argon2id,
@@ -32,7 +83,26 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
       timeCost: 3,
     });
 
-    await prisma.user.create({ data: { email: body.email, passwordHash } });
+    try {
+      await prisma.user.create({ data: { email: body.email, passwordHash } });
+    } catch (e: any) {
+      /*
+       * Гонка двух одновременных регистраций.
+       *
+       * Проверка выше и запись — не одна операция, и между ними
+       * успевает пройти второй запрос. Последней защитой остаётся
+       * уникальное ограничение базы; его нарушение здесь — не сбой,
+       * а тот же самый конфликт.
+       */
+      if (e?.code === 'P2002') {
+        return reply.code(409).send({
+          error: 'Аккаунт уже существует — войдите',
+          code: 'ACCOUNT_ALREADY_EXISTS',
+        });
+      }
+      throw e;
+    }
+
     return reply.code(201).send({ ok: true });
   });
 

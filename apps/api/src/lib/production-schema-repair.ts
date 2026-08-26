@@ -26,6 +26,9 @@ export const WALLET_SUMMARY_MIGRATION = '20260825120000_add_wallet_summary_contr
 export const WALLET_ACTIVITY_PNL_MIGRATION = '20260825150000_add_wallet_activity_local_pnl';
 export const OKX_SIGNAL_MIGRATION = '20260823170000_add_okx_signals';
 export const OKX_SIGNAL_ATH_MIGRATION = '20260823180000_add_okx_signal_ath';
+export const PAPER_AGENT_MIGRATION = '20260826100000_add_paper_agent';
+export const PAPER_AGENT_PHASE2_MIGRATION = '20260826110000_add_paper_agent_phase2';
+export const PAPER_AGENT_PHASE3_MIGRATION = '20260826120000_add_paper_agent_phase3';
 
 /**
  * Миграции, которые загрузчику разрешено применять.
@@ -44,6 +47,9 @@ export const KNOWN_MIGRATIONS = [
   TRADE_PROVENANCE_MIGRATION,
   WALLET_SUMMARY_MIGRATION,
   WALLET_ACTIVITY_PNL_MIGRATION,
+  PAPER_AGENT_MIGRATION,
+  PAPER_AGENT_PHASE2_MIGRATION,
+  PAPER_AGENT_PHASE3_MIGRATION,
 ] as const;
 
 export const BASE_USER_COLUMNS = ['id', 'email', 'passwordHash'] as const;
@@ -136,6 +142,131 @@ export const OKX_SIGNAL_TABLES = ['OkxSignal'] as const;
 /** Накопленный пик каждого события Signal. Обе колонки появляются вместе. */
 export const OKX_SIGNAL_ATH_COLUMNS = ['peakPriceUsd', 'peakObservedAt'] as const;
 
+/** Все артефакты paper-агента появляются одним аддитивным переходом. */
+export const PAPER_AGENT_OKX_SIGNAL_COLUMNS = ['triggerWalletAddresses'] as const;
+export const PAPER_AGENT_CONTROL_COLUMNS = [
+  'id',
+  'isEnabled',
+  'baselineStrategyKey',
+] as const;
+export const PAPER_AGENT_STRATEGY_COLUMNS = [
+  'id',
+  'key',
+  'version',
+  'kind',
+  'isEnabled',
+  'config',
+] as const;
+export const PAPER_AGENT_RUN_COLUMNS = [
+  'id',
+  'signalId',
+  'strategyId',
+  'providerKey',
+  'state',
+  'decisionCode',
+  'signaledAt',
+  'latencyMs',
+  'walletTypes',
+  'triggerWalletAddresses',
+  'entrySourcePriceUsd',
+  'entryExecutionPriceUsd',
+  'targetSourcePriceUsd',
+  'unrealizedPnlUsd',
+  'maxMultiple',
+  'maxDrawdownPct',
+  'realizedPnlUsd',
+] as const;
+
+/** Phase 2: manual control, explicit cost snapshot and notification outbox. */
+export const PAPER_AGENT_PHASE2_CONTROL_COLUMNS = ['telegramShadowEnabled'] as const;
+export const PAPER_AGENT_PHASE2_RUN_COLUMNS = [
+  'costModelKey',
+  'tradeFeeBps',
+  'entrySlippageBps',
+  'exitSlippageBps',
+  'networkFeeUsdPerSide',
+  'entryTradingFeeUsd',
+  'entryNetworkFeeUsd',
+  'entrySlippageUsd',
+  'exitTradingFeeUsd',
+  'exitNetworkFeeUsd',
+  'exitSlippageUsd',
+  'totalCostsUsd',
+] as const;
+export const PAPER_AGENT_NOTIFICATION_COLUMNS = [
+  'id',
+  'eventKey',
+  'runId',
+  'eventType',
+  'payload',
+  'inAppStatus',
+  'isRead',
+  'telegramEligible',
+  'telegramStatus',
+  'telegramAttempts',
+  'telegramNextAttemptAt',
+] as const;
+
+/** Phase 3: isolated ACTIVE/SHADOW accounts and immutable allocation ledger. */
+export const PAPER_AGENT_PHASE3_CONTROL_COLUMNS = [
+  'activeAllocationMode',
+  'activeAllocationPolicyKey',
+  'activeAllocationPolicyVersion',
+  'learningModeEnabled',
+] as const;
+export const PAPER_AGENT_ALLOCATION_POLICY_COLUMNS = [
+  'id',
+  'policyKey',
+  'version',
+  'mode',
+  'limits',
+  'scorePolicyKey',
+  'scorePolicyVersion',
+  'status',
+  'source',
+] as const;
+export const PAPER_AGENT_ACCOUNT_SESSION_COLUMNS = [
+  'id',
+  'kind',
+  'mode',
+  'status',
+  'policyKey',
+  'policyVersion',
+  'policySnapshot',
+  'initialCapitalUsd',
+  'freeBalanceUsd',
+  'reservedBalanceUsd',
+  'inPositionsUsd',
+  'equityUsd',
+  'ledgerVersion',
+] as const;
+export const PAPER_AGENT_ALLOCATION_COLUMNS = [
+  'id',
+  'sessionId',
+  'runId',
+  'isShadow',
+  'state',
+  'decisionCode',
+  'policySnapshot',
+  'inputFacts',
+  'signalScore',
+  'allocatedUsd',
+  'realizedPnlUsd',
+] as const;
+export const PAPER_AGENT_CAPITAL_LEDGER_COLUMNS = [
+  'id',
+  'eventKey',
+  'sessionId',
+  'allocationId',
+  'eventType',
+  'amountUsd',
+  'freeBeforeUsd',
+  'freeAfterUsd',
+  'inPositionsBeforeUsd',
+  'inPositionsAfterUsd',
+  'equityAfterUsd',
+] as const;
+
 export interface ProductionSchemaSnapshot {
   userColumns: string[];
   /**
@@ -147,6 +278,14 @@ export interface ProductionSchemaSnapshot {
   tokenColumns: string[];
   /** Колонки события Signal нужны для отдельной следующей миграции. */
   okxSignalColumns: string[];
+  paperAgentControlColumns: string[];
+  paperAgentStrategyColumns: string[];
+  paperAgentRunColumns: string[];
+  paperAgentNotificationColumns: string[];
+  paperAgentAllocationPolicyColumns: string[];
+  paperAgentAccountSessionColumns: string[];
+  paperAgentAllocationColumns: string[];
+  paperAgentCapitalLedgerColumns: string[];
   /** Колонки происхождения экономической сделки. */
   economicTradeColumns: string[];
   /** Колонки сохранённой сводки результативности кошелька. */
@@ -243,6 +382,14 @@ export function planProductionSchemaRepair(
   const user = new Set(snapshot.userColumns);
   const token = new Set(snapshot.tokenColumns ?? []);
   const okxSignal = new Set(snapshot.okxSignalColumns ?? []);
+  const paperAgentControl = new Set(snapshot.paperAgentControlColumns ?? []);
+  const paperAgentStrategy = new Set(snapshot.paperAgentStrategyColumns ?? []);
+  const paperAgentRun = new Set(snapshot.paperAgentRunColumns ?? []);
+  const paperAgentNotification = new Set(snapshot.paperAgentNotificationColumns ?? []);
+  const paperAgentAllocationPolicy = new Set(snapshot.paperAgentAllocationPolicyColumns ?? []);
+  const paperAgentAccountSession = new Set(snapshot.paperAgentAccountSessionColumns ?? []);
+  const paperAgentAllocation = new Set(snapshot.paperAgentAllocationColumns ?? []);
+  const paperAgentCapitalLedger = new Set(snapshot.paperAgentCapitalLedgerColumns ?? []);
   const economicTrade = new Set(snapshot.economicTradeColumns ?? []);
   const traderWallet = new Set(snapshot.traderWalletColumns ?? []);
   const walletActivity = new Set(snapshot.walletActivityColumns ?? []);
@@ -372,6 +519,64 @@ export function planProductionSchemaRepair(
         partial: 'PARTIAL_WALLET_ACTIVITY_PNL_MIGRATION',
         historyAhead: 'WALLET_ACTIVITY_PNL_HISTORY_CONTRADICTS_SCHEMA',
         schemaAhead: 'WALLET_ACTIVITY_PNL_SCHEMA_AHEAD_OF_HISTORY',
+      },
+    },
+    {
+      name: PAPER_AGENT_MIGRATION,
+      presence: presenceOf([
+        ...PAPER_AGENT_OKX_SIGNAL_COLUMNS.map((column) => okxSignal.has(column)),
+        ...PAPER_AGENT_CONTROL_COLUMNS.map((column) => paperAgentControl.has(column)),
+        ...PAPER_AGENT_STRATEGY_COLUMNS.map((column) => paperAgentStrategy.has(column)),
+        ...PAPER_AGENT_RUN_COLUMNS.map((column) => paperAgentRun.has(column)),
+        ...['PaperAgentControl', 'PaperAgentStrategy', 'PaperAgentRun'].map((table) =>
+          tables.has(table),
+        ),
+      ]),
+      reasons: {
+        partial: 'PARTIAL_PAPER_AGENT_MIGRATION',
+        historyAhead: 'PAPER_AGENT_HISTORY_CONTRADICTS_SCHEMA',
+        schemaAhead: 'PAPER_AGENT_SCHEMA_AHEAD_OF_HISTORY',
+      },
+    },
+    {
+      name: PAPER_AGENT_PHASE2_MIGRATION,
+      presence: presenceOf([
+        ...PAPER_AGENT_PHASE2_CONTROL_COLUMNS.map((column) => paperAgentControl.has(column)),
+        ...PAPER_AGENT_PHASE2_RUN_COLUMNS.map((column) => paperAgentRun.has(column)),
+        tables.has('PaperAgentNotification'),
+        ...PAPER_AGENT_NOTIFICATION_COLUMNS.map((column) => paperAgentNotification.has(column)),
+      ]),
+      reasons: {
+        partial: 'PARTIAL_PAPER_AGENT_PHASE2_MIGRATION',
+        historyAhead: 'PAPER_AGENT_PHASE2_HISTORY_CONTRADICTS_SCHEMA',
+        schemaAhead: 'PAPER_AGENT_PHASE2_SCHEMA_AHEAD_OF_HISTORY',
+      },
+    },
+    {
+      name: PAPER_AGENT_PHASE3_MIGRATION,
+      presence: presenceOf([
+        ...PAPER_AGENT_PHASE3_CONTROL_COLUMNS.map((column) => paperAgentControl.has(column)),
+        ...PAPER_AGENT_ALLOCATION_POLICY_COLUMNS.map((column) =>
+          paperAgentAllocationPolicy.has(column),
+        ),
+        ...PAPER_AGENT_ACCOUNT_SESSION_COLUMNS.map((column) =>
+          paperAgentAccountSession.has(column),
+        ),
+        ...PAPER_AGENT_ALLOCATION_COLUMNS.map((column) => paperAgentAllocation.has(column)),
+        ...PAPER_AGENT_CAPITAL_LEDGER_COLUMNS.map((column) =>
+          paperAgentCapitalLedger.has(column),
+        ),
+        ...[
+          'PaperAgentAllocationPolicy',
+          'PaperAgentAccountSession',
+          'PaperAgentAllocation',
+          'PaperAgentCapitalLedger',
+        ].map((table) => tables.has(table)),
+      ]),
+      reasons: {
+        partial: 'PARTIAL_PAPER_AGENT_PHASE3_MIGRATION',
+        historyAhead: 'PAPER_AGENT_PHASE3_HISTORY_CONTRADICTS_SCHEMA',
+        schemaAhead: 'PAPER_AGENT_PHASE3_SCHEMA_AHEAD_OF_HISTORY',
       },
     },
   ];

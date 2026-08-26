@@ -7,7 +7,27 @@ import {
   type ISeriesApi,
   type CandlestickData,
   type LineData,
+  type SeriesMarker,
+  type Time,
 } from 'lightweight-charts';
+
+export interface AgentChartMarker {
+  id: string;
+  side: 'BUY' | 'SELL';
+  time: number;
+  strategyLabel: string;
+  priceUsd: number | null;
+  pnlUsd: number | null;
+  shadow?: boolean;
+  allocationMode?: string;
+  allocatedUsd?: number | null;
+  capitalPct?: number | null;
+  riskProfile?: string | null;
+  allocationReason?: string;
+  freeAfterUsd?: number | null;
+  reserveAfterUsd?: number | null;
+  exposureAfterUsd?: number | null;
+}
 
 interface Props {
   candles: CandlestickData[];
@@ -40,6 +60,12 @@ interface Props {
    * раздражающий из возможных дефектов графика.
    */
   followLive?: boolean;
+  /** Persisted paper-события. Используется официальный series markers API. */
+  markers?: AgentChartMarker[];
+  /** Переместить временную шкалу к выбранной сделке. Unix seconds. */
+  focusTime?: number | null;
+  focusNonce?: number;
+  focusWindowSeconds?: number;
 }
 
 /**
@@ -77,6 +103,10 @@ export function PriceChart({
   onVisibleRange,
   goLiveNonce = 0,
   followLive = true,
+  markers = [],
+  focusTime = null,
+  focusNonce = 0,
+  focusWindowSeconds = 3_600,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -321,6 +351,54 @@ export function PriceChart({
     if (goLiveNonce === 0) return;
     chartRef.current?.timeScale().scrollToRealTime();
   }, [goLiveNonce]);
+
+  useEffect(() => {
+    const series = seriesRef.current;
+    if (!series) return;
+    const chartMarkers: SeriesMarker<Time>[] = [...markers]
+      .sort((a, b) => a.time - b.time || a.id.localeCompare(b.id))
+      .map((marker) => ({
+        time: marker.time as Time,
+        position: marker.side === 'BUY' ? 'belowBar' : 'aboveBar',
+        color: marker.side === 'BUY' ? '#22C7B8' : '#FF5C6C',
+        shape: marker.side === 'BUY' ? 'arrowUp' : 'arrowDown',
+        text: [
+          `PAPER ${marker.side}`,
+          marker.shadow ? 'SHADOW' : null,
+          marker.allocationMode,
+          marker.allocatedUsd == null ? null : `$${marker.allocatedUsd.toFixed(2)}`,
+          marker.capitalPct == null ? null : `${marker.capitalPct.toFixed(1)}%`,
+          marker.riskProfile,
+          marker.side === 'BUY' && marker.freeAfterUsd != null
+            ? `free $${marker.freeAfterUsd.toFixed(2)}`
+            : null,
+          marker.side === 'BUY' && marker.reserveAfterUsd != null
+            ? `reserve $${marker.reserveAfterUsd.toFixed(2)}`
+            : null,
+          marker.side === 'BUY' && marker.exposureAfterUsd != null
+            ? `exposure $${marker.exposureAfterUsd.toFixed(2)}`
+            : null,
+          marker.side === 'BUY' ? marker.allocationReason : null,
+          marker.strategyLabel,
+          marker.side === 'SELL' && marker.pnlUsd != null
+            ? `${marker.pnlUsd >= 0 ? '+' : ''}$${marker.pnlUsd.toFixed(2)}`
+            : null,
+        ].filter(Boolean).join(' · '),
+        id: marker.id,
+      }));
+    // Старые test doubles графика могли не моделировать новый API.
+    // В production lightweight-charts 4.2 предоставляет setMarkers.
+    if (typeof series.setMarkers === 'function') series.setMarkers(chartMarkers);
+  }, [markers, resetKey, secondsVisible]);
+
+  useEffect(() => {
+    if (focusTime == null || focusNonce === 0) return;
+    const half = Math.max(30, focusWindowSeconds / 2);
+    chartRef.current?.timeScale().setVisibleRange({
+      from: Math.floor(focusTime - half) as Time,
+      to: Math.ceil(focusTime + half) as Time,
+    });
+  }, [focusNonce, focusTime, focusWindowSeconds]);
 
   return <div ref={containerRef} className="w-full" />;
 }

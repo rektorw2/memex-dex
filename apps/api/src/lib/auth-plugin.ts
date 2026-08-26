@@ -1,5 +1,6 @@
 import fp from 'fastify-plugin';
 import type { FastifyPluginAsync, FastifyRequest, FastifyReply } from 'fastify';
+import { prisma } from './prisma.js';
 
 export type UserRole = 'USER' | 'TRADER' | 'ADMIN';
 
@@ -58,7 +59,14 @@ const plugin: FastifyPluginAsync = async (app) => {
     } catch {
       return reply.code(401).send({ error: 'Требуется авторизация' });
     }
-    if (req.user.role !== 'ADMIN') {
+    // JWT — подписанный, но устаревающий снимок. Роль читается из БД,
+    // чтобы отзыв ADMIN вступал в силу немедленно и её нельзя было
+    // подменить телом, query, header или старым токеном.
+    const actor = await prisma.user.findUnique({
+      where: { id: req.user.sub },
+      select: { role: true },
+    });
+    if (actor?.role !== 'ADMIN') {
       return reply.code(403).send({ error: 'Недостаточно прав' });
     }
   });

@@ -1,4 +1,5 @@
 import type { Chain } from '@prisma/client';
+import { tokenDisplaySymbol } from '@memex/core';
 import { logger } from '../lib/logger.js';
 
 /**
@@ -231,7 +232,13 @@ export async function fetchPools(
       result.push({
         chain,
         address: base.attributes.address,
-        symbol: (base.attributes.symbol || '???').slice(0, 20),
+        // Сокращённый адрес вместо `???`: три знака вопроса
+        // записывались в базу как символ и доезжали до экрана
+        // по обычному пути, мимо всех подстановок.
+        symbol: (
+          base.attributes.symbol ||
+          tokenDisplaySymbol({ symbol: null, address: base.attributes.address })
+        ).slice(0, 20),
         name: (base.attributes.name || base.attributes.symbol || 'Unknown').slice(0, 80),
         // GeckoTerminal не всегда отдаёт decimals; для Solana обычно 6 или 9,
         // для EVM — 18. Уточняется при первой сделке через адаптер сети.
@@ -293,7 +300,9 @@ export async function fetchPoolForToken(
   return {
     chain,
     address: tokenAddress,
-    symbol: (base?.attributes?.symbol || '???').slice(0, 20),
+    symbol: (
+      base?.attributes?.symbol || tokenDisplaySymbol({ symbol: null, address: tokenAddress })
+    ).slice(0, 20),
     name: (base?.attributes?.name || 'Unknown').slice(0, 80),
     decimals: base?.attributes?.decimals ?? (chain === 'SOLANA' ? 9 : 18),
     poolAddress: best.attributes.address,

@@ -36,6 +36,7 @@ describe('OKX Signal — REST', () => {
     expect(signal.symbol).toBe('VanCleef');
     expect(signal.marketCapUsd).toBeCloseTo(64_466.67);
     expect(signal.walletTypes).toEqual(['smart_money', 'kol', 'whale']);
+    expect(signal.triggerWalletAddresses).toEqual(['wallet-a', 'wallet-b']);
     expect(signal.signaledAt.toISOString()).toBe('2026-03-24T15:09:00.575Z');
     expect(signal.providerKey).toMatch(/^okx-signal:/);
   });

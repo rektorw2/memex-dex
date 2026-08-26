@@ -53,6 +53,10 @@ export * from './okx-wallet-model.js';
 export * from './okx-ws-model.js';
 // Сигналы Smart Money/KOL/Whale — отдельный формат OKX.
 export * from './okx-signal.js';
+// Детерминированные правила и бухгалтерия автономного paper-агента.
+// Никакого транспорта или боевого исполнения этот модуль не импортирует.
+export * from './paper-agent.js';
+export * from './paper-allocation.js';
 // История DEX — единственный источник точных количеств.
 export * from './okx-dex-history.js';
 
@@ -86,6 +90,7 @@ export * from './subscription-catalog.js';
 export * from './payment-state.js';
 export * from './payment-provider.js';
 export * from './access-indicator.js';
+export * from './auth-rules.js';
 export * from './entitlements.js';
 export * from './route-access.js';
 export * from './api-base.js';

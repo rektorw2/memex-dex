@@ -211,10 +211,24 @@ function Row({ token: t, pending }: { token: DexToken; pending?: boolean }) {
             </span>
           )}
 
-          {/* Уровень риска словом, а не только цветом. */}
+          {/*
+            Уровень риска читаемой подписью.
+
+            Прежде здесь стояло `{band.sign} {score}`, и на экране это
+            выглядело как `!40` — знак, слипшийся с числом. Знак нужен
+            затем, чтобы уровень читался без различения оттенков, но
+            сам по себе он ничего не сообщает: рядом с непонятным
+            символом число выглядит обрывком строки, а не оценкой.
+
+            Теперь подпись называет вещь своим именем и остаётся
+            короткой: `Риск 40`. Знак и полное название — в подсказке.
+          */}
           {!pending && band ? (
-            <span className={`shrink-0 text-[10px] ${tone}`} title={band.label}>
-              {band.sign} {Math.round(t.riskScore!)}
+            <span
+              className={`shrink-0 whitespace-nowrap text-[10px] ${tone}`}
+              title={`${band.sign} ${band.label} · ${Math.round(t.riskScore!)}/100`}
+            >
+              Риск {Math.round(t.riskScore!)}
             </span>
           ) : (
             <span className="shrink-0 text-[10px] text-muted" title="Проверка ещё не выполнялась">

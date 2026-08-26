@@ -25,12 +25,15 @@ Prisma: **6.19.3** (`node -p "require('prisma/package.json').version"`).
 | --- | --- | --- |
 | `prisma/migrations/0_baseline/migration.sql` | 1034 | 30 таблиц, 19 перечислений, 82 индекса, 30 внешних ключей |
 | `prisma/migrations/20260821120000_add_subscriptions_and_trial/migration.sql` | 109 | 2 таблицы, 3 перечисления, 5 колонок в `User`, 8 индексов, 2 внешних ключа |
+| `prisma/migrations/20260826100000_add_paper_agent/migration.sql` | — | 3 таблицы paper-агента и список адресов в `OkxSignal`; только добавление |
+| `prisma/migrations/20260826110000_add_paper_agent_phase2/migration.sql` | — | nullable-снимок расходов, ручное управление и transactional outbox; только добавление |
+| `prisma/migrations/20260826120000_add_paper_agent_phase3/migration.sql` | — | 4 таблицы изолированного PAPER-капитала и nullable/default control-поля; только добавление |
 | `prisma/baseline.prisma` | — | Снимок схемы до новых моделей. Нужен для сверки. Не редактировать |
 
-`DROP` не встречается ни в одном файле. Единственный `ALTER TABLE`
-существующей таблицы — добавление пяти колонок в `User`, все
-необязательные или с умолчанием, поэтому существующие строки
-он не трогает.
+`DROP` не встречается ни в одном файле. Все `ALTER TABLE` только добавляют
+nullable-поля или поля с безопасным default. Phase 2 и Phase 3 намеренно
+устанавливают paper-agent в `isEnabled=false`; это состояние управления, а не
+удаление данных. Существующие run, уведомления и позиции остаются на месте.
 
 ```bash
 grep -nE '^\s*DROP' prisma/migrations/*/migration.sql          # пусто
@@ -118,6 +121,10 @@ DATABASE_URL="$CLONE_URL" npx prisma migrate diff \
 После этого на клоне: пересчитать число строк в `User`, `RadarEvent`,
 `Order`, `Trade`, `Position` и сравнить с боевой базой; открыть API
 против клона и пройти маршруты радара, кошельков и портфеля.
+
+Для Phase 3 дополнительно проверить: агент `OFF`, allocation mode не выбран,
+старые `PaperAgentRun` сохранены, новые таблицы пусты, а `/admin/agent` предлагает
+создать PAPER-сессию. Не включать Start до ручного выбора Fixed/Autopilot.
 
 Только пройдя этот шаг целиком, идти дальше.
 

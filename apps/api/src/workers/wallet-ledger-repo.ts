@@ -28,10 +28,33 @@ import { Prisma as P } from '@prisma/client';
 import {
   STATS_RECONCILIATION_STATES,
   WALLET_PNL_VERSION,
+  fitEconomicTrade,
   type CanonicalTrade,
   type ChainKey,
+  type TradeFitReason,
 } from '@memex/core';
 import { prisma } from '../lib/prisma.js';
+import { logger } from '../lib/logger.js';
+
+/**
+ * Сколько сделок отброшено по несовместимости с колонками.
+ *
+ * Счётчик на процесс, по коду причины. Нужен затем, что отказ здесь
+ * молчаливый по построению: сделка не записывается, цикл идёт дальше,
+ * и без счётчика узнать о систематической потере можно было бы только
+ * заметив недостачу в статистике кошелька.
+ */
+const rejectedByReason = new Map<TradeFitReason, number>();
+
+/** Снимок счётчика. Для диагностики и тестов. */
+export function tradeFitRejections(): Record<string, number> {
+  return Object.fromEntries(rejectedByReason);
+}
+
+/** Сброс между тестами: состояние живёт на модуле. */
+export function resetTradeFitRejections(): void {
+  rejectedByReason.clear();
+}
 
 export interface SyncJob {
   id: string;
@@ -47,6 +70,14 @@ export interface SyncJob {
 export interface PersistResult {
   created: number;
   duplicates: number;
+  /**
+   * Сделки, не поместившиеся в колонки таблицы.
+   *
+   * Отдельно от `duplicates`: дубль означает, что запись уже есть,
+   * а это — что записи не будет вовсе. Складывать их в одно число
+   * значит спрятать потерю данных за нормальным исходом.
+   */
+  rejected?: number;
 }
 
 /**
@@ -392,8 +423,53 @@ export class PrismaWalletLedgerRepository implements WalletLedgerRepository {
   async persistCanonicalTrades(trades: CanonicalTrade[]): Promise<PersistResult> {
     let created = 0;
     let duplicates = 0;
+    let rejected = 0;
 
     for (const t of trades) {
+      /*
+       * Проверка границ колонок до записи.
+       *
+       * Раньше строки провайдера оборачивались в `Decimal` напрямую.
+       * `Decimal` о границах колонки не знает — их знает Postgres,
+       * и сообщает о нарушении отказом всей вставки:
+       * `22003 numeric field overflow`. Обход кошелька на этом
+       * прерывался, и одна битая строка стоила всех остальных.
+       */
+      const fit = fitEconomicTrade({
+        amount: t.amount,
+        valueUsd: t.valueUsd,
+        price: t.price,
+        marketCapUsd: t.marketCapUsd,
+        providerPnlUsd: t.providerPnlUsd,
+      });
+
+      if (!fit.ok) {
+        rejected++;
+        rejectedByReason.set(fit.reason!, (rejectedByReason.get(fit.reason!) ?? 0) + 1);
+
+        /*
+         * В журнал уходит код причины и ключ сделки — не значения.
+         *
+         * Полный ответ провайдера здесь не нужен: причина ясна из
+         * кода, а строка с суммами в логах живёт дольше, чем нужно,
+         * и попадает туда, куда финансовым данным попадать незачем.
+         */
+        logger.warn(
+          { key: t.key, chain: t.chain, side: t.side, reason: fit.reason },
+          'экономическая сделка не помещается в колонки и не записана',
+        );
+
+        // Остальные сделки кошелька от этого не страдают.
+        continue;
+      }
+
+      if (fit.droppedOptional.length > 0) {
+        logger.debug(
+          { key: t.key, dropped: fit.droppedOptional },
+          'необязательные поля сделки не поместились и записаны как null',
+        );
+      }
+
       const existing = await prisma.walletEconomicTrade.findUnique({
         where: { key: t.key },
         select: { key: true },
@@ -428,8 +504,23 @@ export class PrismaWalletLedgerRepository implements WalletLedgerRepository {
             amount: new P.Decimal(t.amount),
             valueUsd: new P.Decimal(t.valueUsd),
             price: new P.Decimal(t.price),
-            marketCapUsd: t.marketCapUsd ? new P.Decimal(t.marketCapUsd) : null,
-            providerPnlUsd: t.providerPnlUsd ? new P.Decimal(t.providerPnlUsd) : null,
+            /*
+             * Необязательное, не поместившееся в колонку, становится
+             * `null`, а не обрезается.
+             *
+             * Неизвестная капитализация дальше по цепочке честно
+             * читается как «база кратности неизвестна» и выводит
+             * исход из оценки. Обрезанное до максимума число прошло
+             * бы в расчёт как настоящее.
+             */
+            marketCapUsd:
+              t.marketCapUsd && !fit.droppedOptional.includes('marketCapUsd')
+                ? new P.Decimal(t.marketCapUsd)
+                : null,
+            providerPnlUsd:
+              t.providerPnlUsd && !fit.droppedOptional.includes('providerPnlUsd')
+                ? new P.Decimal(t.providerPnlUsd)
+                : null,
             tradedAt: new Date(t.tradedAt),
           },
         })
@@ -442,7 +533,7 @@ export class PrismaWalletLedgerRepository implements WalletLedgerRepository {
         });
     }
 
-    return { created, duplicates };
+    return { created, duplicates, rejected };
   }
 
   async loadCanonicalTrades(chain: string, wallet: string): Promise<CanonicalTrade[]> {

@@ -5,6 +5,7 @@ import {
   priceChangeOrNull,
   sharePctOrNull,
   DECIMAL_COLUMN,
+  fitEconomicTrade,
 } from './decimal-fit.js';
 
 describe('вместимость колонки', () => {
@@ -101,5 +102,121 @@ describe('доля в процентах', () => {
 
   it('отрицательная доля отвергается', () => {
     expect(sharePctOrNull(-1)).toBeNull();
+  });
+});
+
+// ───────────────────── Экономическая сделка кошелька ────────────────────────
+
+describe('границы колонок WalletEconomicTrade', () => {
+  const trade = (over: Record<string, unknown> = {}) => ({
+    amount: '1000',
+    valueUsd: '75',
+    price: '0.075',
+    ...over,
+  });
+
+  it('обычная сделка проходит', () => {
+    const fit = fitEconomicTrade(trade());
+
+    expect(fit.ok).toBe(true);
+    expect(fit.reason).toBeNull();
+    expect(fit.droppedOptional).toEqual([]);
+  });
+
+  it('значение внутри границы проходит', () => {
+    /*
+     * precision 40, scale 18 → предел 10^22.
+     *
+     * Берётся 9.99e21, а не «22 девятки»: `Number` хранит около
+     * семнадцати значащих цифр, и строка из двадцати двух девяток
+     * округляется им ровно до 10^22 — то есть до самого предела.
+     * Проверка магнитуды идёт через `Number`, и у самой границы
+     * она ошибается в сторону отказа. Для записи в базу это
+     * безопасная сторона: Postgres на пределе тоже откажет.
+     */
+    const fit = fitEconomicTrade(trade({ amount: '9.99e21' }));
+
+    expect(fit.ok).toBe(true);
+  });
+
+  it('ровно предел уже не помещается', () => {
+    const fit = fitEconomicTrade(trade({ amount: '1e22' }));
+
+    expect(fit.ok).toBe(false);
+    expect(fit.reason).toBe('AMOUNT_OUT_OF_RANGE');
+  });
+
+  it('округление, выводящее за границу, ловится', () => {
+    /*
+     * Postgres округляет до scale и только потом проверяет.
+     * Значение чуть ниже предела после округления становится
+     * пределом — именно этот случай и пропустила бы проверка
+     * «до округления».
+     */
+    const money = { precision: 30, scale: 10 };
+    const justUnder = 10 ** (money.precision - money.scale) - 1e-11;
+
+    expect(fitsDecimal(justUnder, money.precision, money.scale)).toBe(false);
+  });
+
+  it('отрицательное переполнение тоже отклоняется', () => {
+    const fit = fitEconomicTrade(trade({ valueUsd: '-1e30' }));
+
+    expect(fit.ok).toBe(false);
+    expect(fit.reason).toBe('VALUE_OUT_OF_RANGE');
+  });
+
+  it('экспоненциальная запись разбирается, а не проходит как строка', () => {
+    // Провайдер присылает строки: «1e300» внешне не отличается
+    // от нормального числа.
+    expect(fitEconomicTrade(trade({ price: '1e300' })).reason).toBe('PRICE_OUT_OF_RANGE');
+  });
+
+  it('NaN и Infinity отклоняются с отдельной причиной', () => {
+    expect(fitEconomicTrade(trade({ amount: 'NaN' })).reason).toBe('AMOUNT_NOT_A_NUMBER');
+    expect(fitEconomicTrade(trade({ valueUsd: Infinity })).reason).toBe('VALUE_NOT_A_NUMBER');
+    expect(fitEconomicTrade(trade({ price: '' })).reason).toBe('PRICE_NOT_A_NUMBER');
+  });
+
+  it('первая непрошедшая колонка и определяет причину', () => {
+    // Код должен быть однозначным: два кода на одну сделку
+    // превратили бы счётчик в бессмыслицу.
+    const fit = fitEconomicTrade(trade({ amount: '1e30', valueUsd: '1e30' }));
+
+    expect(fit.reason).toBe('AMOUNT_OUT_OF_RANGE');
+  });
+
+  it('необязательное поле вне границы становится null, сделка остаётся', () => {
+    const fit = fitEconomicTrade(trade({ marketCapUsd: '1e30' }));
+
+    // Факт покупки важнее необязательной подробности о ней.
+    expect(fit.ok).toBe(true);
+    expect(fit.droppedOptional).toEqual(['marketCapUsd']);
+  });
+
+  it('оба необязательных могут отпасть одновременно', () => {
+    const fit = fitEconomicTrade(trade({ marketCapUsd: 'NaN', providerPnlUsd: '1e40' }));
+
+    expect(fit.ok).toBe(true);
+    expect(fit.droppedOptional).toEqual(['marketCapUsd', 'providerPnlUsd']);
+  });
+
+  it('отсутствующее необязательное не считается отброшенным', () => {
+    const fit = fitEconomicTrade(trade({ marketCapUsd: null, providerPnlUsd: undefined }));
+
+    expect(fit.droppedOptional).toEqual([]);
+  });
+
+  it('ноль — законное значение, а не отсутствие', () => {
+    expect(fitEconomicTrade(trade({ valueUsd: '0', price: '0' })).ok).toBe(true);
+  });
+
+  it('число не обрезается до максимума ни при каких условиях', () => {
+    // Записать вместо непомещающегося количества «предел минус один»
+    // значит придумать финансовую величину, которой не было.
+    const fit = fitEconomicTrade(trade({ amount: '1e25' }));
+
+    expect(fit.ok).toBe(false);
+    expect(JSON.stringify(fit)).not.toContain('9999');
   });
 });

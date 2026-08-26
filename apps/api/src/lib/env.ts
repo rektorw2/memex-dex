@@ -287,6 +287,10 @@ const schema = z.object({
 
   /** Токен бота Telegram для уведомлений радара. Получить у @BotFather. */
   TELEGRAM_BOT_TOKEN: optional(z.string()),
+  /** Отдельный выключатель paper-уведомлений автономного агента. */
+  TELEGRAM_AGENT_NOTIFICATIONS_ENABLED: booleanFromEnv.default(false),
+  /** Единственный административный чат Phase 2. Никогда не отдаётся клиенту. */
+  TELEGRAM_AGENT_CHAT_ID: optional(z.string()),
 
   /** Порог ликвидности, ниже которого радар не уведомляет вообще. */
   RADAR_MIN_LIQUIDITY_USD: z.coerce.number().default(20_000),
@@ -490,6 +494,20 @@ if (env.EMAIL_PROVIDER === 'smtp') {
     throw new Error(
       `EMAIL_PROVIDER=smtp требует ${missing.join(', ')}. ` +
         'Основной пароль почты использовать нельзя: нужен отдельный пароль приложения.',
+    );
+  }
+}
+
+if (env.TELEGRAM_AGENT_NOTIFICATIONS_ENABLED) {
+  const missing = [
+    !env.TELEGRAM_BOT_TOKEN ? 'TELEGRAM_BOT_TOKEN' : null,
+    !env.TELEGRAM_AGENT_CHAT_ID ? 'TELEGRAM_AGENT_CHAT_ID' : null,
+  ].filter(Boolean);
+
+  if (missing.length > 0) {
+    throw new Error(
+      `TELEGRAM_AGENT_NOTIFICATIONS_ENABLED=true требует ${missing.join(' и ')}. ` +
+        'Paper-агент не стартует с частично настроенной доставкой.',
     );
   }
 }

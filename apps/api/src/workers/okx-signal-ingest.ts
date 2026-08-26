@@ -16,6 +16,7 @@ import { isOkxConfigured, fetchLatestSignals } from '../services/okx-market.js';
 import { OkxWalletWebSocketClient } from '../services/okx-ws-client.js';
 import { markHot } from './hot-tokens.js';
 import { requestCandlesSoon } from './candle-builder.js';
+import { queuePaperAgentSignal } from './paper-agent.js';
 
 export type SignalSource = 'okx_websocket' | 'okx_rest';
 export type SignalIngestResult = 'created' | 'duplicate' | 'failed';
@@ -30,6 +31,7 @@ let client: OkxWalletWebSocketClient | null = null;
 let reconciliationTimer: NodeJS.Timeout | null = null;
 let reconciliationCursor = 0;
 let lastReconciliationAt = 0;
+let lastSignalAt: number | null = null;
 
 function decimal(value: number | null): P.Decimal | null {
   return value != null && Number.isFinite(value) && value >= 0 ? new P.Decimal(value) : null;
@@ -47,10 +49,11 @@ export async function ingestOkxSignal(
   signal: OkxSignal,
   source: SignalSource,
 ): Promise<SignalIngestResult> {
+  lastSignalAt = Date.now();
   try {
     const already = await prisma.okxSignal.findUnique({
       where: { providerKey: signal.providerKey },
-      select: { tokenId: true },
+      select: { id: true, tokenId: true },
     });
 
     if (already) {
@@ -61,6 +64,7 @@ export async function ingestOkxSignal(
         // backfill: иначе ATH до момента нового деплоя потеряется.
         requestCandlesSoon(already.tokenId, '5m');
       }
+      queuePaperAgentSignal(already.id, true);
       return 'duplicate';
     }
 
@@ -119,7 +123,7 @@ export async function ingestOkxSignal(
             },
           });
 
-      await tx.okxSignal.create({
+      const savedSignal = await tx.okxSignal.create({
         data: {
           providerKey: signal.providerKey,
           chain: signal.chain,
@@ -136,20 +140,23 @@ export async function ingestOkxSignal(
           holders: signal.holders,
           top10HolderPct: decimal(signal.top10HolderPct),
           walletTypes: signal.walletTypes,
+          triggerWalletAddresses: signal.triggerWalletAddresses,
           triggerWalletCount: signal.triggerWalletCount,
           amountUsd: decimal(signal.amountUsd),
           soldRatioPct: decimal(signal.soldRatioPct),
           source,
         },
+        select: { id: true },
       });
 
-      return token.id;
+      return { tokenId: token.id, signalId: savedSignal.id };
     });
 
     // Новая находка первой получает цену, свечи и место в очереди
     // проверки. Сам GEMS при этом уже доступен из записи выше.
-    markHot(result);
-    requestCandlesSoon(result, '5m');
+    markHot(result.tokenId);
+    requestCandlesSoon(result.tokenId, '5m');
+    queuePaperAgentSignal(result.signalId);
     return 'created';
   } catch (error: any) {
     // WebSocket и REST пересекаются штатно. Уникальный providerKey
@@ -162,6 +169,16 @@ export async function ingestOkxSignal(
     );
     return 'failed';
   }
+}
+
+export function getOkxSignalIngestStatus() {
+  return {
+    running,
+    lastSignalAt: lastSignalAt == null ? null : new Date(lastSignalAt).toISOString(),
+    lastReconciliationAt:
+      lastReconciliationAt === 0 ? null : new Date(lastReconciliationAt).toISOString(),
+    socket: client?.stats() ?? null,
+  };
 }
 
 /** Последние сто событий каждой сети — начальное заполнение после деплоя. */
@@ -243,4 +260,5 @@ export function stopOkxSignalIngest(): void {
   reconciliationTimer = null;
   reconciliationCursor = 0;
   lastReconciliationAt = 0;
+  lastSignalAt = null;
 }

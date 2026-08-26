@@ -21,6 +21,21 @@ import {
   OKX_SIGNAL_ATH_MIGRATION,
   OKX_SIGNAL_ATH_COLUMNS,
   OKX_SIGNAL_TABLES,
+  PAPER_AGENT_CONTROL_COLUMNS,
+  PAPER_AGENT_MIGRATION,
+  PAPER_AGENT_PHASE2_MIGRATION,
+  PAPER_AGENT_PHASE3_MIGRATION,
+  PAPER_AGENT_PHASE2_CONTROL_COLUMNS,
+  PAPER_AGENT_PHASE2_RUN_COLUMNS,
+  PAPER_AGENT_PHASE3_CONTROL_COLUMNS,
+  PAPER_AGENT_ALLOCATION_POLICY_COLUMNS,
+  PAPER_AGENT_ACCOUNT_SESSION_COLUMNS,
+  PAPER_AGENT_ALLOCATION_COLUMNS,
+  PAPER_AGENT_CAPITAL_LEDGER_COLUMNS,
+  PAPER_AGENT_NOTIFICATION_COLUMNS,
+  PAPER_AGENT_OKX_SIGNAL_COLUMNS,
+  PAPER_AGENT_RUN_COLUMNS,
+  PAPER_AGENT_STRATEGY_COLUMNS,
   planProductionSchemaRepair,
   type ProductionSchemaSnapshot,
 } from './production-schema-repair.js';
@@ -44,6 +59,14 @@ function legacySnapshot(): ProductionSchemaSnapshot {
     userColumns: [...BASE_USER_COLUMNS],
     tokenColumns: ['id', 'chain', 'address'],
     okxSignalColumns: [],
+    paperAgentControlColumns: [],
+    paperAgentStrategyColumns: [],
+    paperAgentRunColumns: [],
+    paperAgentNotificationColumns: [],
+    paperAgentAllocationPolicyColumns: [],
+    paperAgentAccountSessionColumns: [],
+    paperAgentAllocationColumns: [],
+    paperAgentCapitalLedgerColumns: [],
     economicTradeColumns: [],
     traderWalletColumns: [],
     walletActivityColumns: [],
@@ -60,6 +83,14 @@ function accessOnlySnapshot(): ProductionSchemaSnapshot {
     userColumns: [...BASE_USER_COLUMNS, ...ACCESS_USER_COLUMNS],
     tokenColumns: ['id', 'chain', 'address'],
     okxSignalColumns: [],
+    paperAgentControlColumns: [],
+    paperAgentStrategyColumns: [],
+    paperAgentRunColumns: [],
+    paperAgentNotificationColumns: [],
+    paperAgentAllocationPolicyColumns: [],
+    paperAgentAccountSessionColumns: [],
+    paperAgentAllocationColumns: [],
+    paperAgentCapitalLedgerColumns: [],
     economicTradeColumns: [],
     traderWalletColumns: [],
     walletActivityColumns: [],
@@ -76,6 +107,28 @@ function readySnapshot(): ProductionSchemaSnapshot {
   s.tokenColumns = [...s.tokenColumns, ...MARKET_AGE_TOKEN_COLUMNS, ...CHECK_QUEUE_TOKEN_COLUMNS];
   s.tables = [...s.tables, ...OKX_SIGNAL_TABLES];
   s.okxSignalColumns = [...OKX_SIGNAL_ATH_COLUMNS];
+  s.okxSignalColumns.push(...PAPER_AGENT_OKX_SIGNAL_COLUMNS);
+  s.paperAgentControlColumns = [...PAPER_AGENT_CONTROL_COLUMNS];
+  s.paperAgentStrategyColumns = [...PAPER_AGENT_STRATEGY_COLUMNS];
+  s.paperAgentRunColumns = [...PAPER_AGENT_RUN_COLUMNS];
+  s.paperAgentControlColumns.push(...PAPER_AGENT_PHASE2_CONTROL_COLUMNS);
+  s.paperAgentRunColumns.push(...PAPER_AGENT_PHASE2_RUN_COLUMNS);
+  s.paperAgentNotificationColumns = [...PAPER_AGENT_NOTIFICATION_COLUMNS];
+  s.paperAgentControlColumns.push(...PAPER_AGENT_PHASE3_CONTROL_COLUMNS);
+  s.paperAgentAllocationPolicyColumns = [...PAPER_AGENT_ALLOCATION_POLICY_COLUMNS];
+  s.paperAgentAccountSessionColumns = [...PAPER_AGENT_ACCOUNT_SESSION_COLUMNS];
+  s.paperAgentAllocationColumns = [...PAPER_AGENT_ALLOCATION_COLUMNS];
+  s.paperAgentCapitalLedgerColumns = [...PAPER_AGENT_CAPITAL_LEDGER_COLUMNS];
+  s.tables.push(
+    'PaperAgentControl',
+    'PaperAgentStrategy',
+    'PaperAgentRun',
+    'PaperAgentNotification',
+    'PaperAgentAllocationPolicy',
+    'PaperAgentAccountSession',
+    'PaperAgentAllocation',
+    'PaperAgentCapitalLedger',
+  );
   s.economicTradeColumns = [...TRADE_PROVENANCE_COLUMNS];
   s.traderWalletColumns = [...WALLET_SUMMARY_COLUMNS];
   s.walletActivityColumns = [...WALLET_ACTIVITY_PNL_COLUMNS];
@@ -111,7 +164,28 @@ describe('готовая база', () => {
     ];
     after.appliedMigrations = [...KNOWN_MIGRATIONS];
     after.tables = [...after.tables, ...OKX_SIGNAL_TABLES];
-    after.okxSignalColumns = [...OKX_SIGNAL_ATH_COLUMNS];
+    after.okxSignalColumns = [...OKX_SIGNAL_ATH_COLUMNS, ...PAPER_AGENT_OKX_SIGNAL_COLUMNS];
+    after.paperAgentControlColumns = [...PAPER_AGENT_CONTROL_COLUMNS];
+    after.paperAgentStrategyColumns = [...PAPER_AGENT_STRATEGY_COLUMNS];
+    after.paperAgentRunColumns = [...PAPER_AGENT_RUN_COLUMNS];
+    after.paperAgentControlColumns.push(...PAPER_AGENT_PHASE2_CONTROL_COLUMNS);
+    after.paperAgentRunColumns.push(...PAPER_AGENT_PHASE2_RUN_COLUMNS);
+    after.paperAgentNotificationColumns = [...PAPER_AGENT_NOTIFICATION_COLUMNS];
+    after.paperAgentControlColumns.push(...PAPER_AGENT_PHASE3_CONTROL_COLUMNS);
+    after.paperAgentAllocationPolicyColumns = [...PAPER_AGENT_ALLOCATION_POLICY_COLUMNS];
+    after.paperAgentAccountSessionColumns = [...PAPER_AGENT_ACCOUNT_SESSION_COLUMNS];
+    after.paperAgentAllocationColumns = [...PAPER_AGENT_ALLOCATION_COLUMNS];
+    after.paperAgentCapitalLedgerColumns = [...PAPER_AGENT_CAPITAL_LEDGER_COLUMNS];
+    after.tables.push(
+      'PaperAgentControl',
+      'PaperAgentStrategy',
+      'PaperAgentRun',
+      'PaperAgentNotification',
+      'PaperAgentAllocationPolicy',
+      'PaperAgentAccountSession',
+      'PaperAgentAllocation',
+      'PaperAgentCapitalLedger',
+    );
     after.economicTradeColumns = [...TRADE_PROVENANCE_COLUMNS];
     after.traderWalletColumns = [...WALLET_SUMMARY_COLUMNS];
     after.walletActivityColumns = [...WALLET_ACTIVITY_PNL_COLUMNS];
@@ -134,6 +208,9 @@ describe('переход с прежней схемы', () => {
         TRADE_PROVENANCE_MIGRATION,
         WALLET_SUMMARY_MIGRATION,
         WALLET_ACTIVITY_PNL_MIGRATION,
+        PAPER_AGENT_MIGRATION,
+        PAPER_AGENT_PHASE2_MIGRATION,
+        PAPER_AGENT_PHASE3_MIGRATION,
       ],
     });
   });
@@ -161,12 +238,51 @@ describe('переход с прежней схемы', () => {
         TRADE_PROVENANCE_MIGRATION,
         WALLET_SUMMARY_MIGRATION,
         WALLET_ACTIVITY_PNL_MIGRATION,
+        PAPER_AGENT_MIGRATION,
+        PAPER_AGENT_PHASE2_MIGRATION,
+        PAPER_AGENT_PHASE3_MIGRATION,
       ],
     });
   });
 });
 
 describe('отказ при неожиданном состоянии', () => {
+  it('половина миграции paper-агента останавливает запуск', () => {
+    const snapshot = readySnapshot();
+    snapshot.paperAgentRunColumns = snapshot.paperAgentRunColumns.filter(
+      (column) => column !== 'realizedPnlUsd',
+    );
+
+    expect(planProductionSchemaRepair(snapshot)).toEqual({
+      action: 'refuse',
+      reason: 'PARTIAL_PAPER_AGENT_MIGRATION',
+    });
+  });
+
+  it('половина Phase 2 paper-агента останавливает запуск', () => {
+    const snapshot = readySnapshot();
+    snapshot.paperAgentNotificationColumns = snapshot.paperAgentNotificationColumns.filter(
+      (column) => column !== 'telegramStatus',
+    );
+
+    expect(planProductionSchemaRepair(snapshot)).toEqual({
+      action: 'refuse',
+      reason: 'PARTIAL_PAPER_AGENT_PHASE2_MIGRATION',
+    });
+  });
+
+  it('половина Phase 3 paper-агента останавливает запуск', () => {
+    const snapshot = readySnapshot();
+    snapshot.paperAgentAllocationColumns = snapshot.paperAgentAllocationColumns.filter(
+      (column) => column !== 'allocatedUsd',
+    );
+
+    expect(planProductionSchemaRepair(snapshot)).toEqual({
+      action: 'refuse',
+      reason: 'PARTIAL_PAPER_AGENT_PHASE3_MIGRATION',
+    });
+  });
+
   it('пустая база не превращается в существующую', () => {
     const snapshot = legacySnapshot();
     snapshot.userColumns = [];

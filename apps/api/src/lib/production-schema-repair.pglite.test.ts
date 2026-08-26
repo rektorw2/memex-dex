@@ -12,6 +12,9 @@ import {
   TRADE_PROVENANCE_MIGRATION,
   WALLET_SUMMARY_MIGRATION,
   WALLET_ACTIVITY_PNL_MIGRATION,
+  PAPER_AGENT_MIGRATION,
+  PAPER_AGENT_PHASE2_MIGRATION,
+  PAPER_AGENT_PHASE3_MIGRATION,
   planProductionSchemaRepair,
 } from './production-schema-repair.js';
 import { readProductionSchemaSnapshot, type RawQuery } from './production-schema-snapshot.js';
@@ -100,6 +103,9 @@ describe('загрузчик на настоящей схеме', () => {
         TRADE_PROVENANCE_MIGRATION,
         WALLET_SUMMARY_MIGRATION,
         WALLET_ACTIVITY_PNL_MIGRATION,
+        PAPER_AGENT_MIGRATION,
+        PAPER_AGENT_PHASE2_MIGRATION,
+        PAPER_AGENT_PHASE3_MIGRATION,
       ],
     });
 
@@ -123,6 +129,9 @@ describe('загрузчик на настоящей схеме', () => {
         TRADE_PROVENANCE_MIGRATION,
         WALLET_SUMMARY_MIGRATION,
         WALLET_ACTIVITY_PNL_MIGRATION,
+        PAPER_AGENT_MIGRATION,
+        PAPER_AGENT_PHASE2_MIGRATION,
+        PAPER_AGENT_PHASE3_MIGRATION,
       ],
     });
 
@@ -141,6 +150,9 @@ describe('загрузчик на настоящей схеме', () => {
         TRADE_PROVENANCE_MIGRATION,
         WALLET_SUMMARY_MIGRATION,
         WALLET_ACTIVITY_PNL_MIGRATION,
+        PAPER_AGENT_MIGRATION,
+        PAPER_AGENT_PHASE2_MIGRATION,
+        PAPER_AGENT_PHASE3_MIGRATION,
       ],
     });
 
@@ -157,6 +169,9 @@ describe('загрузчик на настоящей схеме', () => {
         TRADE_PROVENANCE_MIGRATION,
         WALLET_SUMMARY_MIGRATION,
         WALLET_ACTIVITY_PNL_MIGRATION,
+        PAPER_AGENT_MIGRATION,
+        PAPER_AGENT_PHASE2_MIGRATION,
+        PAPER_AGENT_PHASE3_MIGRATION,
       ],
     });
 
@@ -167,7 +182,7 @@ describe('загрузчик на настоящей схеме', () => {
     expect(await planOf(db), 'остаётся накопление ATH').toEqual({
       action: 'apply-migrations',
       resolveBaseline: false,
-      pending: [OKX_SIGNAL_ATH_MIGRATION, TRADE_PROVENANCE_MIGRATION, WALLET_SUMMARY_MIGRATION, WALLET_ACTIVITY_PNL_MIGRATION],
+      pending: [OKX_SIGNAL_ATH_MIGRATION, TRADE_PROVENANCE_MIGRATION, WALLET_SUMMARY_MIGRATION, WALLET_ACTIVITY_PNL_MIGRATION, PAPER_AGENT_MIGRATION, PAPER_AGENT_PHASE2_MIGRATION, PAPER_AGENT_PHASE3_MIGRATION],
     });
 
     // Шаг 6. Пик после каждого события Signal.
@@ -177,7 +192,7 @@ describe('загрузчик на настоящей схеме', () => {
     expect(await planOf(db), 'остаётся происхождение сделки').toEqual({
       action: 'apply-migrations',
       resolveBaseline: false,
-      pending: [TRADE_PROVENANCE_MIGRATION, WALLET_SUMMARY_MIGRATION, WALLET_ACTIVITY_PNL_MIGRATION],
+      pending: [TRADE_PROVENANCE_MIGRATION, WALLET_SUMMARY_MIGRATION, WALLET_ACTIVITY_PNL_MIGRATION, PAPER_AGENT_MIGRATION, PAPER_AGENT_PHASE2_MIGRATION, PAPER_AGENT_PHASE3_MIGRATION],
     });
 
     // Шаг 7. Происхождение и идентичность экономической сделки.
@@ -187,7 +202,7 @@ describe('загрузчик на настоящей схеме', () => {
     expect(await planOf(db), 'остаётся контракт сводки').toEqual({
       action: 'apply-migrations',
       resolveBaseline: false,
-      pending: [WALLET_SUMMARY_MIGRATION, WALLET_ACTIVITY_PNL_MIGRATION],
+      pending: [WALLET_SUMMARY_MIGRATION, WALLET_ACTIVITY_PNL_MIGRATION, PAPER_AGENT_MIGRATION, PAPER_AGENT_PHASE2_MIGRATION, PAPER_AGENT_PHASE3_MIGRATION],
     });
 
     // Шаг 8. Контракт сводки результативности кошелька.
@@ -197,20 +212,50 @@ describe('загрузчик на настоящей схеме', () => {
     expect(await planOf(db), 'остаётся локальный PnL ленты').toEqual({
       action: 'apply-migrations',
       resolveBaseline: false,
-      pending: [WALLET_ACTIVITY_PNL_MIGRATION],
+      pending: [WALLET_ACTIVITY_PNL_MIGRATION, PAPER_AGENT_MIGRATION, PAPER_AGENT_PHASE2_MIGRATION, PAPER_AGENT_PHASE3_MIGRATION],
     });
 
     // Шаг 9. Локальный PnL события ленты.
     await db.exec(sqlOf(WALLET_ACTIVITY_PNL_MIGRATION));
     await markApplied(db, WALLET_ACTIVITY_PNL_MIGRATION);
 
+    expect(await planOf(db), 'остаётся paper-агент').toEqual({
+      action: 'apply-migrations',
+      resolveBaseline: false,
+      pending: [PAPER_AGENT_MIGRATION, PAPER_AGENT_PHASE2_MIGRATION, PAPER_AGENT_PHASE3_MIGRATION],
+    });
+
+    // Шаг 10. Автономный paper-агент.
+    await db.exec(sqlOf(PAPER_AGENT_MIGRATION));
+    await markApplied(db, PAPER_AGENT_MIGRATION);
+
+    expect(await planOf(db), 'остаётся Phase 2 paper-агента').toEqual({
+      action: 'apply-migrations',
+      resolveBaseline: false,
+      pending: [PAPER_AGENT_PHASE2_MIGRATION, PAPER_AGENT_PHASE3_MIGRATION],
+    });
+
+    // Шаг 11. Ручное управление, стоимость и outbox.
+    await db.exec(sqlOf(PAPER_AGENT_PHASE2_MIGRATION));
+    await markApplied(db, PAPER_AGENT_PHASE2_MIGRATION);
+
+    expect(await planOf(db), 'остаётся Phase 3 распределения капитала').toEqual({
+      action: 'apply-migrations',
+      resolveBaseline: false,
+      pending: [PAPER_AGENT_PHASE3_MIGRATION],
+    });
+
+    // Шаг 12. Изолированные ACTIVE/SHADOW счета и неизменяемый ledger.
+    await db.exec(sqlOf(PAPER_AGENT_PHASE3_MIGRATION));
+    await markApplied(db, PAPER_AGENT_PHASE3_MIGRATION);
+
     expect(await planOf(db), 'схема сошлась').toEqual({ action: 'ready' });
 
-    // Шаг 10. Следующий деплой ничего не делает.
+    // Шаг 13. Следующий деплой ничего не делает.
     expect(await planOf(db)).toEqual({ action: 'ready' });
 
     await db.close();
-  });
+  }, 15_000);
 
   it('видит незнакомую миграцию в каталоге', async () => {
     const db = await PGlite.create();

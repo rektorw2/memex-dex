@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { TokenLogo } from '@/components/TokenLogo';
-import { PriceChart } from '@/components/PriceChart';
+import { PriceChart, type AgentChartMarker } from '@/components/PriceChart';
 import { fmtPrice, fmtUsd, fmtPct } from '@/lib/api';
 import {
   CHART_STATE_TEXT,
@@ -51,6 +51,8 @@ interface Props {
    * это позволяет подменить одну функцию вместо всего слоя запросов.
    */
   loadOlder?: (before: number) => Promise<{ candles: LiveChartCandle[]; oldest: number | null }>;
+  markers?: AgentChartMarker[];
+  focusMarkerId?: string | null;
 }
 
 export function ChartPanel({
@@ -62,6 +64,8 @@ export function ChartPanel({
   chartHeight = 420,
   showHeader = true,
   loadOlder,
+  markers = [],
+  focusMarkerId = null,
 }: Props) {
   return (
     <ChartPanelBody
@@ -73,6 +77,8 @@ export function ChartPanel({
       chartHeight={chartHeight}
       showHeader={showHeader}
       loadOlder={loadOlder}
+      markers={markers}
+      focusMarkerId={focusMarkerId}
     />
   );
 }
@@ -86,8 +92,10 @@ function ChartPanelBody({
   chartHeight,
   showHeader,
   loadOlder,
+  markers,
+  focusMarkerId,
 }: Required<Pick<Props, 'interval' | 'onInterval' | 'chartHeight' | 'showHeader'>> &
-  Pick<Props, 'token' | 'chart' | 'onRetry' | 'loadOlder'>) {
+  Pick<Props, 'token' | 'chart' | 'onRetry' | 'loadOlder' | 'markers' | 'focusMarkerId'>) {
   const tokenId = token?.id ?? null;
 
   /** Догруженные страницы истории. Живут отдельно от базового ответа. */
@@ -96,6 +104,7 @@ function ChartPanelBody({
   const [awayFromLive, setAwayFromLive] = useState(false);
   /** Счётчик команды «вернуться к live». */
   const [goLive, setGoLive] = useState(0);
+  const [focusNonce, setFocusNonce] = useState(0);
 
   /*
    * Поколение запроса.
@@ -114,6 +123,12 @@ function ChartPanelBody({
     setHistory(tokenId ? emptyCandleHistory(tokenId, interval) : null);
     setAwayFromLive(false);
   }, [tokenId, interval]);
+
+  useEffect(() => {
+    if (!focusMarkerId) return;
+    setFocusNonce((value) => value + 1);
+    setAwayFromLive(true);
+  }, [focusMarkerId]);
 
   const baseCandles = (Array.isArray(chart?.candles) ? chart.candles : []) as LiveChartCandle[];
 
@@ -220,6 +235,20 @@ function ChartPanelBody({
    * в четырёх случаях.
    */
   const state = (chart?.state ?? 'candles-queued') as ChartState;
+  const focusTime = markers?.find((marker) => marker.id === focusMarkerId)?.time ?? null;
+  const markerList = markers ?? [];
+  const focusWindowSeconds =
+    interval === '1s'
+      ? 300
+      : interval === '5m'
+        ? 18_000
+        : interval === '15m'
+          ? 54_000
+          : interval === '1h'
+            ? 259_200
+            : interval === '4h'
+              ? 1_036_800
+              : 5_184_000;
 
   return (
     <div className="flex h-full min-w-0 flex-col">
@@ -316,6 +345,10 @@ function ChartPanelBody({
               // Пока человек изучает прошлое, новая свеча не тащит
               // его обратно к текущей цене.
               followLive={!awayFromLive}
+              markers={markerList}
+              focusTime={focusTime}
+              focusNonce={focusNonce}
+              focusWindowSeconds={focusWindowSeconds}
             />
 
             {/*
@@ -397,6 +430,31 @@ function ChartPanelBody({
           </div>
         )}
       </div>
+
+      {markerList.length > 0 && (
+        <details className="border-t border-border px-4 py-2 text-xs">
+          <summary className="cursor-pointer text-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60">
+            События paper-агента на графике · {markerList.length}
+          </summary>
+          <ol className="mt-2 max-h-32 space-y-1 overflow-y-auto" aria-label="События paper-агента">
+            {markerList.map((marker) => (
+              <li key={marker.id} className="flex flex-wrap gap-x-2 text-muted">
+                <span className={marker.side === 'BUY' ? 'text-up' : 'text-down'}>
+                  PAPER {marker.side}
+                </span>
+                <time dateTime={new Date(marker.time * 1_000).toISOString()}>
+                  {new Date(marker.time * 1_000).toLocaleString('ru-RU')}
+                </time>
+                <span>{marker.strategyLabel}</span>
+                <span>{marker.priceUsd == null ? 'цена —' : fmtPrice(marker.priceUsd)}</span>
+                {marker.side === 'SELL' && (
+                  <span>{marker.pnlUsd == null ? 'PnL —' : `PnL ${fmtUsd(marker.pnlUsd)}`}</span>
+                )}
+              </li>
+            ))}
+          </ol>
+        </details>
+      )}
 
       {/* Метрики и адрес */}
       <div className="border-t border-border">
