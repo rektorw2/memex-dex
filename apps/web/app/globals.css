@@ -303,3 +303,21 @@ body {
 
   .plan-card:hover { transform: none; }
 }
+
+/* PAPER-agent: calm product feedback, never a casino animation. */
+@keyframes agent-enter {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes agent-status-pulse {
+  0%, 100% { opacity: .55; box-shadow: 0 0 0 0 currentColor; }
+  50% { opacity: 1; box-shadow: 0 0 0 4px transparent; }
+}
+
+.agent-enter { animation: agent-enter 300ms ease-out both; }
+.agent-status-dot { animation: agent-status-pulse 1.8s ease-in-out infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-enter, .agent-status-dot { animation: none; }
+}

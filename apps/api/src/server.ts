@@ -12,7 +12,6 @@ import { prisma } from './lib/prisma.js';
 import { authPlugin } from './lib/auth-plugin.js';
 import { authRoutes } from './modules/auth.js';
 import { orderRoutes } from './modules/orders.js';
-import { callRoutes } from './modules/calls.js';
 import { copyRoutes } from './modules/copytrade.js';
 import { portfolioRoutes } from './modules/portfolio.js';
 import { adminRoutes } from './modules/admin.js';
@@ -26,7 +25,6 @@ import { paymentRoutes } from './modules/payments.js';
 import { webhookRoutes } from './modules/webhooks.js';
 import { walletIntelRoutes } from './modules/wallets-intel.js';
 import { walletFavoriteRoutes } from './modules/wallet-favorites.js';
-import { autoRuleRoutes } from './modules/auto-rule.js';
 import { ingestRoutes } from './modules/ingest.js';
 import { paperAgentRoutes } from './modules/paper-agent.js';
 
@@ -71,7 +69,7 @@ export async function buildServer() {
    *
    * Стандартный парсер Fastify отвергает такой запрос с сообщением
    * «Body cannot be empty», хотя у действий без параметров тела и не
-   * должно быть: публикация колла, запуск импорта, выход из сессии.
+   * должно быть: запуск импорта, выход из сессии.
    * Клиент теперь не ставит заголовок без тела, но сервер не обязан
    * зависеть от аккуратности клиента — их может быть несколько.
    */
@@ -100,7 +98,7 @@ export async function buildServer() {
   // маршрутов, обязан получать те же коды, что и боевой сервер.
   app.setErrorHandler(sendError);
 
-  // ─── WebSocket: цены, статусы ордеров, новые коллы ───────────────────────
+  // ─── WebSocket: цены и статусы ордеров ──────────────────────────────────
   // Структурный тип вместо импорта из 'ws': пакета @types/ws в зависимостях
   // нет, а нужны ровно три члена. Тянуть типы всего WebSocket ради этого
   // незачем — и лишняя зависимость в проде тоже не нужна.
@@ -136,14 +134,12 @@ export async function buildServer() {
   await app.register(webhookRoutes, { prefix: '/api' });
   await app.register(tokenRoutes, { prefix: '/api/v1' });
   await app.register(orderRoutes, { prefix: '/api/v1' });
-  await app.register(callRoutes, { prefix: '/api/v1' });
   await app.register(copyRoutes, { prefix: '/api/v1' });
   await app.register(portfolioRoutes, { prefix: '/api/v1' });
   await app.register(walletRoutes, { prefix: '/api/v1' });
   await app.register(radarRoutes, { prefix: '/api/v1' });
   await app.register(walletIntelRoutes, { prefix: '/api/v1' });
   await app.register(walletFavoriteRoutes, { prefix: '/api/v1' });
-  await app.register(autoRuleRoutes, { prefix: '/api/v1' });
   await app.register(ingestRoutes, { prefix: '/api/v1' });
   await app.register(paperAgentRoutes, { prefix: '/api/v1' });
   await app.register(adminRoutes, { prefix: '/api/v1' });
@@ -160,7 +156,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // динамический: при выключенном флаге модули даже не загружаются.
   let stopWorkers: (() => void) | null = null;
   if (env.RUN_WORKERS_IN_API) {
-    const [limit, price, copy, importer, candles, radar, tracker, wallets, auto, scam] = await Promise.all([
+    const [limit, price, copy, importer, candles, radar, tracker, wallets, scam] = await Promise.all([
       import('./workers/limit-watcher.js'),
       import('./workers/price-updater.js'),
       import('./workers/copy-executor.js'),
@@ -169,7 +165,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       import('./workers/radar-scanner.js'),
       import('./workers/radar-tracker.js'),
       import('./workers/wallet-tracker.js'),
-      import('./workers/auto-publisher.js'),
       import('./workers/scam-checker.js'),
     ]);
 
@@ -181,7 +176,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     radar.startRadarScanner();
     tracker.startRadarTracker();
     wallets.startWalletTracker();
-    auto.startAutoPublisher();
     scam.startScamChecker();
 
     /**
@@ -248,7 +242,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       radar.stopRadarScanner();
       tracker.stopRadarTracker();
       wallets.stopWalletTracker();
-      auto.stopAutoPublisher();
       scam.stopScamChecker();
       stopSchemaWorkers?.();
     };

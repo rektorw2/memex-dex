@@ -7,6 +7,8 @@ import {
   percentile,
   summarizePaperAgentLatencies,
   summarizePaperDecisionDimensions,
+  liveReadiness,
+  SOLANA_DEPOSIT_ASSETS,
 } from '@memex/core';
 import { env } from '../lib/env.js';
 import { prisma } from '../lib/prisma.js';
@@ -134,6 +136,14 @@ function serializeRun(run: any) {
     chain: run.chain,
     address: run.address,
     symbol: run.symbol,
+    token: run.token
+      ? {
+          id: run.token.id,
+          symbol: run.token.symbol,
+          name: run.token.name,
+          logoUrl: run.token.logoUrl,
+        }
+      : null,
     walletTypes: run.walletTypes,
     triggerWalletAddresses: run.triggerWalletAddresses,
     signalAmountUsd: numberOf(run.signalAmountUsd),
@@ -185,6 +195,14 @@ function serializeRun(run: any) {
 }
 
 function serializeAccount(row: any) {
+  const currentEquity = numberOf(row.equityUsd);
+  const dayCutoff = Date.now() - 24 * 60 * 60 * 1_000;
+  const dailyLedger = (row.ledger ?? []).filter(
+    (entry: any) => entry.createdAt.getTime() >= dayCutoff,
+  );
+  const dayStartEquity = dailyLedger.length
+    ? numberOf(dailyLedger[dailyLedger.length - 1]?.equityAfterUsd)
+    : null;
   return {
     id: row.id,
     kind: row.kind,
@@ -207,6 +225,8 @@ function serializeAccount(row: any) {
       networkCostsUsd: numberOf(row.networkCostsUsd),
       peakEquityUsd: numberOf(row.peakEquityUsd),
       drawdownPct: numberOf(row.drawdownPct),
+      dailyChangeUsd:
+        currentEquity != null && dayStartEquity != null ? currentEquity - dayStartEquity : null,
     },
     limits: {
       reservePct: numberOf(row.reservePct),
@@ -224,6 +244,126 @@ function serializeAccount(row: any) {
     resetFromId: row.resetFromId,
     createdAt: row.createdAt.toISOString(),
     closedAt: row.closedAt?.toISOString() ?? null,
+    ledger: (row.ledger ?? []).map((entry: any) => ({
+      id: entry.id,
+      eventType: entry.eventType,
+      amountUsd: numberOf(entry.amountUsd),
+      freeAfterUsd: numberOf(entry.freeAfterUsd),
+      reservedAfterUsd: numberOf(entry.reservedAfterUsd),
+      inPositionsAfterUsd: numberOf(entry.inPositionsAfterUsd),
+      realizedPnlAfterUsd: numberOf(entry.realizedPnlAfterUsd),
+      equityAfterUsd: numberOf(entry.equityAfterUsd),
+      tradingFeesAfterUsd: numberOf(entry.tradingFeesAfterUsd),
+      slippageAfterUsd: numberOf(entry.slippageAfterUsd),
+      networkCostsAfterUsd: numberOf(entry.networkCostsAfterUsd),
+      createdAt: entry.createdAt.toISOString(),
+      allocation: entry.allocation
+        ? {
+            decisionCode: entry.allocation.decisionCode,
+            reason: entry.allocation.allocationReason,
+            signalScore: entry.allocation.signalScore,
+            tokenId: entry.allocation.run.tokenId,
+            symbol: entry.allocation.run.symbol,
+            address: entry.allocation.run.address,
+            chain: entry.allocation.run.chain,
+            signalOrigin: entry.allocation.run.signalOrigin,
+            token: entry.allocation.run.token,
+          }
+        : null,
+    })),
+  };
+}
+
+/**
+ * DTO продуктового экрана.
+ *
+ * Обычному пользователю не нужны provider keys, адреса кошельков-источников,
+ * внутренние error codes и полная история policy. Они остаются только в
+ * административном endpoint. Здесь — состояние PAPER-счёта и объяснимые
+ * события, достаточные для проверки работы агента.
+ */
+export function publicSnapshotOf(snapshot: any, isAdmin: boolean) {
+  const activeAccount = snapshot.allocation.accounts.find(
+    (account: any) => account.kind === 'ACTIVE' && account.status !== 'CLOSED',
+  ) ?? null;
+  const publicRun = (run: any) => ({
+    id: run.id,
+    tokenId: run.tokenId,
+    token: run.token,
+    state: run.state,
+    decisionCode: run.decisionCode,
+    strategyLabel: run.strategyLabel,
+    chain: run.chain,
+    address: run.address,
+    symbol: run.symbol,
+    signaledAt: run.signaledAt,
+    decidedAt: run.decidedAt,
+    signalOrigin: run.signalOrigin,
+    entryAt: run.entryAt,
+    exitAt: run.exitAt,
+    entryPriceUsd: run.entryPriceUsd,
+    currentPriceUsd: run.currentPriceUsd,
+    realizedPnlUsd: run.realizedPnlUsd,
+    unrealizedPnlUsd: run.unrealizedPnlUsd,
+    maxMultiple: run.maxMultiple,
+    durationMs: run.durationMs,
+    positionUsd: run.positionUsd,
+    totalCostsUsd: run.totalCostsUsd,
+    allocation: run.allocation,
+  });
+  const activeRuns = snapshot.positions.open.filter(
+    (run: any) => run.allocation && run.allocation.legacy !== true,
+  );
+  const lastDecision = snapshot.decisions.find((run: any) => run.decidedAt != null) ?? null;
+
+  return {
+    paper: true,
+    network: 'Solana',
+    viewer: { isAdmin },
+    health: snapshot.health,
+    control: {
+      isEnabled: snapshot.control.isEnabled,
+      activeAllocationMode: snapshot.control.activeAllocationMode,
+      learningModeEnabled: snapshot.control.learningModeEnabled,
+    },
+    runtime: {
+      running: snapshot.runtime.running,
+      lastActivityAt: snapshot.runtime.lastActivityAt,
+      queued: snapshot.runtime.queued,
+    },
+    source: {
+      transportMode: snapshot.okxSignal.transportMode,
+      socketState: snapshot.okxSignal.socket?.state ?? null,
+      lastSignalAt: snapshot.okxSignal.lastSignalAt,
+      lastRestSuccessAt: snapshot.okxSignal.lastRestSuccessAt,
+      nextRestReconciliationAt: snapshot.okxSignal.nextRestReconciliationAt,
+      fallbackActive: snapshot.okxSignal.transportMode === 'REST_ONLY',
+    },
+    lastDecisionAt: lastDecision?.decidedAt ?? null,
+    notifications: {
+      unread: snapshot.notifications.unread,
+      telegramEnabled: snapshot.notifications.telegramEnabled,
+    },
+    metrics24h: {
+      uniqueSignals: snapshot.metrics24h.uniqueSignals,
+      runs: snapshot.metrics24h.runs,
+      openPositions: snapshot.metrics24h.openPositions,
+      closedPositions: snapshot.metrics24h.states.PAPER_CLOSED ?? 0,
+      capitalUtilizationPct:
+        activeAccount?.capital.initialUsd > 0
+          ? (activeAccount.capital.inPositionsUsd / activeAccount.capital.initialUsd) * 100
+          : 0,
+    },
+    wallet: activeAccount,
+    positions: activeRuns.map(publicRun),
+    recentDecisions: snapshot.decisions.slice(0, 60).map(publicRun),
+    analytics: {
+      strategyCount: snapshot.comparison.length,
+      decisionLatencyP50Ms: snapshot.metrics24h.decisionLatencyP50Ms,
+      decisionLatencyP95Ms: snapshot.metrics24h.decisionLatencyP95Ms,
+      validLatencySampleSize: snapshot.metrics24h.decisionLatencySampleSize,
+    },
+    phase4: snapshot.phase4,
   };
 }
 
@@ -349,7 +489,7 @@ function summarizeAllocations(rows: any[]) {
 
 /** Административная наблюдаемость и только ручное управление. */
 export const paperAgentRoutes: FastifyPluginAsync = async (app) => {
-  app.get('/admin/paper-agent', { preHandler: [app.requireAdmin] }, async () => {
+  const readSnapshot = async () => {
     await ensurePaperAgentConfig();
     const since = new Date(Date.now() - 24 * 60 * 60 * 1_000);
     const [
@@ -463,6 +603,42 @@ export const paperAgentRoutes: FastifyPluginAsync = async (app) => {
     const [allocationAccounts, allocationPolicies, allocationRows] = await Promise.all([
       prisma.paperAgentAccountSession.findMany({
         where: { status: { in: ['ACTIVE', 'DRAINING', 'CLOSED'] } },
+        include: {
+          ledger: {
+            orderBy: { createdAt: 'desc' },
+            take: 80,
+            select: {
+              id: true,
+              eventType: true,
+              amountUsd: true,
+              freeAfterUsd: true,
+              reservedAfterUsd: true,
+              inPositionsAfterUsd: true,
+              realizedPnlAfterUsd: true,
+              equityAfterUsd: true,
+              tradingFeesAfterUsd: true,
+              slippageAfterUsd: true,
+              networkCostsAfterUsd: true,
+              createdAt: true,
+              allocation: {
+                select: {
+                  decisionCode: true,
+                  allocationReason: true,
+                  signalScore: true,
+                  run: {
+                    select: {
+                      tokenId: true,
+                      symbol: true,
+                      address: true,
+                      chain: true,
+                      signalOrigin: true,
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
         orderBy: { createdAt: 'desc' },
         take: 40,
       }),
@@ -536,10 +712,48 @@ export const paperAgentRoutes: FastifyPluginAsync = async (app) => {
       lastActivityAtMs: runtime.lastActivityAt == null ? null : Date.parse(runtime.lastActivityAt),
       nowMs: Date.now(),
     });
+    const live = liveReadiness({
+      executionMode: env.EXECUTION_MODE,
+      liveAgentEnabled: env.LIVE_AGENT_ENABLED,
+      liveExecutionEnabled: env.LIVE_EXECUTION_ENABLED,
+      withdrawalsEnabled: env.WITHDRAWALS_ENABLED,
+      kmsProvider: env.KMS_PROVIDER,
+      kmsSigningReady: env.KMS_SIGNING_ENABLED,
+      rpcReady: env.LIVE_RPC_READY,
+      reconciliationReady: env.LIVE_RECONCILIATION_ENABLED,
+      migrationsReady: env.LIVE_MIGRATIONS_READY,
+      semiAutoReady: env.LIVE_AGENT_CONTROL_MODE === 'semi-auto',
+      networkAdaptersReady: false,
+      autoRequested: env.LIVE_AGENT_CONTROL_MODE === 'auto',
+    });
 
     return {
       paper: true,
       network: 'Solana',
+      phase4: {
+        mode: 'SEMI_AUTO',
+        network: 'SOLANA',
+        live: {
+          enabled: env.LIVE_AGENT_ENABLED,
+          executionEnabled: env.LIVE_EXECUTION_ENABLED,
+          ready: live.ready,
+          blockers: live.blockers,
+        },
+        funding: {
+          enabled: env.FUNDING_ENABLED,
+          source: env.FUNDING_ENABLED ? 'NOT_CONFIGURED' : 'DISABLED',
+          assets: SOLANA_DEPOSIT_ASSETS.map((asset) => ({
+            symbol: asset.symbol,
+            mint: asset.mint,
+            minAmount: asset.minAmount,
+            decimals: asset.decimals,
+            minConfirmations: asset.minConfirmations,
+          })),
+        },
+        withdrawals: { enabled: env.WITHDRAWALS_ENABLED },
+        compliance: { state: 'NOT_CONFIGURED' },
+        proposal: null,
+      },
       health,
       control: {
         isEnabled: control.isEnabled,
@@ -670,7 +884,19 @@ export const paperAgentRoutes: FastifyPluginAsync = async (app) => {
       },
       decisions: recent.map(serializeRun),
     };
+  };
+
+  app.get('/paper-agent', { preHandler: [app.authenticate] }, async (req, reply) => {
+    const actor = await prisma.user.findUnique({
+      where: { id: req.user.sub },
+      select: { role: true },
+    });
+    if (!actor) return reply.code(401).send({ error: 'Требуется авторизация' });
+
+    return publicSnapshotOf(await readSnapshot(), actor.role === 'ADMIN');
   });
+
+  app.get('/admin/paper-agent', { preHandler: [app.requireAdmin] }, readSnapshot);
 
   app.put('/admin/paper-agent/allocation', { preHandler: [app.requireAdmin] }, async (req) => {
     const limitOverrides = z

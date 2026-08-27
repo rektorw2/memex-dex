@@ -250,6 +250,12 @@ export const walletRoutes: FastifyPluginAsync = async (app) => {
    * означал бы риск потери средств пользователей.
    */
   app.post('/wallets/withdraw', { preHandler: [app.authenticate] }, async (req, reply) => {
+    if (!env.WITHDRAWALS_ENABLED) {
+      return reply.code(503).send({
+        error: 'Вывод реальных средств ещё не включён',
+        code: 'WITHDRAWALS_DISABLED',
+      });
+    }
     /*
      * Вывод средств не закрывается никогда.
      *

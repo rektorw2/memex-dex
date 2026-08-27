@@ -267,34 +267,6 @@ function TokenPage() {
             onUpdated={() => mutate()}
           />
 
-          {/* Коллы по токену */}
-          {data.calls?.length > 0 && (
-            <div className="panel p-4">
-              <h2 className="font-medium mb-3">Коллы аналитиков</h2>
-              <div className="space-y-3">
-                {data.calls.map((c: any) => (
-                  <div key={c.id} className="bg-bg rounded-md p-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="font-medium text-sm">{c.title}</div>
-                      <StatusBadge status={c.status} />
-                    </div>
-                    <p className="text-xs text-muted mt-1.5 line-clamp-2">{c.thesis}</p>
-                    <div className="flex gap-4 mt-2 text-xs">
-                      <span className="text-muted">
-                        вход <span className="num text-white">{fmtPrice(c.entryPriceUsd)}</span>
-                      </span>
-                      {c.resultPct != null && (
-                        <span className={Number(c.resultPct) >= 0 ? 'text-up num' : 'text-down num'}>
-                          {fmtPct(c.resultPct)}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
           {/* Сделки на платформе */}
           <div className="panel p-4">
             <h2 className="font-medium mb-3">Сделки на платформе</h2>
@@ -467,17 +439,4 @@ function Row({ label, value, tone }: { label: string; value: string; tone?: 'up'
       </span>
     </div>
   );
-}
-
-const STATUS_LABEL: Record<string, { text: string; cls: string }> = {
-  PUBLISHED: { text: 'активен', cls: 'bg-accent/15 text-accent' },
-  HIT_TARGET: { text: 'цель взята', cls: 'bg-up/15 text-up' },
-  STOPPED_OUT: { text: 'стоп', cls: 'bg-down/15 text-down' },
-  EXPIRED: { text: 'истёк', cls: 'bg-border text-muted' },
-  CANCELLED: { text: 'отменён', cls: 'bg-border text-muted' },
-};
-
-function StatusBadge({ status }: { status: string }) {
-  const s = STATUS_LABEL[status] ?? { text: status, cls: 'bg-border text-muted' };
-  return <span className={`text-xs px-2 py-0.5 rounded whitespace-nowrap ${s.cls}`}>{s.text}</span>;
 }

@@ -38,6 +38,8 @@ export interface RouteRule {
   capability?: Capability;
   /** Только для роли администратора. Проверяется отдельно от плана. */
   adminOnly?: boolean;
+  /** Куда отправить гостя. По умолчанию — публичная витрина. */
+  anonymousTo?: '/' | '/login';
 }
 
 /**
@@ -74,9 +76,12 @@ export const ROUTE_RULES: readonly RouteRule[] = [
   // Оплата — уже не витрина: платить без аккаунта некому и незачем.
   { prefix: '/checkout', audience: 'authenticated' },
 
+  // Продуктовый экран PAPER-агента доступен каждому вошедшему. Для
+  // прямой ссылки сохраняем полный next и ведём сразу на форму входа.
+  { prefix: '/agent', audience: 'authenticated', anonymousTo: '/login' },
+
   // ─── Нужна возможность ───────────────────────────────────────────
   { prefix: '/radar', audience: 'capability', capability: 'RADAR_ACCESS' },
-  { prefix: '/calls', audience: 'capability', capability: 'RADAR_ACCESS' },
   { prefix: '/wallets', audience: 'capability', capability: 'SMART_WALLETS_ACCESS' },
   { prefix: '/copy', audience: 'capability', capability: 'LEADER_COPY_BUY' },
 
@@ -182,7 +187,7 @@ export function guard(path: string, state: VisitorState): GuardVerdict {
   if (rule.audience === 'public') return { kind: 'allow' };
 
   if (!state.authenticated) {
-    return { kind: 'redirect', to: '/', next, reason: 'anonymous' };
+    return { kind: 'redirect', to: rule.anonymousTo ?? '/', next, reason: 'anonymous' };
   }
 
   if (rule.adminOnly && !state.isAdmin) {

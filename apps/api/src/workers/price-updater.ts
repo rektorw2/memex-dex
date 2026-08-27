@@ -362,18 +362,6 @@ async function writePrice(id: string, price: number, observedAt: Date): Promise<
 
   if (count === 0) return false;
 
-  // Пик по активным коллам — для честной статистики автора.
-  await prisma.call
-    .updateMany({
-      where: {
-        tokenId: id,
-        status: 'PUBLISHED',
-        OR: [{ peakPriceUsd: null }, { peakPriceUsd: { lt: decimal } }],
-      },
-      data: { peakPriceUsd: decimal },
-    })
-    .catch(() => undefined);
-
   // GEMS хранит максимум для каждого отдельного события Signal.
   // Ошибка этой производной статистики не откатывает настоящую цену
   // токена: следующий live-тик попробует продлить пик ещё раз.

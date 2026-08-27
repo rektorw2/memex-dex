@@ -14,9 +14,9 @@
  *
  * Второе правило: **пополнение считается один раз.** Повторная
  * доставка вебхука — норма, а не сбой; переотправка одной и той же
- * подписи транзакции — тоже. Идентификатором служит подпись
- * транзакции в сети, потому что она существует ровно один раз
- * и не зависит от того, сколько раз нам о ней рассказали.
+ * подписи транзакции — тоже. Идентификатором служат подпись
+ * транзакции и индекс перевода: одна Solana-транзакция может
+ * содержать несколько независимых переводов.
  */
 
 /** Разрешённые к зачислению активы. */
@@ -71,8 +71,10 @@ export const DEPOSIT_REJECT = {
 export type DepositRejectCode = (typeof DEPOSIT_REJECT)[keyof typeof DEPOSIT_REJECT];
 
 export interface ObservedTransfer {
-  /** Подпись транзакции. Единственный устойчивый идентификатор. */
+  /** Подпись транзакции. */
   signature: string;
+  /** Индекс инструкции/перевода внутри транзакции. */
+  instructionIndex?: number;
   /** Сеть, в которой её увидели. */
   network: 'solana';
   /** Адрес выпуска токена. null — нативный SOL. */
@@ -155,12 +157,17 @@ export function minRawAmount(asset: AssetRule): bigint {
 /**
  * Ключ идемпотентности пополнения.
  *
- * Подпись транзакции, и ничего кроме. Не сумма, не время, не номер
- * вебхука: всё это может повториться или разойтись, а подпись
- * существует в сети ровно один раз.
+ * Подпись и индекс инструкции, без нестабильных полей вроде суммы,
+ * времени или номера вебхука. Подпись уникальна для транзакции,
+ * индекс — для отдельного перевода внутри неё.
  */
-export function depositKey(signature: string): string {
-  return signature.trim();
+export function depositKey(signature: string, instructionIndex = 0): string {
+  const normalized = signature.trim();
+  if (!normalized) throw new Error('depositKey: signature is required');
+  if (!Number.isSafeInteger(instructionIndex) || instructionIndex < 0) {
+    throw new Error('depositKey: instructionIndex must be a non-negative integer');
+  }
+  return `${normalized}:${instructionIndex}`;
 }
 
 /**

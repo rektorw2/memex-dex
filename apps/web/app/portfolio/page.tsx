@@ -124,7 +124,7 @@ export default function PortfolioPage() {
                       <span className="ml-2 text-xs px-1.5 py-0.5 rounded bg-accent/15 text-accent">копия</span>
                     )}
                     {t.source === 'CALL' && (
-                      <span className="ml-2 text-xs px-1.5 py-0.5 rounded bg-border text-muted">по коллу</span>
+                      <span className="ml-2 text-xs px-1.5 py-0.5 rounded bg-border text-muted">аналитический источник</span>
                     )}
                   </td>
                   <td className="p-3 text-right num text-xs">{fmtUsd(t.valueUsd)}</td>

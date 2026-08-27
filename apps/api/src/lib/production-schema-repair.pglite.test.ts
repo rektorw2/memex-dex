@@ -16,6 +16,7 @@ import {
   PAPER_AGENT_PHASE2_MIGRATION,
   PAPER_AGENT_PHASE3_MIGRATION,
   PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION,
+  PHASE4_LIVE_FOUNDATION_MIGRATION,
   planProductionSchemaRepair,
 } from './production-schema-repair.js';
 import { readProductionSchemaSnapshot, type RawQuery } from './production-schema-snapshot.js';
@@ -108,6 +109,7 @@ describe('загрузчик на настоящей схеме', () => {
         PAPER_AGENT_PHASE2_MIGRATION,
         PAPER_AGENT_PHASE3_MIGRATION,
         PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION,
+        PHASE4_LIVE_FOUNDATION_MIGRATION,
       ],
     });
 
@@ -135,6 +137,7 @@ describe('загрузчик на настоящей схеме', () => {
         PAPER_AGENT_PHASE2_MIGRATION,
         PAPER_AGENT_PHASE3_MIGRATION,
         PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION,
+        PHASE4_LIVE_FOUNDATION_MIGRATION,
       ],
     });
 
@@ -157,6 +160,7 @@ describe('загрузчик на настоящей схеме', () => {
         PAPER_AGENT_PHASE2_MIGRATION,
         PAPER_AGENT_PHASE3_MIGRATION,
         PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION,
+        PHASE4_LIVE_FOUNDATION_MIGRATION,
       ],
     });
 
@@ -177,6 +181,7 @@ describe('загрузчик на настоящей схеме', () => {
         PAPER_AGENT_PHASE2_MIGRATION,
         PAPER_AGENT_PHASE3_MIGRATION,
         PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION,
+        PHASE4_LIVE_FOUNDATION_MIGRATION,
       ],
     });
 
@@ -187,7 +192,7 @@ describe('загрузчик на настоящей схеме', () => {
     expect(await planOf(db), 'остаётся накопление ATH').toEqual({
       action: 'apply-migrations',
       resolveBaseline: false,
-      pending: [OKX_SIGNAL_ATH_MIGRATION, TRADE_PROVENANCE_MIGRATION, WALLET_SUMMARY_MIGRATION, WALLET_ACTIVITY_PNL_MIGRATION, PAPER_AGENT_MIGRATION, PAPER_AGENT_PHASE2_MIGRATION, PAPER_AGENT_PHASE3_MIGRATION, PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION],
+      pending: [OKX_SIGNAL_ATH_MIGRATION, TRADE_PROVENANCE_MIGRATION, WALLET_SUMMARY_MIGRATION, WALLET_ACTIVITY_PNL_MIGRATION, PAPER_AGENT_MIGRATION, PAPER_AGENT_PHASE2_MIGRATION, PAPER_AGENT_PHASE3_MIGRATION, PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION, PHASE4_LIVE_FOUNDATION_MIGRATION],
     });
 
     // Шаг 6. Пик после каждого события Signal.
@@ -197,7 +202,7 @@ describe('загрузчик на настоящей схеме', () => {
     expect(await planOf(db), 'остаётся происхождение сделки').toEqual({
       action: 'apply-migrations',
       resolveBaseline: false,
-      pending: [TRADE_PROVENANCE_MIGRATION, WALLET_SUMMARY_MIGRATION, WALLET_ACTIVITY_PNL_MIGRATION, PAPER_AGENT_MIGRATION, PAPER_AGENT_PHASE2_MIGRATION, PAPER_AGENT_PHASE3_MIGRATION, PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION],
+      pending: [TRADE_PROVENANCE_MIGRATION, WALLET_SUMMARY_MIGRATION, WALLET_ACTIVITY_PNL_MIGRATION, PAPER_AGENT_MIGRATION, PAPER_AGENT_PHASE2_MIGRATION, PAPER_AGENT_PHASE3_MIGRATION, PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION, PHASE4_LIVE_FOUNDATION_MIGRATION],
     });
 
     // Шаг 7. Происхождение и идентичность экономической сделки.
@@ -207,7 +212,7 @@ describe('загрузчик на настоящей схеме', () => {
     expect(await planOf(db), 'остаётся контракт сводки').toEqual({
       action: 'apply-migrations',
       resolveBaseline: false,
-      pending: [WALLET_SUMMARY_MIGRATION, WALLET_ACTIVITY_PNL_MIGRATION, PAPER_AGENT_MIGRATION, PAPER_AGENT_PHASE2_MIGRATION, PAPER_AGENT_PHASE3_MIGRATION, PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION],
+      pending: [WALLET_SUMMARY_MIGRATION, WALLET_ACTIVITY_PNL_MIGRATION, PAPER_AGENT_MIGRATION, PAPER_AGENT_PHASE2_MIGRATION, PAPER_AGENT_PHASE3_MIGRATION, PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION, PHASE4_LIVE_FOUNDATION_MIGRATION],
     });
 
     // Шаг 8. Контракт сводки результативности кошелька.
@@ -217,7 +222,7 @@ describe('загрузчик на настоящей схеме', () => {
     expect(await planOf(db), 'остаётся локальный PnL ленты').toEqual({
       action: 'apply-migrations',
       resolveBaseline: false,
-      pending: [WALLET_ACTIVITY_PNL_MIGRATION, PAPER_AGENT_MIGRATION, PAPER_AGENT_PHASE2_MIGRATION, PAPER_AGENT_PHASE3_MIGRATION, PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION],
+      pending: [WALLET_ACTIVITY_PNL_MIGRATION, PAPER_AGENT_MIGRATION, PAPER_AGENT_PHASE2_MIGRATION, PAPER_AGENT_PHASE3_MIGRATION, PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION, PHASE4_LIVE_FOUNDATION_MIGRATION],
     });
 
     // Шаг 9. Локальный PnL события ленты.
@@ -227,7 +232,7 @@ describe('загрузчик на настоящей схеме', () => {
     expect(await planOf(db), 'остаётся paper-агент').toEqual({
       action: 'apply-migrations',
       resolveBaseline: false,
-      pending: [PAPER_AGENT_MIGRATION, PAPER_AGENT_PHASE2_MIGRATION, PAPER_AGENT_PHASE3_MIGRATION, PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION],
+      pending: [PAPER_AGENT_MIGRATION, PAPER_AGENT_PHASE2_MIGRATION, PAPER_AGENT_PHASE3_MIGRATION, PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION, PHASE4_LIVE_FOUNDATION_MIGRATION],
     });
 
     // Шаг 10. Автономный paper-агент.
@@ -237,7 +242,7 @@ describe('загрузчик на настоящей схеме', () => {
     expect(await planOf(db), 'остаётся Phase 2 paper-агента').toEqual({
       action: 'apply-migrations',
       resolveBaseline: false,
-      pending: [PAPER_AGENT_PHASE2_MIGRATION, PAPER_AGENT_PHASE3_MIGRATION, PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION],
+      pending: [PAPER_AGENT_PHASE2_MIGRATION, PAPER_AGENT_PHASE3_MIGRATION, PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION, PHASE4_LIVE_FOUNDATION_MIGRATION],
     });
 
     // Шаг 11. Ручное управление, стоимость и outbox.
@@ -247,7 +252,7 @@ describe('загрузчик на настоящей схеме', () => {
     expect(await planOf(db), 'остаётся Phase 3 распределения капитала').toEqual({
       action: 'apply-migrations',
       resolveBaseline: false,
-      pending: [PAPER_AGENT_PHASE3_MIGRATION, PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION],
+      pending: [PAPER_AGENT_PHASE3_MIGRATION, PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION, PHASE4_LIVE_FOUNDATION_MIGRATION],
     });
 
     // Шаг 12. Изолированные ACTIVE/SHADOW счета и неизменяемый ledger.
@@ -257,16 +262,26 @@ describe('загрузчик на настоящей схеме', () => {
     expect(await planOf(db), 'остаётся исправление signal pipeline').toEqual({
       action: 'apply-migrations',
       resolveBaseline: false,
-      pending: [PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION],
+      pending: [PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION, PHASE4_LIVE_FOUNDATION_MIGRATION],
     });
 
     // Шаг 13. Происхождение ingest и три именованные задержки.
     await db.exec(sqlOf(PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION));
     await markApplied(db, PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION);
 
+    expect(await planOf(db), 'остаётся Phase 4 foundation').toEqual({
+      action: 'apply-migrations',
+      resolveBaseline: false,
+      pending: [PHASE4_LIVE_FOUNDATION_MIGRATION],
+    });
+
+    // Шаг 14. Безопасный фундамент LIVE без включения сетевых воркеров.
+    await db.exec(sqlOf(PHASE4_LIVE_FOUNDATION_MIGRATION));
+    await markApplied(db, PHASE4_LIVE_FOUNDATION_MIGRATION);
+
     expect(await planOf(db), 'схема сошлась').toEqual({ action: 'ready' });
 
-    // Шаг 14. Следующий деплой ничего не делает.
+    // Шаг 15. Следующий деплой ничего не делает.
     expect(await planOf(db)).toEqual({ action: 'ready' });
 
     await db.close();

@@ -313,6 +313,16 @@ const schema = z.object({
    * и локальным KMS.
    */
   FUNDING_ENABLED: booleanFromEnv.default(false),
+  /** Future LIVE agent. All three switches are false by default. */
+  LIVE_AGENT_ENABLED: booleanFromEnv.default(false),
+  LIVE_EXECUTION_ENABLED: booleanFromEnv.default(false),
+  WITHDRAWALS_ENABLED: booleanFromEnv.default(false),
+  /** Operator readiness gates. They are not client-visible controls. */
+  LIVE_RPC_READY: booleanFromEnv.default(false),
+  LIVE_RECONCILIATION_ENABLED: booleanFromEnv.default(false),
+  LIVE_MIGRATIONS_READY: booleanFromEnv.default(false),
+  KMS_SIGNING_ENABLED: booleanFromEnv.default(false),
+  LIVE_AGENT_CONTROL_MODE: z.enum(['semi-auto', 'auto']).default('semi-auto'),
 
   // ─── Почта ─────────────────────────────────────────────────────────
   //
@@ -647,6 +657,61 @@ if (env.NODE_ENV === 'production' && env.KMS_PROVIDER === 'local' && env.EXECUTI
     'KMS_PROVIDER=local запрещён при EXECUTION_MODE=live. ' +
       'Мастер-ключ в переменной окружения означает, что дамп окружения ' +
       'равен доступу ко всем средствам пользователей. Используйте aws-kms или gcp-kms.',
+  );
+}
+
+const phase4NetworkRequested =
+  env.FUNDING_ENABLED ||
+  env.LIVE_AGENT_ENABLED ||
+  env.LIVE_EXECUTION_ENABLED ||
+  env.WITHDRAWALS_ENABLED;
+const phase4LiveRequested =
+  env.LIVE_AGENT_ENABLED || env.LIVE_EXECUTION_ENABLED || env.WITHDRAWALS_ENABLED;
+
+if (phase4LiveRequested && env.EXECUTION_MODE !== 'live') {
+  throw new Error('LIVE Agent нельзя включить при EXECUTION_MODE=paper.');
+}
+
+if (phase4LiveRequested && env.KMS_PROVIDER === 'local') {
+  throw new Error('LIVE Agent нельзя включить с KMS_PROVIDER=local.');
+}
+
+if (phase4NetworkRequested) {
+  const missing = [
+    !env.LIVE_RPC_READY ? 'LIVE_RPC_READY' : null,
+    !env.LIVE_RECONCILIATION_ENABLED ? 'LIVE_RECONCILIATION_ENABLED' : null,
+    !env.LIVE_MIGRATIONS_READY ? 'LIVE_MIGRATIONS_READY' : null,
+  ].filter(Boolean);
+  if (missing.length > 0) {
+    throw new Error(
+      `Сетевые денежные операции требуют ${missing.join(', ')}. ` +
+        'Флаги готовности должны подтверждаться отдельными startup checks.',
+    );
+  }
+}
+
+if ((env.LIVE_EXECUTION_ENABLED || env.WITHDRAWALS_ENABLED) && !env.KMS_SIGNING_ENABLED) {
+  throw new Error('LIVE execution и withdrawals требуют KMS_SIGNING_ENABLED=true.');
+}
+
+if (env.LIVE_EXECUTION_ENABLED && !env.LIVE_AGENT_ENABLED) {
+  throw new Error('LIVE_EXECUTION_ENABLED требует LIVE_AGENT_ENABLED=true.');
+}
+
+if (env.WITHDRAWALS_ENABLED && !env.LIVE_EXECUTION_ENABLED) {
+  throw new Error('WITHDRAWALS_ENABLED требует LIVE_EXECUTION_ENABLED=true.');
+}
+
+if (env.LIVE_AGENT_CONTROL_MODE === 'auto') {
+  throw new Error('Полный Auto в Phase 4 запрещён. Доступен только Semi-Auto.');
+}
+
+// Contracts and mocks are present, but production Solana source, RPC
+// confirmation transport and production KMS adapters are deliberately absent.
+// No combination of optimistic env flags may turn a stub into a money path.
+if (phase4NetworkRequested) {
+  throw new Error(
+    'Phase 4 network adapters are not implemented. FUNDING/LIVE/WITHDRAWALS must remain false.',
   );
 }
 

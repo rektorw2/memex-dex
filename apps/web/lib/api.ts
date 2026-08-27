@@ -93,7 +93,7 @@ export async function api<T = unknown>(
   const headers: Record<string, string> = {
     // Заголовок ставится только когда тело действительно есть.
     // Fastify отклоняет запрос с content-type: application/json и пустым
-    // телом — а такие у нас все действия без параметров: публикация колла,
+    // телом — а такие у нас все действия без параметров: запуск импорта,
     // запуск импорта, выход из сессии.
     ...(init.body != null ? { 'content-type': 'application/json' } : {}),
     ...(init.headers as Record<string, string>),

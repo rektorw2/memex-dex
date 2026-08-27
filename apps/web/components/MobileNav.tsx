@@ -41,8 +41,13 @@ const SECONDARY: readonly Section[] = [{ href: '/radar/alerts', label: 'Увед
 
 /** Иконки разделов. Простые контуры без заливки — как везде в проекте. */
 const ICONS: Record<string, React.ReactElement> = {
-  '/calls': (
-    <path d="M3 12h3l2-5 3 10 2.5-7 1.5 4h4" stroke="currentColor" strokeWidth="1.5" fill="none" />
+  '/agent': (
+    <>
+      <rect x="4" y="5" width="12" height="11" rx="3" stroke="currentColor" strokeWidth="1.5" fill="none" />
+      <circle cx="8" cy="10" r="1" fill="currentColor" />
+      <circle cx="12" cy="10" r="1" fill="currentColor" />
+      <path d="M7.5 13h5M10 5V2.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </>
   ),
   '/radar': (
     <>

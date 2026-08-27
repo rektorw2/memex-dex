@@ -129,12 +129,17 @@ describe('минимальная сумма', () => {
 });
 
 describe('идемпотентность', () => {
-  it('ключом служит подпись транзакции', () => {
-    // Не сумма и не номер вебхука: они повторяются и расходятся,
-    // а подпись существует в сети ровно один раз.
-    expect(depositKey('  sig-1  ')).toBe('sig-1');
-    expect(depositKey('sig-1')).toBe(depositKey('sig-1'));
+  it('ключом служит подпись и индекс перевода', () => {
+    expect(depositKey('  sig-1  ', 0)).toBe('sig-1:0');
+    expect(depositKey('sig-1', 1)).toBe('sig-1:1');
+    expect(depositKey('sig-1', 0)).toBe(depositKey('sig-1', 0));
+    expect(depositKey('sig-1', 0)).not.toBe(depositKey('sig-1', 1));
     expect(depositKey('sig-1')).not.toBe(depositKey('sig-2'));
+  });
+
+  it('отклоняет пустую подпись и неверный индекс', () => {
+    expect(() => depositKey('')).toThrow('signature');
+    expect(() => depositKey('sig', -1)).toThrow('instructionIndex');
   });
 });
 

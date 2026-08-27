@@ -26,6 +26,9 @@ import {
   PAPER_AGENT_PHASE2_MIGRATION,
   PAPER_AGENT_PHASE3_MIGRATION,
   PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION,
+  PHASE4_LIVE_FOUNDATION_MIGRATION,
+  PHASE4_LIVE_TABLES,
+  PHASE4_LIVE_ENUMS,
   PAPER_AGENT_PHASE2_CONTROL_COLUMNS,
   PAPER_AGENT_PHASE2_RUN_COLUMNS,
   PAPER_AGENT_PHASE3_CONTROL_COLUMNS,
@@ -133,7 +136,9 @@ function readySnapshot(): ProductionSchemaSnapshot {
     'PaperAgentAccountSession',
     'PaperAgentAllocation',
     'PaperAgentCapitalLedger',
+    ...PHASE4_LIVE_TABLES,
   );
+  s.enums.push(...PHASE4_LIVE_ENUMS);
   s.economicTradeColumns = [...TRADE_PROVENANCE_COLUMNS];
   s.traderWalletColumns = [...WALLET_SUMMARY_COLUMNS];
   s.walletActivityColumns = [...WALLET_ACTIVITY_PNL_COLUMNS];
@@ -192,7 +197,9 @@ describe('готовая база', () => {
       'PaperAgentAccountSession',
       'PaperAgentAllocation',
       'PaperAgentCapitalLedger',
+      ...PHASE4_LIVE_TABLES,
     );
+    after.enums.push(...PHASE4_LIVE_ENUMS);
     after.economicTradeColumns = [...TRADE_PROVENANCE_COLUMNS];
     after.traderWalletColumns = [...WALLET_SUMMARY_COLUMNS];
     after.walletActivityColumns = [...WALLET_ACTIVITY_PNL_COLUMNS];
@@ -219,6 +226,7 @@ describe('переход с прежней схемы', () => {
         PAPER_AGENT_PHASE2_MIGRATION,
         PAPER_AGENT_PHASE3_MIGRATION,
         PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION,
+        PHASE4_LIVE_FOUNDATION_MIGRATION,
       ],
     });
   });
@@ -250,6 +258,7 @@ describe('переход с прежней схемы', () => {
         PAPER_AGENT_PHASE2_MIGRATION,
         PAPER_AGENT_PHASE3_MIGRATION,
         PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION,
+        PHASE4_LIVE_FOUNDATION_MIGRATION,
       ],
     });
   });
@@ -301,6 +310,16 @@ describe('отказ при неожиданном состоянии', () => {
     expect(planProductionSchemaRepair(snapshot)).toEqual({
       action: 'refuse',
       reason: 'PARTIAL_PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION',
+    });
+  });
+
+  it('половина Phase 4 foundation останавливает запуск', () => {
+    const snapshot = readySnapshot();
+    snapshot.tables = snapshot.tables.filter((table) => table !== 'KmsAuditEvent');
+
+    expect(planProductionSchemaRepair(snapshot)).toEqual({
+      action: 'refuse',
+      reason: 'PARTIAL_PHASE4_LIVE_FOUNDATION_MIGRATION',
     });
   });
 

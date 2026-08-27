@@ -25,7 +25,7 @@ export interface TerminalChartResponse {
 /**
  * Единая рыночная модель терминала.
  *
- * Ею пользуются и публичный терминал, и /admin/agent: история, секундная
+ * Ею пользуются публичный терминал и продуктовые графики: история, секундная
  * серия, live-цена и пагинация не должны расходиться в двух экранах.
  */
 export function useTerminalChart(token: Token | null, interval: string) {

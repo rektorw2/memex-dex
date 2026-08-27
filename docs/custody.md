@@ -20,6 +20,12 @@
 | `EXECUTION_MODE` | `paper` |
 | `FUNDING_ENABLED` | `false` |
 
+Phase 4 добавляет production-safe KMS-контракт, тестовый адаптер и audit
+wrapper (`apps/api/src/services/kms-contract.ts`), но реальные AWS/GCP
+адаптеры по-прежнему отсутствуют. Они возвращают явное `KMS_UNAVAILABLE`,
+а не фиктивную подпись. Полный аудит готовности — в
+[`phase4-readiness.md`](phase4-readiness.md).
+
 При `KMS_PROVIDER=local` мастер-ключ лежит рядом с приложением.
 Это значит, что доступ к серверу равен доступу ко всем средствам
 всех пользователей сразу. Не «к части» и не «при дополнительных

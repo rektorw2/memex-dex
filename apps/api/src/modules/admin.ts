@@ -10,6 +10,7 @@ import { fetchPoolForToken } from '../services/market-data.js';
 import { runResearch, serializeResearch } from '../services/research.js';
 import { isAiConfigured } from '../services/ai-research.js';
 import { decimalOf, priceChangeOrNull } from '../lib/decimal.js';
+import { env } from '../lib/env.js';
 
 export const adminRoutes: FastifyPluginAsync = async (app) => {
 
@@ -257,7 +258,7 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
-  /** Ручной скоринг токена перед публикацией колла. */
+  /** Ручная диагностика токена перед отображением и торговлей. */
   app.get('/admin/tokens/:id/risk', async (req) => {
     const { id } = z.object({ id: z.string() }).parse(req.params);
     const t = await prisma.token.findUniqueOrThrow({ where: { id } });
@@ -316,7 +317,10 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     });
   });
 
-  app.post('/admin/withdrawals/:id/decide', async (req) => {
+  app.post('/admin/withdrawals/:id/decide', async (req, reply) => {
+    if (!env.WITHDRAWALS_ENABLED) {
+      return reply.code(503).send({ error: 'Выводы выключены', code: 'WITHDRAWALS_DISABLED' });
+    }
     const { id } = z.object({ id: z.string() }).parse(req.params);
     const { approve, reason } = z
       .object({ approve: z.boolean(), reason: z.string().optional() })

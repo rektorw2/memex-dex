@@ -123,7 +123,7 @@ DATABASE_URL="$CLONE_URL" npx prisma migrate diff \
 против клона и пройти маршруты радара, кошельков и портфеля.
 
 Для Phase 3 дополнительно проверить: агент `OFF`, allocation mode не выбран,
-старые `PaperAgentRun` сохранены, новые таблицы пусты, а `/admin/agent` предлагает
+старые `PaperAgentRun` сохранены, новые таблицы пусты, а `/agent` предлагает
 создать PAPER-сессию. Не включать Start до ручного выбора Fixed/Autopilot.
 
 Только пройдя этот шаг целиком, идти дальше.
@@ -324,3 +324,15 @@ DELETE FROM "_prisma_migrations"
   развёртывании.
 - Включать `FUNDING_ENABLED` до решения по подписи транзакций
   (см. `docs/custody.md`).
+
+## Phase 4 foundation
+
+Миграция `20260827160000_add_phase4_live_foundation` добавляет только новые
+enum, таблицы и индексы для checkpoint, событий депозитов, LIVE proposal,
+Solana transaction, withdrawal lifecycle, compliance, reconciliation и KMS
+audit. Production в рамках этой работы не менялся.
+
+Перед будущим применением обязательны: `npm run db:verify`, dry-run на копии
+схемы и ручная проверка migration planner. Применение миграции само по себе не
+разрешает funding или LIVE: startup guard оставляет сетевые флаги закрытыми,
+пока production adapters не реализованы.

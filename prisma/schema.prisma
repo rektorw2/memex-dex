@@ -1836,6 +1836,226 @@ model Deposit {
   @@index([userId])
 }
 
+// ───────────────────── Phase 4: future LIVE foundation ─────────────────────
+// These records never reuse PAPER ids or balances. Network-facing workers are
+// disabled by default; the schema only makes future reconciliation possible.
+
+enum SolanaDepositEventState {
+  DETECTED
+  AWAITING_CONFIRMATIONS
+  CONFIRMED
+  FINALIZED
+  CREDITED
+  REJECTED
+  REVIEW_REQUIRED
+  REORGED
+}
+
+model SolanaDepositCheckpoint {
+  id                String   @id
+  lastProcessedSlot BigInt   @default(0)
+  leaseOwner        String?
+  leaseUntil        DateTime?
+  version           Int      @default(0)
+  updatedAt         DateTime @updatedAt
+}
+
+model SolanaDepositEvent {
+  id               String                  @id @default(cuid())
+  eventKey         String                  @unique
+  signature        String
+  instructionIndex Int
+  slot             BigInt
+  blockhash        String?
+  state            SolanaDepositEventState @default(DETECTED)
+  mint             String?
+  destination      String
+  rawAmount        String
+  decimals         Int?
+  confirmations    Int                     @default(0)
+  walletId         String?
+  userId           String?
+  tokenId          String?
+  depositId        String?                 @unique
+  rejectCode       String?
+  leaseOwner       String?
+  leaseUntil       DateTime?
+  version          Int                     @default(0)
+  observedAt       DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+  finalizedAt      DateTime?
+  creditedAt       DateTime?
+  reorgedAt        DateTime?
+
+  @@unique([signature, instructionIndex])
+  @@index([state, slot])
+  @@index([destination, state])
+}
+
+enum SolanaTransactionState {
+  CREATED
+  QUOTED
+  SIGNED
+  SUBMITTED
+  CONFIRMED
+  FINALIZED
+  FAILED
+  AMBIGUOUS
+  EXPIRED
+}
+
+enum LiveAgentProposalState {
+  CREATED
+  AWAITING_CONFIRMATION
+  CONFIRMED
+  REJECTED
+  EXPIRED
+}
+
+model LiveAgentProposal {
+  id                      String                 @id @default(cuid())
+  userId                  String
+  tokenId                 String?
+  network                 Chain                  @default(SOLANA)
+  assetAddress            String
+  assetSymbol             String
+  amountUsd               Decimal                @db.Decimal(24, 8)
+  estimatedNetworkFeeUsd  Decimal?               @db.Decimal(24, 8)
+  estimatedPlatformFeeUsd Decimal?               @db.Decimal(24, 8)
+  priceImpactBps          Int?
+  riskSnapshot            Json
+  status                  LiveAgentProposalState @default(CREATED)
+  idempotencyKey          String                 @unique
+  expiresAt               DateTime
+  confirmedAt             DateTime?
+  rejectedAt              DateTime?
+  createdAt               DateTime               @default(now())
+  updatedAt               DateTime               @updatedAt
+
+  @@index([userId, status, createdAt])
+}
+
+model SolanaTransaction {
+  id                    String                 @id @default(cuid())
+  proposalId            String?                @unique
+  withdrawalOperationId String?                @unique
+  state                 SolanaTransactionState @default(CREATED)
+  idempotencyKey        String                 @unique
+  signature             String?                @unique
+  recentBlockhash       String?
+  lastValidBlockHeight  BigInt?
+  broadcastAttempts     Int                    @default(0)
+  quotedInputRaw        String?
+  quotedOutputRaw       String?
+  actualInputRaw        String?
+  actualOutputRaw       String?
+  actualFeeLamports     BigInt?
+  lastRpcErrorCode      String?
+  submittedAt           DateTime?
+  confirmedAt           DateTime?
+  finalizedAt           DateTime?
+  expiresAt             DateTime?
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  version               Int                    @default(0)
+
+  @@index([state, updatedAt])
+}
+
+enum WithdrawalLifecycleState {
+  REQUESTED
+  LOCKED
+  APPROVED
+  SIGNED
+  SUBMITTED
+  CONFIRMED
+  FINALIZED
+  FAILED
+  AMBIGUOUS
+  CANCELLED
+}
+
+model WithdrawalOperation {
+  id                       String                   @id @default(cuid())
+  withdrawalId             String                   @unique
+  state                    WithdrawalLifecycleState @default(REQUESTED)
+  idempotencyKey           String                   @unique
+  lockedAmount             Decimal                  @db.Decimal(38, 18)
+  unfinalizedDepositAmount Decimal                  @default(0) @db.Decimal(38, 18)
+  limitsSnapshot           Json
+  complianceReviewId       String?
+  transactionId            String?                  @unique
+  failureCode              String?
+  approvedBy               String?
+  approvedAt               DateTime?
+  createdAt                DateTime                 @default(now())
+  updatedAt                DateTime                 @updatedAt
+  version                  Int                      @default(0)
+
+  @@index([state, createdAt])
+}
+
+enum ComplianceState {
+  NOT_CONFIGURED
+  PENDING
+  REVIEW_REQUIRED
+  APPROVED
+  REJECTED
+}
+
+model ComplianceReview {
+  id            String          @id @default(cuid())
+  userId        String
+  operationType String
+  operationId   String
+  kyc           ComplianceState @default(NOT_CONFIGURED)
+  aml           ComplianceState @default(NOT_CONFIGURED)
+  sanctions     ComplianceState @default(NOT_CONFIGURED)
+  sourceOfFunds ComplianceState @default(NOT_CONFIGURED)
+  overall       ComplianceState @default(NOT_CONFIGURED)
+  providerRef   String?
+  reason        String?
+  reviewedBy    String?
+  reviewedAt    DateTime?
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  @@unique([operationType, operationId])
+  @@index([userId, overall, createdAt])
+}
+
+model SolanaReconciliationIssue {
+  id        String   @id @default(cuid())
+  eventKey  String
+  kind      String
+  expected  Json?
+  actual    Json?
+  status    String   @default("OPEN")
+  resolvedBy String?
+  createdAt DateTime @default(now())
+  resolvedAt DateTime?
+
+  @@unique([eventKey, kind])
+  @@index([status, createdAt])
+}
+
+model KmsAuditEvent {
+  id         String   @id @default(cuid())
+  walletId   String?
+  actorId    String?
+  action     String
+  provider   String
+  keyId      String
+  keyVersion String
+  status     String
+  errorCode  String?
+  requestId  String?
+  createdAt  DateTime @default(now())
+
+  @@index([walletId, createdAt])
+  @@index([action, status, createdAt])
+}
+
 enum WithdrawalStatus {
   REQUESTED
   AWAITING_2FA

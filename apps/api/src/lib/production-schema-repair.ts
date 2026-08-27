@@ -31,6 +31,8 @@ export const PAPER_AGENT_PHASE2_MIGRATION = '20260826110000_add_paper_agent_phas
 export const PAPER_AGENT_PHASE3_MIGRATION = '20260826120000_add_paper_agent_phase3';
 export const PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION =
   '20260827100000_fix_paper_agent_signal_pipeline';
+export const PHASE4_LIVE_FOUNDATION_MIGRATION =
+  '20260827160000_add_phase4_live_foundation';
 
 /**
  * Миграции, которые загрузчику разрешено применять.
@@ -53,6 +55,7 @@ export const KNOWN_MIGRATIONS = [
   PAPER_AGENT_PHASE2_MIGRATION,
   PAPER_AGENT_PHASE3_MIGRATION,
   PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION,
+  PHASE4_LIVE_FOUNDATION_MIGRATION,
 ] as const;
 
 export const BASE_USER_COLUMNS = ['id', 'email', 'passwordHash'] as const;
@@ -280,6 +283,24 @@ export const PAPER_AGENT_SIGNAL_PIPELINE_RUN_COLUMNS = [
   'providerDeliveryLatencyMs',
   'agentDecisionLatencyMs',
   'endToEndLatencyMs',
+] as const;
+
+export const PHASE4_LIVE_TABLES = [
+  'SolanaDepositCheckpoint',
+  'SolanaDepositEvent',
+  'LiveAgentProposal',
+  'SolanaTransaction',
+  'WithdrawalOperation',
+  'ComplianceReview',
+  'SolanaReconciliationIssue',
+  'KmsAuditEvent',
+] as const;
+export const PHASE4_LIVE_ENUMS = [
+  'SolanaDepositEventState',
+  'SolanaTransactionState',
+  'LiveAgentProposalState',
+  'WithdrawalLifecycleState',
+  'ComplianceState',
 ] as const;
 
 export interface ProductionSchemaSnapshot {
@@ -604,6 +625,18 @@ export function planProductionSchemaRepair(
         partial: 'PARTIAL_PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION',
         historyAhead: 'PAPER_AGENT_SIGNAL_PIPELINE_HISTORY_CONTRADICTS_SCHEMA',
         schemaAhead: 'PAPER_AGENT_SIGNAL_PIPELINE_SCHEMA_AHEAD_OF_HISTORY',
+      },
+    },
+    {
+      name: PHASE4_LIVE_FOUNDATION_MIGRATION,
+      presence: presenceOf([
+        ...PHASE4_LIVE_TABLES.map((table) => tables.has(table)),
+        ...PHASE4_LIVE_ENUMS.map((type) => enums.has(type)),
+      ]),
+      reasons: {
+        partial: 'PARTIAL_PHASE4_LIVE_FOUNDATION_MIGRATION',
+        historyAhead: 'PHASE4_LIVE_FOUNDATION_HISTORY_CONTRADICTS_SCHEMA',
+        schemaAhead: 'PHASE4_LIVE_FOUNDATION_SCHEMA_AHEAD_OF_HISTORY',
       },
     },
   ];

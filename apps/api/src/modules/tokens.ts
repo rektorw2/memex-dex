@@ -1411,7 +1411,7 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
   });
 
   /**
-   * Полная карточка токена: метрики, разбор рисков, связанные коллы
+   * Полная карточка токена: метрики, разбор рисков и рыночная активность
    * и статистика сделок на платформе.
    *
    * Собрано в один запрос намеренно: страница токена — то место, где
@@ -1447,17 +1447,7 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
       ageHours,
     });
 
-    const [calls, tradeAgg, recentTrades, holdersCount] = await Promise.all([
-      prisma.call.findMany({
-        where: { tokenId: id, status: { not: 'DRAFT' } },
-        orderBy: { publishedAt: 'desc' },
-        take: 5,
-        select: {
-          id: true, title: true, thesis: true, risk: true, status: true,
-          entryPriceUsd: true, targets: true, stopLossUsd: true,
-          resultPct: true, peakMultiple: true, publishedAt: true,
-        },
-      }),
+    const [tradeAgg, recentTrades, holdersCount] = await Promise.all([
       prisma.trade.aggregate({
         where: { status: 'CONFIRMED', OR: [
           { order: { tokenOutId: id, side: 'BUY' } },
@@ -1511,13 +1501,6 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
       },
       risk,
       research: token.research ? serializeResearch(token.research) : null,
-      calls: calls.map((c) => ({
-        ...c,
-        entryPriceUsd: c.entryPriceUsd.toString(),
-        stopLossUsd: c.stopLossUsd?.toString() ?? null,
-        resultPct: c.resultPct?.toString() ?? null,
-        peakMultiple: c.peakMultiple?.toString() ?? null,
-      })),
       platformStats: {
         trades: tradeAgg._count,
         volumeUsd: tradeAgg._sum?.valueUsd?.toString() ?? '0',

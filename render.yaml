@@ -83,6 +83,24 @@ services:
       # Реальные котировки, транзакции в сеть не отправляются.
       - key: EXECUTION_MODE
         value: paper
+      - key: FUNDING_ENABLED
+        value: "false"
+      - key: LIVE_AGENT_ENABLED
+        value: "false"
+      - key: LIVE_EXECUTION_ENABLED
+        value: "false"
+      - key: WITHDRAWALS_ENABLED
+        value: "false"
+      - key: LIVE_RPC_READY
+        value: "false"
+      - key: LIVE_RECONCILIATION_ENABLED
+        value: "false"
+      - key: LIVE_MIGRATIONS_READY
+        value: "false"
+      - key: KMS_SIGNING_ENABLED
+        value: "false"
+      - key: LIVE_AGENT_CONTROL_MODE
+        value: semi-auto
 
       - key: KMS_PROVIDER
         value: local

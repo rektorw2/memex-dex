@@ -47,60 +47,12 @@ export class SolanaAdapter implements ChainAdapter {
 
   async execute(req: ExecuteRequest): Promise<ExecuteResult> {
     if (env.EXECUTION_MODE === 'paper') return this.paperFill(req);
-
-    // 1. Получаем готовую транзакцию у Jupiter
-    const swapRes = await fetch(`${env.JUPITER_API_URL}/swap`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        quoteResponse: req.quote.raw,
-        userPublicKey: req.fromAddress,
-        wrapAndUnwrapSol: true,
-        dynamicComputeUnitLimit: true,
-        prioritizationFeeLamports: 'auto',
-      }),
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!swapRes.ok) throw new Error(`Jupiter swap build failed: ${swapRes.status}`);
-    const { swapTransaction } = (await swapRes.json()) as any;
-
-    // 2. Подписываем ключом из KMS (ключ живёт только внутри sign)
-    const unsigned = Buffer.from(swapTransaction, 'base64');
-    const signed = await req.sign(unsigned);
-
-    // 3. Отправляем и ждём подтверждения
-    // TODO(prod): заменить на @solana/web3.js Connection.sendRawTransaction
-    //   + confirmTransaction с commitment 'confirmed' и ретраями по blockhash.
-    const sendRes = await fetch(env.SOLANA_RPC_URL, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'sendTransaction',
-        params: [Buffer.from(signed).toString('base64'), { encoding: 'base64', maxRetries: 3 }],
-      }),
-      signal: AbortSignal.timeout(15_000),
-    });
-    const sendJson: any = await sendRes.json();
-    if (sendJson.error) {
-      return {
-        txSignature: '',
-        amountIn: req.quote.amountIn,
-        amountOut: 0n,
-        networkFeeUsd: 0,
-        status: 'FAILED',
-        error: sendJson.error.message,
-      };
-    }
-
-    return {
-      txSignature: sendJson.result,
-      amountIn: req.quote.amountIn,
-      amountOut: req.quote.amountOut, // уточняется воркером подтверждений по балансам
-      networkFeeUsd: req.quote.estimatedNetworkFeeUsd,
-      status: 'CONFIRMED',
-    };
+    // The former branch called sendTransaction and immediately returned
+    // CONFIRMED from the RPC signature. A signature is not confirmation and
+    // the quote is not the actual fill. Phase 4 uses the explicit persisted
+    // orchestrator; until a production transport is implemented, this legacy
+    // entry point is a hard stop.
+    throw new Error('LIVE_SOLANA_EXECUTION_NOT_IMPLEMENTED');
   }
 
   /** Paper-режим: считаем исполнение по котировке без отправки в сеть. */

@@ -87,12 +87,9 @@ describe('что открыто гостю', () => {
     '/wallet',
     '/wallets',
     '/copy',
-    '/calls',
     '/checkout',
     '/access',
     '/admin',
-    '/admin/auto',
-    '/admin/agent',
     '/onboarding',
   ])('%s гостю закрыт', (path) => {
     const v = guard(path, guest);
@@ -104,6 +101,15 @@ describe('что открыто гостю', () => {
     // Гостя ведём на первый экран, а не на форму входа: он мог прийти
     // по ссылке и вообще не знать, что это за продукт.
     expect(v.to).toBe('/');
+  });
+
+  it('страница агента ведёт гостя на вход и сохраняет полный next', () => {
+    expect(guard('/agent?tab=positions#latest', guest)).toEqual({
+      kind: 'redirect',
+      to: '/login',
+      next: '/agent?tab=positions#latest',
+      reason: 'anonymous',
+    });
   });
 
   it('сохраняет желаемый адрес целиком, вместе с параметрами и якорем', () => {
@@ -125,7 +131,7 @@ describe('что открыто гостю', () => {
 
 describe('вошедший без плана', () => {
   it('не попадает в радар и смарт-кошельки', () => {
-    for (const path of ['/radar', '/wallets', '/copy', '/calls']) {
+    for (const path of ['/radar', '/wallets', '/copy']) {
       const v = guard(path, expired);
 
       expect(v.kind, path).toBe('redirect');
@@ -147,6 +153,7 @@ describe('вошедший без плана', () => {
     expect(guard('/onboarding', expired)).toEqual({ kind: 'allow' });
     expect(guard('/plans', expired)).toEqual({ kind: 'allow' });
     expect(guard('/checkout', expired)).toEqual({ kind: 'allow' });
+    expect(guard('/agent', expired)).toEqual({ kind: 'allow' });
   });
 });
 
@@ -172,8 +179,7 @@ describe('администратор', () => {
 
   it('попадает с ролью', () => {
     expect(guard('/admin', admin)).toEqual({ kind: 'allow' });
-    expect(guard('/admin/auto', admin)).toEqual({ kind: 'allow' });
-    expect(guard('/admin/agent', admin)).toEqual({ kind: 'allow' });
+    expect(guard('/agent', admin)).toEqual({ kind: 'allow' });
   });
 
   it('сторож не выводит возможности из роли', () => {

@@ -23,7 +23,7 @@ import { useVisibleSections } from '@/lib/sections';
 
 export const SECTIONS = [
   { href: '/terminal', label: 'Терминал' },
-  { href: '/calls', label: 'Коллы' },
+  { href: '/agent', label: 'Агент' },
   { href: '/radar', label: 'Радар' },
   // Название «Смарт-деньги», а не «Кошельки»: пункт /wallet ниже — это
   // собственные кошельки пользователя, и два «Кошелька» в меню путали бы.

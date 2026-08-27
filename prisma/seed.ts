@@ -1,7 +1,7 @@
 /**
  * Наполнение базы для локальной разработки.
  * Создаёт админа, лидера копитрейдинга, подписчика, котировочные токены
- * и один пример колла.
+ * и один пример мем-токена.
  */
 import { PrismaClient, Prisma } from '@prisma/client';
 import argon2 from 'argon2';
@@ -35,7 +35,7 @@ const { password, generated } = resolveSeedPassword();
 async function main() {
   const passwordHash = await argon2.hash(password, { type: argon2.argon2id });
 
-  const admin = await prisma.user.upsert({
+  await prisma.user.upsert({
     where: { email: 'admin@memex.local' },
     create: { email: 'admin@memex.local', passwordHash, role: 'ADMIN', kycStatus: 'APPROVED' },
     update: { role: 'ADMIN' },
@@ -75,7 +75,7 @@ async function main() {
   });
 
   // Пример мем-коина
-  const meme = await prisma.token.upsert({
+  await prisma.token.upsert({
     where: { chain_address: { chain: 'SOLANA', address: 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263' } },
     create: {
       chain: 'SOLANA', address: 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263',
@@ -117,32 +117,8 @@ async function main() {
     update: {},
   });
 
-  // Пример колла
-  await prisma.call.create({
-    data: {
-      authorId: admin.id, tokenId: meme.id, chain: 'SOLANA',
-      title: 'BONK — реактивация экосистемного нарратива',
-      thesis:
-        'Ликвидность стабильно выше $12M, LP сожжён на 100%, топ-держатели контролируют менее 20% предложения. ' +
-        'Основной драйвер — интеграции в кошельки Solana и рост объёмов DEX. Риск: сектор мем-коинов ' +
-        'полностью зависит от общего настроения рынка, при откате SOL просадка будет опережающей.',
-      risk: 'MEDIUM', status: 'PUBLISHED', publishedAt: new Date(),
-      entryPriceUsd: new Prisma.Decimal('0.0000234'),
-      peakPriceUsd: new Prisma.Decimal('0.0000234'),
-      targets: [
-        { priceUsd: '0.0000310', pct: 40 },
-        { priceUsd: '0.0000450', pct: 40 },
-        { priceUsd: '0.0000700', pct: 20 },
-      ],
-      stopLossUsd: new Prisma.Decimal('0.0000180'),
-      suggestedPct: new Prisma.Decimal(3),
-      timeHorizon: 'свинг, 1-3 недели',
-      isCopyEnabled: true,
-    },
-  });
-
   console.log('\nГотово. Учётные записи:\n');
-  console.log(`  admin@memex.local   (ADMIN — публикация коллов)`);
+  console.log(`  admin@memex.local   (ADMIN — управление платформой)`);
   console.log(`  leader@memex.local  (TRADER — лидер копитрейдинга)`);
   console.log(`  user@memex.local    (USER — подписан на лидера)`);
   console.log(`\n  Пароль: ${password}\n`);

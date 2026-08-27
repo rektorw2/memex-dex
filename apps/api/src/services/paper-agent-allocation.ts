@@ -688,7 +688,7 @@ async function allocateForSession(input: {
             reserveAfterUsd: decision.reserveAfterUsd,
             exposureAfterUsd: decision.exposureAfterUsd,
             entryExecutionPriceUsd: entry.executionPriceUsd,
-            href: `/admin/agent?run=${encodeURIComponent(input.runId)}`,
+            href: `/agent?run=${encodeURIComponent(input.runId)}`,
           }),
         });
         return allocation;
@@ -1135,7 +1135,7 @@ export async function processPaperAllocationPositions(now = new Date()): Promise
         totalCostsUsd: mark.totalCostsUsd,
         maxMultiple,
         maxDrawdownPct: maxDrawdown,
-        href: `/admin/agent?run=${encodeURIComponent(fresh.runId)}`,
+        href: `/agent?run=${encodeURIComponent(fresh.runId)}`,
       });
       for (const eventType of ['PAPER_SELL', 'TRADE_RESULT'] as const) {
         await enqueuePaperAgentOutbox(tx, {

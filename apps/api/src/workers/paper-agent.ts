@@ -419,7 +419,7 @@ async function decideRun(
         entrySlippageBps: strategy.entrySlippageBps,
         exitSlippageBps: strategy.exitSlippageBps,
         networkFeeUsdPerSide: strategy.networkFeeUsdPerSide,
-        href: `/admin/agent?run=${encodeURIComponent(runId)}`,
+        href: `/agent?run=${encodeURIComponent(runId)}`,
       },
     });
     runtime.lastActivityAt = now.toISOString();
@@ -606,7 +606,7 @@ export async function processOpenPaperPositions(now = new Date()): Promise<void>
         durationMs,
         maxMultiple,
         maxDrawdownPct: maxDrawdown,
-        href: `/admin/agent?run=${encodeURIComponent(run.id)}`,
+        href: `/agent?run=${encodeURIComponent(run.id)}`,
       };
       await enqueuePaperAgentOutbox(tx, {
         eventKey: paperAgentRunEventKey(run.id, 'PAPER_SELL', run.strategy.version),

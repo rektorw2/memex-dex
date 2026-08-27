@@ -1,7 +1,6 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { entitlementOfRequest, denyIfMissing } from '../services/entitlement.js';
-import { prisma } from '../lib/prisma.js';
 import { env } from '../lib/env.js';
 
 /**
@@ -33,15 +32,13 @@ export const automationRoutes: FastifyPluginAsync = async (app) => {
     const ent = await entitlementOfRequest(req);
     if (denyIfMissing(ent, 'SEMI_AUTO_TRADE', reply)) return reply;
 
-    const rules = await prisma.autoRule.count({ where: { isEnabled: true } });
-
     return {
       capability: 'SEMI_AUTO_TRADE',
       executionMode: env.EXECUTION_MODE,
       /** Вход по сигналу разрешён, выход остаётся ручным. */
       autoEntry: true,
       autoExit: false,
-      activeRules: rules,
+      activeRules: 0,
     };
   });
 

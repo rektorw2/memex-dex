@@ -115,6 +115,11 @@ const paperAgentSignalPipeline = fs.readFileSync(
   'utf8',
 );
 
+const phase4LiveFoundation = fs.readFileSync(
+  `${R}/prisma/migrations/20260827160000_add_phase4_live_foundation/migration.sql`,
+  'utf8',
+);
+
 // ── Проверяется ли вообще то, что лежит в репозитории ──────────────
 /*
  * Файл называет миграции поимённо, и это его слабое место: миграция
@@ -140,6 +145,7 @@ const KNOWN = [
   '20260826110000_add_paper_agent_phase2',
   '20260826120000_add_paper_agent_phase3',
   '20260827100000_fix_paper_agent_signal_pipeline',
+  '20260827160000_add_phase4_live_foundation',
 ];
 
 const onDisk = fs
@@ -1290,6 +1296,49 @@ check('исторические строки сохранены и новые п
     legacyPipelineRun?.providerDeliveryLatencyMs == null &&
     legacyPipelineRun?.agentDecisionLatencyMs == null &&
     legacyPipelineRun?.endToEndLatencyMs == null);
+
+// ───────────────────── Phase 4 LIVE foundation ───────────────────────────
+
+console.log('\n=== Phase 4 LIVE foundation ===');
+check('Phase 4 migration is additive only',
+  !/\b(?:DROP|TRUNCATE|DELETE\s+FROM)\b/i.test(phase4LiveFoundation));
+await clean.exec(phase4LiveFoundation);
+
+const phase4Tables = (await clean.query(`
+  SELECT tablename FROM pg_tables
+  WHERE schemaname='public' AND tablename IN (
+    'SolanaDepositCheckpoint','SolanaDepositEvent','LiveAgentProposal',
+    'SolanaTransaction','WithdrawalOperation','ComplianceReview',
+    'SolanaReconciliationIssue','KmsAuditEvent'
+  ) ORDER BY 1
+`)).rows.map((row) => row.tablename);
+check('all eight Phase 4 tables created', phase4Tables.length === 8, phase4Tables.join(', '));
+
+await clean.exec(`
+  INSERT INTO "SolanaDepositEvent"
+    ("id","eventKey","signature","instructionIndex","slot","destination","rawAmount","updatedAt")
+  VALUES
+    ('dep-event-1','same-signature:0','same-signature',0,10,'wallet','1000000',NOW()),
+    ('dep-event-2','same-signature:1','same-signature',1,10,'wallet','2000000',NOW());
+`);
+const multiTransfer = (await clean.query(`
+  SELECT COUNT(*)::int AS count FROM "SolanaDepositEvent" WHERE "signature"='same-signature'
+`)).rows[0]?.count;
+check('one transaction may contain multiple transfer events', multiTransfer === 2, String(multiTransfer));
+
+let duplicateDepositEvent = null;
+try {
+  await clean.exec(`
+    INSERT INTO "SolanaDepositEvent"
+      ("id","eventKey","signature","instructionIndex","slot","destination","rawAmount","updatedAt")
+    VALUES ('dep-event-3','same-signature:0','same-signature',0,10,'wallet','1000000',NOW());
+  `);
+} catch (error) {
+  duplicateDepositEvent = error;
+}
+check('same signature and instruction index cannot be credited twice',
+  duplicateDepositEvent != null,
+  duplicateDepositEvent ? 'constraint enforced' : 'duplicate inserted');
 
 console.log(`\nИтог: ${failures === 0 ? 'все проверки пройдены' : failures + ' проверок не прошли'}`);
 process.exit(failures === 0 ? 0 : 1);

@@ -83,6 +83,7 @@ const { paperAgentRoutes } = await import('./paper-agent.js');
 async function app() {
   const instance = Fastify();
   (instance as any).decorateRequest('user', null);
+  instance.decorate('authenticate', async (req: any) => { req.user = { sub: 'admin-1', role: 'ADMIN' }; });
   instance.decorate('requireAdmin', async (req: any) => { req.user = { sub: 'admin-1', role: 'ADMIN' }; });
   await instance.register(paperAgentRoutes);
   return instance;
@@ -91,6 +92,7 @@ async function app() {
 async function nonAdminApp() {
   const instance = Fastify();
   (instance as any).decorateRequest('user', null);
+  instance.decorate('authenticate', async (req: any) => { req.user = { sub: 'user-1', role: 'USER' }; });
   instance.decorate('requireAdmin', async (_req: any, reply: any) =>
     reply.code(403).send({ code: 'FORBIDDEN' }));
   await instance.register(paperAgentRoutes);

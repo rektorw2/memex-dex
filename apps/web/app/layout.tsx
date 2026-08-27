@@ -7,7 +7,7 @@ import { AccessProvider } from '@/lib/access';
 
 export const metadata: Metadata = {
   title: 'Memex — торговля мем-коинами и копитрейдинг',
-  description: 'Solana, BNB Chain, Robinhood Chain. Лимитные ордера, коллы, копитрейдинг.',
+  description: 'Торговый терминал, аналитика onchain-рынка, смарт-кошельки и автономный PAPER-агент.',
 };
 
 /**
