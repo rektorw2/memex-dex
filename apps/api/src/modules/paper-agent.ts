@@ -1,6 +1,13 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
-import { paperAgentHealthState, paperAgentMarkerTime, percentile } from '@memex/core';
+import {
+  isLivePaperSignalOrigin,
+  paperAgentHealthState,
+  paperAgentMarkerTime,
+  percentile,
+  summarizePaperAgentLatencies,
+  summarizePaperDecisionDimensions,
+} from '@memex/core';
 import { env } from '../lib/env.js';
 import { prisma } from '../lib/prisma.js';
 import { getOkxSignalIngestStatus } from '../workers/okx-signal-ingest.js';
@@ -33,8 +40,10 @@ function average(values: number[]): number | null {
 }
 
 function summarizeRuns(rows: Array<{
+  signalId: string;
   state: string;
-  latencyMs: number | null;
+  signalOrigin: string | null;
+  agentDecisionLatencyMs: number | null;
   realizedPnlUsd: unknown;
   unrealizedPnlUsd: unknown;
   maxMultiple: unknown;
@@ -61,8 +70,9 @@ function summarizeRuns(rows: Array<{
     .map((row) => numberOf(row.totalCostsUsd))
     .filter((value): value is number => value != null);
   const latencies = rows
-    .map((row) => row.latencyMs)
-    .filter((value): value is number => value != null && Number.isFinite(value));
+    .filter((row) => isLivePaperSignalOrigin(row.signalOrigin))
+    .map((row) => row.agentDecisionLatencyMs)
+    .filter((value): value is number => value != null && Number.isFinite(value) && value >= 0);
   const durations = rows
     .filter((row) => row.entryAt && row.exitAt)
     .map((row) => row.exitAt!.getTime() - row.entryAt!.getTime())
@@ -76,7 +86,7 @@ function summarizeRuns(rows: Array<{
   );
 
   return {
-    signals: rows.length,
+    signals: new Set(rows.map((row) => row.signalId)).size,
     runs: rows.length,
     entries,
     skipped,
@@ -102,6 +112,7 @@ function summarizeRuns(rows: Array<{
     averageDurationMs: average(durations),
     decisionLatencyP50Ms: percentile(latencies, 0.5),
     decisionLatencyP95Ms: percentile(latencies, 0.95),
+    decisionLatencySampleSize: latencies.length,
     totalCostsUsd: costs.length === 0 ? null : costs.reduce((sum, value) => sum + value, 0),
     sampleSize: closed,
     minimumSampleSize: MIN_CLOSED_FOR_COMPARISON,
@@ -129,6 +140,10 @@ function serializeRun(run: any) {
     signaledAt: run.signaledAt.toISOString(),
     decidedAt: run.decidedAt?.toISOString() ?? null,
     latencyMs: run.latencyMs,
+    signalOrigin: run.signalOrigin,
+    providerDeliveryLatencyMs: run.providerDeliveryLatencyMs,
+    agentDecisionLatencyMs: run.agentDecisionLatencyMs,
+    endToEndLatencyMs: run.endToEndLatencyMs,
     tokenAgeMs: run.tokenAgeMs,
     decisionPriceUsd: numberOf(run.decisionPriceUsd),
     entryAt: run.entryAt?.toISOString() ?? null,
@@ -241,8 +256,9 @@ function summarizeAllocations(rows: any[]) {
     .map((row) => numberOf(row.maxMultiple))
     .filter((value): value is number => value != null);
   const latencies = rows
-    .map((row) => row.run?.latencyMs)
-    .filter((value): value is number => value != null && Number.isFinite(value));
+    .filter((row) => isLivePaperSignalOrigin(row.run?.signalOrigin))
+    .map((row) => row.run?.agentDecisionLatencyMs)
+    .filter((value): value is number => value != null && Number.isFinite(value) && value >= 0);
   const durations = closed
     .filter((row) => row.entryAt && row.exitAt)
     .map((row) => row.exitAt.getTime() - row.entryAt.getTime())
@@ -340,11 +356,13 @@ export const paperAgentRoutes: FastifyPluginAsync = async (app) => {
       control,
       strategies,
       stateGroups,
-      reasonGroups,
       sampled,
       recent,
       lastSignal,
       receivedSignals,
+      signalOriginGroups,
+      ingestCodeGroups,
+      decisionDimensions,
       unreadNotifications,
       pendingNotifications,
     ] =
@@ -356,16 +374,15 @@ export const paperAgentRoutes: FastifyPluginAsync = async (app) => {
           where: { createdAt: { gte: since } },
           _count: { _all: true },
         }),
-        prisma.paperAgentRun.groupBy({
-          by: ['decisionCode'],
-          where: { state: 'SKIPPED', createdAt: { gte: since } },
-          _count: { _all: true },
-        }),
         prisma.paperAgentRun.findMany({
           select: {
+            signalId: true,
             strategyId: true,
             state: true,
-            latencyMs: true,
+            signalOrigin: true,
+            providerDeliveryLatencyMs: true,
+            agentDecisionLatencyMs: true,
+            endToEndLatencyMs: true,
             realizedPnlUsd: true,
             unrealizedPnlUsd: true,
             maxMultiple: true,
@@ -405,6 +422,33 @@ export const paperAgentRoutes: FastifyPluginAsync = async (app) => {
           orderBy: { signaledAt: 'desc' },
         }),
         prisma.okxSignal.count({ where: { receivedAt: { gte: since } } }),
+        prisma.okxSignal.groupBy({
+          by: ['ingestOrigin'],
+          where: { receivedAt: { gte: since } },
+          _count: { _all: true },
+        }),
+        prisma.okxSignal.groupBy({
+          by: ['paperAgentIngestCode'],
+          where: { receivedAt: { gte: since } },
+          _count: { _all: true },
+        }),
+        prisma.paperAgentRun.findMany({
+          where: { createdAt: { gte: since } },
+          select: {
+            signalId: true,
+            state: true,
+            decisionCode: true,
+            signalOrigin: true,
+            strategy: { select: { key: true, version: true, kind: true } },
+            allocations: {
+              select: {
+                isShadow: true,
+                policyKey: true,
+                policyVersion: true,
+              },
+            },
+          },
+        }),
         prisma.paperAgentNotification.count({ where: { isRead: false } }),
         prisma.paperAgentNotification.count({
           where: {
@@ -447,16 +491,27 @@ export const paperAgentRoutes: FastifyPluginAsync = async (app) => {
           maxDrawdownPct: true,
           entryAt: true,
           exitAt: true,
-          run: { select: { latencyMs: true } },
+          run: { select: { agentDecisionLatencyMs: true, signalOrigin: true } },
         },
         orderBy: { createdAt: 'desc' },
         take: SAMPLE_LIMIT,
       }),
     ]);
 
-    const latencies = sampled
-      .map((row) => row.latencyMs)
-      .filter((value): value is number => value != null && Number.isFinite(value));
+    const latencySummary = summarizePaperAgentLatencies(sampled);
+    const runCount24h = stateGroups.reduce((sum, row) => sum + row._count._all, 0);
+    const countBy = <T,>(rows: T[], keyOf: (row: T) => string) =>
+      Object.fromEntries(
+        [...rows.reduce((map, row) => {
+          const key = keyOf(row);
+          map.set(key, (map.get(key) ?? 0) + 1);
+          return map;
+        }, new Map<string, number>())],
+      );
+    const decisionBreakdown = summarizePaperDecisionDimensions(decisionDimensions);
+    const allocationDimensions = decisionDimensions.flatMap((row) =>
+      row.allocations.map((allocation) => ({ ...allocation, signalId: row.signalId })),
+    );
     const comparison = strategies.map((strategy) => ({
       key: strategy.key,
       label: strategy.label,
@@ -474,7 +529,8 @@ export const paperAgentRoutes: FastifyPluginAsync = async (app) => {
     const health = paperAgentHealthState({
       executionMode: env.EXECUTION_MODE,
       enabled: control.isEnabled,
-      socketHealthy: okxSignalStatus.socket?.state === 'connected',
+      socketHealthy:
+        okxSignalStatus.socket?.state === 'connected' || okxSignalStatus.transportMode === 'REST_ONLY',
       waitingForPrice,
       queued: runtime.queued,
       lastActivityAtMs: runtime.lastActivityAt == null ? null : Date.parse(runtime.lastActivityAt),
@@ -513,17 +569,37 @@ export const paperAgentRoutes: FastifyPluginAsync = async (app) => {
       },
       metrics24h: {
         receivedSignals,
+        uniqueSignals: receivedSignals,
+        runs: runCount24h,
+        averageRunsPerSignal: receivedSignals === 0 ? null : runCount24h / receivedSignals,
         processedRuns: stateGroups
           .filter((row) => !['RECEIVED', 'WAITING_PRICE', 'WAITING_ENTRY'].includes(row.state))
           .reduce((sum, row) => sum + row._count._all, 0),
         errorRuns: stateGroups.find((row) => row.state === 'ERROR')?._count._all ?? 0,
         openPositions: stateGroups.find((row) => row.state === 'PAPER_OPEN')?._count._all ?? 0,
         states: Object.fromEntries(stateGroups.map((row) => [row.state, row._count._all])),
-        skipReasons: Object.fromEntries(
-          reasonGroups.map((row) => [row.decisionCode ?? 'UNKNOWN', row._count._all]),
+        skipReasons: decisionBreakdown.skipReasons,
+        skipReasonsUniqueSignals: decisionBreakdown.skipReasonsUniqueSignals,
+        skipReasonsByStrategy: decisionBreakdown.skipReasonsByStrategy,
+        skipReasonsByContour: decisionBreakdown.skipReasonsByContour,
+        signalOrigins: Object.fromEntries(
+          signalOriginGroups.map((row) => [row.ingestOrigin ?? 'LEGACY_UNKNOWN', row._count._all]),
         ),
-        decisionLatencyP50Ms: percentile(latencies, 0.5),
-        decisionLatencyP95Ms: percentile(latencies, 0.95),
+        ingestCodes: Object.fromEntries(
+          ingestCodeGroups.map((row) => [row.paperAgentIngestCode ?? 'LEGACY_UNKNOWN', row._count._all]),
+        ),
+        runsByOrigin: decisionBreakdown.runsByOrigin,
+        runsByStrategyKind: decisionBreakdown.runsByStrategyKind,
+        runsByStrategyVersion: decisionBreakdown.runsByStrategyVersion,
+        capitalContours: countBy(
+          allocationDimensions,
+          (row) => row.isShadow ? 'SHADOW' : 'ACTIVE',
+        ),
+        allocationPolicyVersions: countBy(
+          allocationDimensions,
+          (row) => `${row.policyKey}@v${row.policyVersion}`,
+        ),
+        ...latencySummary,
         sampleLimited: sampled.length === SAMPLE_LIMIT,
       },
       comparison,
@@ -1020,6 +1096,10 @@ export const paperAgentRoutes: FastifyPluginAsync = async (app) => {
           exposureAfterUsd: numberOf(position.exposureAfterUsd),
           riskProfile: position.riskProfile,
           allocationReason: position.reason,
+          signalOrigin: run.signalOrigin,
+          providerDeliveryLatencyMs: run.providerDeliveryLatencyMs,
+          agentDecisionLatencyMs: run.agentDecisionLatencyMs,
+          endToEndLatencyMs: run.endToEndLatencyMs,
         };
         return [
           ...(buyTime == null

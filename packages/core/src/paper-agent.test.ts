@@ -9,7 +9,10 @@ import {
   paperAgentMarkerTime,
   paperDrawdownPct,
   paperAgentModeVerdict,
+  paperSignalLatencies,
   percentile,
+  summarizePaperAgentLatencies,
+  summarizePaperDecisionDimensions,
 } from './paper-agent.js';
 
 const baseline = PAPER_AGENT_STRATEGIES[0]!;
@@ -20,12 +23,134 @@ const signal = (overrides: Record<string, unknown> = {}) => ({
   walletTypes: ['smart_money'] as const,
   amountUsd: 5_000,
   signaledAtMs: NOW - 5_000,
+  receivedAtMs: NOW - 100,
+  origin: 'WEBSOCKET_LIVE' as const,
   poolCreatedAtMs: NOW - 10 * 60_000,
   priceUsd: 0.001,
   ...overrides,
 });
 
 describe('paper agent — решение', () => {
+  it('разделяет доставку, решение агента и полный путь без clamp', () => {
+    expect(paperSignalLatencies({
+      signaledAtMs: NOW - 5_000,
+      receivedAtMs: NOW - 100,
+      decidedAtMs: NOW,
+    })).toEqual({
+      providerDeliveryLatencyMs: 4_900,
+      agentDecisionLatencyMs: 100,
+      endToEndLatencyMs: 5_000,
+    });
+    expect(paperSignalLatencies({
+      signaledAtMs: NOW,
+      receivedAtMs: NOW - 1,
+      decidedAtMs: NOW,
+    }).providerDeliveryLatencyMs).toBeNull();
+    expect(paperSignalLatencies({
+      signaledAtMs: NOW,
+      receivedAtMs: Number.NaN,
+      decidedAtMs: NOW,
+    }).agentDecisionLatencyMs).toBeNull();
+  });
+
+  it('не принимает противоречивые timestamps как нулевую задержку', () => {
+    expect(evaluatePaperSignal(
+      baseline,
+      signal({ receivedAtMs: NOW + 1 }),
+      NOW,
+    ).code).toBe('INVALID_SIGNAL_TIMESTAMPS');
+  });
+
+  it('не смешивает backfill, legacy и невозможные значения с live p50/p95', () => {
+    const summary = summarizePaperAgentLatencies([
+      {
+        signalOrigin: 'WEBSOCKET_LIVE',
+        providerDeliveryLatencyMs: 900,
+        agentDecisionLatencyMs: 100,
+        endToEndLatencyMs: 1_000,
+      },
+      {
+        signalOrigin: 'REST_RECONCILIATION',
+        providerDeliveryLatencyMs: 4_800,
+        agentDecisionLatencyMs: 200,
+        endToEndLatencyMs: 5_000,
+      },
+      {
+        signalOrigin: 'REST_BACKFILL',
+        providerDeliveryLatencyMs: 86_400_000,
+        agentDecisionLatencyMs: 1,
+        endToEndLatencyMs: 86_400_001,
+      },
+      {
+        signalOrigin: null,
+        providerDeliveryLatencyMs: 1,
+        agentDecisionLatencyMs: 1,
+        endToEndLatencyMs: 2,
+      },
+      {
+        signalOrigin: 'WEBSOCKET_LIVE',
+        providerDeliveryLatencyMs: -1,
+        agentDecisionLatencyMs: Number.NaN,
+        endToEndLatencyMs: null,
+      },
+    ]);
+
+    expect(summary).toEqual({
+      decisionLatencyP50Ms: 150,
+      decisionLatencyP95Ms: 195,
+      decisionLatencySampleSize: 2,
+      providerDeliveryLatencyP50Ms: 2_850,
+      providerDeliveryLatencyP95Ms: 4_605,
+      providerDeliveryLatencySampleSize: 2,
+      endToEndLatencyP50Ms: 3_000,
+      endToEndLatencyP95Ms: 4_800,
+      endToEndLatencySampleSize: 2,
+    });
+  });
+
+  it('группирует причины по сигналам, версиям стратегий и ACTIVE/SHADOW', () => {
+    const summary = summarizePaperDecisionDimensions([
+      {
+        signalId: 'signal-1', state: 'SKIPPED', decisionCode: 'TOKEN_TOO_OLD',
+        signalOrigin: 'WEBSOCKET_LIVE',
+        strategy: { key: 'baseline', version: 2, kind: 'BASELINE' },
+      },
+      {
+        signalId: 'signal-1', state: 'SKIPPED', decisionCode: 'TOKEN_TOO_OLD',
+        signalOrigin: 'WEBSOCKET_LIVE',
+        strategy: { key: 'shadow-age', version: 2, kind: 'SHADOW' },
+      },
+      {
+        signalId: 'signal-2', state: 'SKIPPED', decisionCode: 'TOKEN_TOO_OLD',
+        signalOrigin: 'REST_RECONCILIATION',
+        strategy: { key: 'baseline', version: 3, kind: 'BASELINE' },
+      },
+      {
+        signalId: 'signal-2', state: 'PAPER_OPEN', decisionCode: 'ELIGIBLE',
+        signalOrigin: null,
+        strategy: { key: 'shadow-age', version: 2, kind: 'SHADOW' },
+      },
+    ]);
+
+    expect(summary).toMatchObject({
+      runs: 4,
+      uniqueRunSignals: 2,
+      averageRunsPerRunSignal: 2,
+      skipReasons: { TOKEN_TOO_OLD: 3 },
+      skipReasonsUniqueSignals: { TOKEN_TOO_OLD: 2 },
+      skipReasonsByStrategy: {
+        'baseline@v2': { TOKEN_TOO_OLD: 1 },
+        'shadow-age@v2': { TOKEN_TOO_OLD: 1 },
+        'baseline@v3': { TOKEN_TOO_OLD: 1 },
+      },
+      skipReasonsByContour: {
+        ACTIVE: { TOKEN_TOO_OLD: 2 },
+        SHADOW: { TOKEN_TOO_OLD: 1 },
+      },
+      runsByOrigin: { WEBSOCKET_LIVE: 2, REST_RECONCILIATION: 1, LEGACY_UNKNOWN: 1 },
+      runsByStrategyVersion: { 'baseline@v2': 1, 'shadow-age@v2': 2, 'baseline@v3': 1 },
+    });
+  });
   it('ни одна стратегия не может запустить агента в live-режиме', () => {
     for (const strategy of PAPER_AGENT_STRATEGIES) {
       expect(strategy.key).toBeTruthy();

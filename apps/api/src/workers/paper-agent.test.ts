@@ -8,6 +8,8 @@ let successfulCreates = 0;
 const notifications: any[] = [];
 let controlEnabled = true;
 let signalChain = 'SOLANA';
+let signalOrigin = 'WEBSOCKET_LIVE';
+const ingestUpdates: any[] = [];
 const baseline = PAPER_AGENT_STRATEGIES[0]!;
 const strategyRow = {
   id: 'strategy-1',
@@ -25,6 +27,7 @@ const signal = {
   address: 'Token111',
   symbol: 'GEM',
   source: 'okx_websocket',
+  ingestOrigin: 'WEBSOCKET_LIVE',
   signaledAt: new Date(Date.now() - 5_000),
   receivedAt: new Date(Date.now() - 4_900),
   walletTypes: ['smart_money'],
@@ -70,8 +73,13 @@ const prismaMock = {
     findUnique: vi.fn(async () => ({
       ...signal,
       chain: signalChain,
+      ingestOrigin: signalOrigin,
       token: { ...signal.token, priceUsd: new P.Decimal(tokenPrice) },
     })),
+    updateMany: vi.fn(async ({ data }: any) => {
+      ingestUpdates.push(data);
+      return { count: 1 };
+    }),
   },
   paperAgentRun: {
     create: vi.fn(async ({ data }: any) => {
@@ -133,6 +141,8 @@ beforeEach(() => {
   notifications.length = 0;
   controlEnabled = true;
   signalChain = 'SOLANA';
+  signalOrigin = 'WEBSOCKET_LIVE';
+  ingestUpdates.length = 0;
   vi.clearAllMocks();
 });
 
@@ -150,6 +160,10 @@ describe('paper-agent — идемпотентное исполнение', () =
       note: 'diagnostic_only',
     });
     expect(successfulCreates).toBe(1);
+    expect(storedRun.signalOrigin).toBe('WEBSOCKET_LIVE');
+    expect(storedRun.providerDeliveryLatencyMs).toBe(100);
+    expect(storedRun.agentDecisionLatencyMs).toBeGreaterThanOrEqual(0);
+    expect(storedRun.endToEndLatencyMs).toBeGreaterThanOrEqual(5_000);
     expect(notifications).toHaveLength(1);
     expect(notifications[0]).toMatchObject({ eventType: 'PAPER_BUY', eventKey: 'run-1:PAPER_BUY:v2' });
   });
@@ -207,11 +221,25 @@ describe('paper-agent — идемпотентное исполнение', () =
     expect(storedRun.realizedPnlUsd.toNumber()).toBeCloseTo(94.8060404);
   });
 
-  it.each(['BASE', 'BNB', 'ETHEREUM'])('сохраняет %s как пропуск Phase 2, а не удаляет сигнал', async (chain) => {
+  it.each(['BASE', 'BNB', 'ETHEREUM'])('фильтрует %s до создания strategy runs', async (chain) => {
     signalChain = chain;
     await processPaperAgentSignal(signal.id);
-    expect(storedRun.state).toBe('SKIPPED');
-    expect(storedRun.decisionCode).toBe('NETWORK_NOT_SUPPORTED_PHASE_2');
-    expect(successfulCreates).toBe(1);
+    expect(storedRun).toBeNull();
+    expect(successfulCreates).toBe(0);
+    expect(ingestUpdates).toEqual([{ paperAgentIngestCode: 'FILTERED_UNSUPPORTED_NETWORK' }]);
+  });
+
+  it('backfill остаётся диагностическим и не открывает позицию', async () => {
+    signalOrigin = 'REST_BACKFILL';
+    await processPaperAgentSignal(signal.id);
+    expect(storedRun).toBeNull();
+    expect(ingestUpdates).toEqual([{ paperAgentIngestCode: 'BACKFILL_DIAGNOSTIC_ONLY' }]);
+  });
+
+  it('живой REST reconciliation может открыть допустимую PAPER-позицию', async () => {
+    signalOrigin = 'REST_RECONCILIATION';
+    await processPaperAgentSignal(signal.id);
+    expect(storedRun.state).toBe('PAPER_OPEN');
+    expect(storedRun.signalOrigin).toBe('REST_RECONCILIATION');
   });
 });

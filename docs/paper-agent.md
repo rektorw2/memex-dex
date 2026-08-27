@@ -106,12 +106,27 @@ Learning mode включается отдельно. После полной в�
 статистическую неопределённость и явно помечает выборку меньше 30 исходов как
 недостаточную.
 
-## Только Solana
+## Источник Signal, fallback и только Solana
+
+Каждое событие сохраняет происхождение: `WEBSOCKET_LIVE`,
+`REST_RECONCILIATION` или `REST_BACKFILL`. `providerKey` остаётся единственной
+идентичностью события: пересечение WS/REST не создаёт второй Signal или runs, а
+более свежий live-источник может повысить ранее сохранённый backfill. Начальный
+`REST_BACKFILL` нужен только для истории и диагностики и никогда не открывает
+позицию; контролируемая постоянная `REST_RECONCILIATION` считается live fallback.
+
+OKX `60029` и семантически эквивалентный ответ о whitelist — постоянный отказ
+канала, а не сетевой сбой. Для Signal-клиента reconnect прекращается, транспорт
+переходит в `REST_ONLY`, а уже существующая сверка продолжает работать со своим
+интервалом и дедупликацией. Временные socket/login/subscribe ошибки по-прежнему
+используют ограниченный exponential backoff с jitter. Получение whitelist OKX
+вернёт WebSocket-путь; ослаблять login, signature или heartbeat для этого нельзя.
 
 Phase 2 нормализует `SOLANA`, `Solana` и chain index `501`. Любая другая сеть
-сохраняется как решение `SKIPPED` с кодом
-`NETWORK_NOT_SUPPORTED_PHASE_2`. Никакой Solana RPC или отправки транзакции в
-агенте нет; цена читается из существующей рыночной инфраструктуры.
+остаётся в GEMS, но отсекается до создания пяти strategy runs с ingest-кодом
+`FILTERED_UNSUPPORTED_NETWORK`. Исторические runs не удаляются. Никакой Solana
+RPC или отправки транзакции в агенте нет; цена читается из существующей рыночной
+инфраструктуры.
 
 ## Уведомления и transactional outbox
 
@@ -150,15 +165,19 @@ WebSocket и REST, два параллельных обработчика и р�
 может обойти эту проверку.
 
 Цены сопровождаются существующим `price-updater`; нового опроса на позицию нет.
-REST OKX остаётся только начальной загрузкой и страховочной сверкой существующего
-Signal ingest.
+REST OKX остаётся начальной загрузкой, страховочной сверкой и явным fallback
+`REST_ONLY`. Внутренний короткий timer не означает частый сетевой polling:
+внешний запрос разрешается только после настроенного fallback-интервала.
 
 ## Наблюдаемость
 
 Страница `/admin/agent` доступна только администратору и показывает:
 
 - состояние процесса и OKX WebSocket;
-- задержку решения p50/p95, пропуски, дубликаты и ошибки;
+- задержку решения агента p50/p95 и размер валидной выборки;
+- отдельно provider delivery и end-to-end без названия их скоростью агента;
+- уникальные сигналы, runs, среднее runs/signal, происхождение ingest и фильтры;
+- причины пропусков по уникальным сигналам, ACTIVE/SHADOW и точной strategy version;
 - открытые и закрытые paper-позиции;
 - реализованный и нереализованный PnL, win rate, среднюю и медианную кратность;
 - максимальную просадку;
@@ -200,3 +219,13 @@ Signal ingest.
 создаёт сессию сама. Существующие run/outbox/позиции не удаляются и не
 пересчитываются. Миграция включена в production schema planner, startup schema
 guard, PGlite path и `npm run db:verify`.
+
+Аддитивная `20260827100000_fix_paper_agent_signal_pipeline` добавляет nullable
+`ingestOrigin`/`paperAgentIngestCode` к старым Signal и nullable
+`signalOrigin`, `providerDeliveryLatencyMs`, `agentDecisionLatencyMs`,
+`endToEndLatencyMs` к runs. Старые строки остаются `NULL` и исключаются из новой
+latency-выборки, а не переписываются. Формулы: provider delivery =
+`receivedAt − signaledAt`, agent decision = `decidedAt − receivedAt`, end-to-end
+= `decidedAt − signaledAt`. Отрицательные и противоречивые интервалы не clamp-ятся
+и в percentile не попадают. Миграция не содержит удаления данных и включена в
+production planner, schema guard, PGlite и `db:verify`.

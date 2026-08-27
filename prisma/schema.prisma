@@ -412,6 +412,10 @@ model OkxSignal {
   amountUsd              Decimal? @db.Decimal(24, 8)
   soldRatioPct           Decimal? @db.Decimal(8, 4)
   source                 String
+  /** Наиболее сильное подтверждённое происхождение ingest; NULL — legacy. */
+  ingestOrigin           String?
+  /** Результат фильтра до создания strategy runs. */
+  paperAgentIngestCode   String?
 
   createdAt DateTime @default(now())
 
@@ -421,6 +425,8 @@ model OkxSignal {
   @@index([chain, signaledAt])
   @@index([tokenId, signaledAt])
   @@index([chain, address, signaledAt])
+  @@index([ingestOrigin, receivedAt])
+  @@index([paperAgentIngestCode, receivedAt])
 }
 
 /**
@@ -491,6 +497,11 @@ model PaperAgentRun {
   receivedAt DateTime
   decidedAt  DateTime?
   latencyMs  Int?
+  /** Новые именованные метрики; NULL безопасен для исторических строк. */
+  signalOrigin                String?
+  providerDeliveryLatencyMs   Int?
+  agentDecisionLatencyMs      Int?
+  endToEndLatencyMs           Int?
 
   poolCreatedAt          DateTime?
   tokenAgeMs             Int?
@@ -553,6 +564,7 @@ model PaperAgentRun {
   @@index([strategyId, createdAt])
   @@index([tokenId, state])
   @@index([providerKey])
+  @@index([signalOrigin, createdAt])
 }
 
 /**

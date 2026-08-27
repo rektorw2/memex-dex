@@ -29,6 +29,8 @@ export const OKX_SIGNAL_ATH_MIGRATION = '20260823180000_add_okx_signal_ath';
 export const PAPER_AGENT_MIGRATION = '20260826100000_add_paper_agent';
 export const PAPER_AGENT_PHASE2_MIGRATION = '20260826110000_add_paper_agent_phase2';
 export const PAPER_AGENT_PHASE3_MIGRATION = '20260826120000_add_paper_agent_phase3';
+export const PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION =
+  '20260827100000_fix_paper_agent_signal_pipeline';
 
 /**
  * Миграции, которые загрузчику разрешено применять.
@@ -50,6 +52,7 @@ export const KNOWN_MIGRATIONS = [
   PAPER_AGENT_MIGRATION,
   PAPER_AGENT_PHASE2_MIGRATION,
   PAPER_AGENT_PHASE3_MIGRATION,
+  PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION,
 ] as const;
 
 export const BASE_USER_COLUMNS = ['id', 'email', 'passwordHash'] as const;
@@ -265,6 +268,18 @@ export const PAPER_AGENT_CAPITAL_LEDGER_COLUMNS = [
   'inPositionsBeforeUsd',
   'inPositionsAfterUsd',
   'equityAfterUsd',
+] as const;
+
+/** Signal provenance and three non-ambiguous latency clocks. */
+export const PAPER_AGENT_SIGNAL_PIPELINE_OKX_COLUMNS = [
+  'ingestOrigin',
+  'paperAgentIngestCode',
+] as const;
+export const PAPER_AGENT_SIGNAL_PIPELINE_RUN_COLUMNS = [
+  'signalOrigin',
+  'providerDeliveryLatencyMs',
+  'agentDecisionLatencyMs',
+  'endToEndLatencyMs',
 ] as const;
 
 export interface ProductionSchemaSnapshot {
@@ -577,6 +592,18 @@ export function planProductionSchemaRepair(
         partial: 'PARTIAL_PAPER_AGENT_PHASE3_MIGRATION',
         historyAhead: 'PAPER_AGENT_PHASE3_HISTORY_CONTRADICTS_SCHEMA',
         schemaAhead: 'PAPER_AGENT_PHASE3_SCHEMA_AHEAD_OF_HISTORY',
+      },
+    },
+    {
+      name: PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION,
+      presence: presenceOf([
+        ...PAPER_AGENT_SIGNAL_PIPELINE_OKX_COLUMNS.map((column) => okxSignal.has(column)),
+        ...PAPER_AGENT_SIGNAL_PIPELINE_RUN_COLUMNS.map((column) => paperAgentRun.has(column)),
+      ]),
+      reasons: {
+        partial: 'PARTIAL_PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION',
+        historyAhead: 'PAPER_AGENT_SIGNAL_PIPELINE_HISTORY_CONTRADICTS_SCHEMA',
+        schemaAhead: 'PAPER_AGENT_SIGNAL_PIPELINE_SCHEMA_AHEAD_OF_HISTORY',
       },
     },
   ];

@@ -65,15 +65,17 @@ function mk(over: any) {
   const events: any[] = [];
   const signals: any[] = [];
   const rejected: string[] = [];
+  const transports: Array<{ mode: string; code: string | null }> = [];
   const c = new OkxWalletWebSocketClient({
     id: 'test', addresses: [], platformFeed: true, factory,
     onEvent: (e) => events.push(e),
     onSignal: (e) => signals.push(e),
     onRejected: (r) => rejected.push(r),
+    onSignalTransportChange: (mode, code) => transports.push({ mode, code }),
     random: () => 0.5,
     ...over,
   });
-  return { c, events, signals, rejected };
+  return { c, events, signals, rejected, transports };
 }
 
 /**
@@ -395,6 +397,55 @@ describe('OKX Signal', () => {
       symbol: 'GEM',
       walletTypes: ['smart_money', 'whale'],
     });
+    c.stop();
+  });
+
+  it.each(['60029', '-60029'])('%s прекращает reconnect и включает REST_ONLY', (code) => {
+    const { c, transports } = makeClient({ platformFeed: false, signalChains: ['501'] });
+    c.start();
+    const socket = sockets[0]!;
+    socket.open();
+    socket.deliver(loginOk);
+    socket.deliver({
+      event: 'error', code, msg: 'Only users who are in the whitelist are allowed',
+      arg: { channel: OKX_SIGNAL_CHANNEL },
+    });
+
+    expect(c.getState()).toBe('rest_only');
+    expect(c.stats()).toMatchObject({
+      channelTransportMode: 'REST_ONLY', channelAccessDeniedCode: '60029', reconnects: 0,
+    });
+    expect(transports).toEqual([{ mode: 'REST_ONLY', code: '60029' }]);
+    const before = sockets.length;
+    vi.advanceTimersByTime(60 * 60_000);
+    expect(sockets).toHaveLength(before);
+    c.stop();
+  });
+
+  it('семантический whitelist-отказ с новым кодом тоже постоянный', () => {
+    const { c } = makeClient({ platformFeed: false, signalChains: ['501'] });
+    c.start(); sockets[0]!.open(); sockets[0]!.deliver(loginOk);
+    sockets[0]!.deliver({
+      event: 'error', code: '69999',
+      msg: 'This channel is available to whitelist customers only',
+      arg: { channel: OKX_SIGNAL_CHANNEL },
+    });
+    expect(c.stats().channelTransportMode).toBe('REST_ONLY');
+    expect(c.stats().channelAccessDeniedCode).toBe('69999');
+    c.stop();
+  });
+
+  it('временная ошибка подписки продолжает bounded reconnect', () => {
+    const { c } = makeClient({ platformFeed: false, signalChains: ['501'] });
+    c.start(); sockets[0]!.open(); sockets[0]!.deliver(loginOk);
+    sockets[0]!.deliver({
+      event: 'error', code: '60012', msg: 'Invalid request',
+      arg: { channel: OKX_SIGNAL_CHANNEL },
+    });
+    expect(c.getState()).toBe('reconnecting');
+    const before = sockets.length;
+    vi.advanceTimersByTime(120_000);
+    expect(sockets.length).toBeGreaterThan(before);
     c.stop();
   });
 });

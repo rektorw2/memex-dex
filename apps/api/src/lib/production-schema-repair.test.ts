@@ -25,6 +25,7 @@ import {
   PAPER_AGENT_MIGRATION,
   PAPER_AGENT_PHASE2_MIGRATION,
   PAPER_AGENT_PHASE3_MIGRATION,
+  PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION,
   PAPER_AGENT_PHASE2_CONTROL_COLUMNS,
   PAPER_AGENT_PHASE2_RUN_COLUMNS,
   PAPER_AGENT_PHASE3_CONTROL_COLUMNS,
@@ -35,6 +36,8 @@ import {
   PAPER_AGENT_NOTIFICATION_COLUMNS,
   PAPER_AGENT_OKX_SIGNAL_COLUMNS,
   PAPER_AGENT_RUN_COLUMNS,
+  PAPER_AGENT_SIGNAL_PIPELINE_OKX_COLUMNS,
+  PAPER_AGENT_SIGNAL_PIPELINE_RUN_COLUMNS,
   PAPER_AGENT_STRATEGY_COLUMNS,
   planProductionSchemaRepair,
   type ProductionSchemaSnapshot,
@@ -119,6 +122,8 @@ function readySnapshot(): ProductionSchemaSnapshot {
   s.paperAgentAccountSessionColumns = [...PAPER_AGENT_ACCOUNT_SESSION_COLUMNS];
   s.paperAgentAllocationColumns = [...PAPER_AGENT_ALLOCATION_COLUMNS];
   s.paperAgentCapitalLedgerColumns = [...PAPER_AGENT_CAPITAL_LEDGER_COLUMNS];
+  s.okxSignalColumns.push(...PAPER_AGENT_SIGNAL_PIPELINE_OKX_COLUMNS);
+  s.paperAgentRunColumns.push(...PAPER_AGENT_SIGNAL_PIPELINE_RUN_COLUMNS);
   s.tables.push(
     'PaperAgentControl',
     'PaperAgentStrategy',
@@ -176,6 +181,8 @@ describe('готовая база', () => {
     after.paperAgentAccountSessionColumns = [...PAPER_AGENT_ACCOUNT_SESSION_COLUMNS];
     after.paperAgentAllocationColumns = [...PAPER_AGENT_ALLOCATION_COLUMNS];
     after.paperAgentCapitalLedgerColumns = [...PAPER_AGENT_CAPITAL_LEDGER_COLUMNS];
+    after.okxSignalColumns.push(...PAPER_AGENT_SIGNAL_PIPELINE_OKX_COLUMNS);
+    after.paperAgentRunColumns.push(...PAPER_AGENT_SIGNAL_PIPELINE_RUN_COLUMNS);
     after.tables.push(
       'PaperAgentControl',
       'PaperAgentStrategy',
@@ -211,6 +218,7 @@ describe('переход с прежней схемы', () => {
         PAPER_AGENT_MIGRATION,
         PAPER_AGENT_PHASE2_MIGRATION,
         PAPER_AGENT_PHASE3_MIGRATION,
+        PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION,
       ],
     });
   });
@@ -241,6 +249,7 @@ describe('переход с прежней схемы', () => {
         PAPER_AGENT_MIGRATION,
         PAPER_AGENT_PHASE2_MIGRATION,
         PAPER_AGENT_PHASE3_MIGRATION,
+        PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION,
       ],
     });
   });
@@ -280,6 +289,18 @@ describe('отказ при неожиданном состоянии', () => {
     expect(planProductionSchemaRepair(snapshot)).toEqual({
       action: 'refuse',
       reason: 'PARTIAL_PAPER_AGENT_PHASE3_MIGRATION',
+    });
+  });
+
+  it('половина миграции происхождения сигналов останавливает запуск', () => {
+    const snapshot = readySnapshot();
+    snapshot.paperAgentRunColumns = snapshot.paperAgentRunColumns.filter(
+      (column) => column !== 'endToEndLatencyMs',
+    );
+
+    expect(planProductionSchemaRepair(snapshot)).toEqual({
+      action: 'refuse',
+      reason: 'PARTIAL_PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION',
     });
   });
 

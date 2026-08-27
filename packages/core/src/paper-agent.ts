@@ -43,8 +43,52 @@ export type PaperAgentDecisionCode =
   | 'TOKEN_AGE_UNKNOWN'
   | 'TOKEN_TOO_OLD'
   | 'NETWORK_NOT_SUPPORTED_PHASE_2'
+  | 'INVALID_SIGNAL_TIMESTAMPS'
   | 'DECISION_DEADLINE_EXCEEDED'
   | 'PRICE_UNAVAILABLE_BEFORE_DEADLINE';
+
+export const PAPER_SIGNAL_ORIGINS = [
+  'WEBSOCKET_LIVE',
+  'REST_RECONCILIATION',
+  'REST_BACKFILL',
+] as const;
+
+export type PaperSignalOrigin = (typeof PAPER_SIGNAL_ORIGINS)[number];
+
+export function isPaperSignalOrigin(value: unknown): value is PaperSignalOrigin {
+  return (PAPER_SIGNAL_ORIGINS as readonly unknown[]).includes(value);
+}
+
+export function isLivePaperSignalOrigin(value: unknown): value is Exclude<PaperSignalOrigin, 'REST_BACKFILL'> {
+  return value === 'WEBSOCKET_LIVE' || value === 'REST_RECONCILIATION';
+}
+
+export interface PaperSignalLatencies {
+  /** Время доставки от отметки провайдера до сохранения нами. */
+  providerDeliveryLatencyMs: number | null;
+  /** Только скорость решения агента после получения сигнала. */
+  agentDecisionLatencyMs: number | null;
+  /** Полный путь; не является скоростью агента. */
+  endToEndLatencyMs: number | null;
+}
+
+function orderedDifference(later: number, earlier: number): number | null {
+  if (!Number.isFinite(later) || !Number.isFinite(earlier)) return null;
+  const difference = later - earlier;
+  return Number.isFinite(difference) && difference >= 0 ? difference : null;
+}
+
+export function paperSignalLatencies(input: {
+  signaledAtMs: number;
+  receivedAtMs: number;
+  decidedAtMs: number;
+}): PaperSignalLatencies {
+  return {
+    providerDeliveryLatencyMs: orderedDifference(input.receivedAtMs, input.signaledAtMs),
+    agentDecisionLatencyMs: orderedDifference(input.decidedAtMs, input.receivedAtMs),
+    endToEndLatencyMs: orderedDifference(input.decidedAtMs, input.signaledAtMs),
+  };
+}
 
 /**
  * Phase 2 принимает только Solana, но источник может назвать её по-разному.
@@ -181,6 +225,8 @@ export interface PaperSignalSnapshot {
   walletTypes: readonly OkxWalletCategory[];
   amountUsd: number | null;
   signaledAtMs: number;
+  receivedAtMs: number;
+  origin: PaperSignalOrigin;
   /** Только подтверждённое время создания пула. Время записи в БД не подходит. */
   poolCreatedAtMs: number | null;
   priceUsd: number | null;
@@ -190,7 +236,11 @@ export interface PaperSignalDecision {
   state: 'WAITING_PRICE' | 'WAITING_ENTRY' | 'ELIGIBLE' | 'SKIPPED';
   code: PaperAgentDecisionCode;
   decidedAtMs: number;
-  latencyMs: number;
+  /** Legacy alias for end-to-end latency; new reports must use named metrics. */
+  latencyMs: number | null;
+  providerDeliveryLatencyMs: number | null;
+  agentDecisionLatencyMs: number | null;
+  endToEndLatencyMs: number | null;
   tokenAgeMs: number | null;
 }
 
@@ -203,7 +253,12 @@ export function evaluatePaperSignal(
   signal: PaperSignalSnapshot,
   decidedAtMs: number,
 ): PaperSignalDecision {
-  const latencyMs = Math.max(0, decidedAtMs - signal.signaledAtMs);
+  const latencies = paperSignalLatencies({
+    signaledAtMs: signal.signaledAtMs,
+    receivedAtMs: signal.receivedAtMs,
+    decidedAtMs,
+  });
+  const latencyMs = latencies.endToEndLatencyMs;
   const tokenAgeMs =
     signal.poolCreatedAtMs == null || !Number.isFinite(signal.poolCreatedAtMs)
       ? null
@@ -211,7 +266,18 @@ export function evaluatePaperSignal(
   const result = (
     state: PaperSignalDecision['state'],
     code: PaperAgentDecisionCode,
-  ): PaperSignalDecision => ({ state, code, decidedAtMs, latencyMs, tokenAgeMs });
+  ): PaperSignalDecision => ({
+    state,
+    code,
+    decidedAtMs,
+    latencyMs,
+    ...latencies,
+    tokenAgeMs,
+  });
+
+  if (latencyMs == null || latencies.agentDecisionLatencyMs == null) {
+    return result('SKIPPED', 'INVALID_SIGNAL_TIMESTAMPS');
+  }
 
   if (normalizePaperAgentNetwork(signal.network) !== 'SOLANA') {
     return result('SKIPPED', 'NETWORK_NOT_SUPPORTED_PHASE_2');
@@ -407,4 +473,144 @@ export function percentile(values: readonly number[], p: number): number | null 
   if (lower === upper) return sorted[lower]!;
   const weight = rank - lower;
   return sorted[lower]! * (1 - weight) + sorted[upper]! * weight;
+}
+
+export interface PaperAgentLatencyObservation {
+  signalOrigin: unknown;
+  providerDeliveryLatencyMs: number | null;
+  agentDecisionLatencyMs: number | null;
+  endToEndLatencyMs: number | null;
+}
+
+export interface PaperAgentLatencySummary {
+  decisionLatencyP50Ms: number | null;
+  decisionLatencyP95Ms: number | null;
+  decisionLatencySampleSize: number;
+  providerDeliveryLatencyP50Ms: number | null;
+  providerDeliveryLatencyP95Ms: number | null;
+  providerDeliveryLatencySampleSize: number;
+  endToEndLatencyP50Ms: number | null;
+  endToEndLatencyP95Ms: number | null;
+  endToEndLatencySampleSize: number;
+}
+
+function validPersistedLatency(value: number | null): value is number {
+  return value != null && Number.isFinite(value) && value >= 0;
+}
+
+/**
+ * Агрегаты скорости считаются только по live/reconciliation-сигналам.
+ * Исторический backfill, legacy-строки и невозможные отрицательные
+ * интервалы не должны улучшать или ухудшать оперативные p50/p95.
+ */
+export function summarizePaperAgentLatencies(
+  rows: readonly PaperAgentLatencyObservation[],
+): PaperAgentLatencySummary {
+  const live = rows.filter((row) => isLivePaperSignalOrigin(row.signalOrigin));
+  const agent = live
+    .map((row) => row.agentDecisionLatencyMs)
+    .filter(validPersistedLatency);
+  const provider = live
+    .map((row) => row.providerDeliveryLatencyMs)
+    .filter(validPersistedLatency);
+  const endToEnd = live
+    .map((row) => row.endToEndLatencyMs)
+    .filter(validPersistedLatency);
+
+  return {
+    decisionLatencyP50Ms: percentile(agent, 0.5),
+    decisionLatencyP95Ms: percentile(agent, 0.95),
+    decisionLatencySampleSize: agent.length,
+    providerDeliveryLatencyP50Ms: percentile(provider, 0.5),
+    providerDeliveryLatencyP95Ms: percentile(provider, 0.95),
+    providerDeliveryLatencySampleSize: provider.length,
+    endToEndLatencyP50Ms: percentile(endToEnd, 0.5),
+    endToEndLatencyP95Ms: percentile(endToEnd, 0.95),
+    endToEndLatencySampleSize: endToEnd.length,
+  };
+}
+
+export interface PaperDecisionDimension {
+  signalId: string;
+  state: string;
+  decisionCode: string | null;
+  signalOrigin: unknown;
+  strategy: {
+    key: string;
+    version: number;
+    kind: 'BASELINE' | 'SHADOW' | string;
+  };
+}
+
+export interface PaperDecisionBreakdown {
+  runs: number;
+  uniqueRunSignals: number;
+  averageRunsPerRunSignal: number | null;
+  skipReasons: Record<string, number>;
+  skipReasonsUniqueSignals: Record<string, number>;
+  skipReasonsByStrategy: Record<string, Record<string, number>>;
+  skipReasonsByContour: Record<string, Record<string, number>>;
+  runsByOrigin: Record<string, number>;
+  runsByStrategyKind: Record<string, number>;
+  runsByStrategyVersion: Record<string, number>;
+}
+
+function increment(target: Record<string, number>, key: string): void {
+  target[key] = (target[key] ?? 0) + 1;
+}
+
+function incrementNested(
+  target: Record<string, Record<string, number>>,
+  group: string,
+  key: string,
+): void {
+  target[group] ??= {};
+  increment(target[group]!, key);
+}
+
+/** Объяснимая статистика runs без смешивания strategy versions. */
+export function summarizePaperDecisionDimensions(
+  rows: readonly PaperDecisionDimension[],
+): PaperDecisionBreakdown {
+  const uniqueSignals = new Set<string>();
+  const uniqueSkipSignals = new Map<string, Set<string>>();
+  const result: PaperDecisionBreakdown = {
+    runs: rows.length,
+    uniqueRunSignals: 0,
+    averageRunsPerRunSignal: null,
+    skipReasons: {},
+    skipReasonsUniqueSignals: {},
+    skipReasonsByStrategy: {},
+    skipReasonsByContour: {},
+    runsByOrigin: {},
+    runsByStrategyKind: {},
+    runsByStrategyVersion: {},
+  };
+
+  for (const row of rows) {
+    uniqueSignals.add(row.signalId);
+    const strategyVersion = `${row.strategy.key}@v${row.strategy.version}`;
+    const origin = isPaperSignalOrigin(row.signalOrigin) ? row.signalOrigin : 'LEGACY_UNKNOWN';
+    increment(result.runsByOrigin, origin);
+    increment(result.runsByStrategyKind, row.strategy.kind);
+    increment(result.runsByStrategyVersion, strategyVersion);
+
+    if (row.state !== 'SKIPPED') continue;
+    const reason = row.decisionCode ?? 'UNKNOWN';
+    const contour = row.strategy.kind === 'SHADOW' ? 'SHADOW' : 'ACTIVE';
+    increment(result.skipReasons, reason);
+    incrementNested(result.skipReasonsByStrategy, strategyVersion, reason);
+    incrementNested(result.skipReasonsByContour, contour, reason);
+    const ids = uniqueSkipSignals.get(reason) ?? new Set<string>();
+    ids.add(row.signalId);
+    uniqueSkipSignals.set(reason, ids);
+  }
+
+  result.uniqueRunSignals = uniqueSignals.size;
+  result.averageRunsPerRunSignal =
+    uniqueSignals.size === 0 ? null : rows.length / uniqueSignals.size;
+  result.skipReasonsUniqueSignals = Object.fromEntries(
+    [...uniqueSkipSignals].map(([reason, ids]) => [reason, ids.size]),
+  );
+  return result;
 }

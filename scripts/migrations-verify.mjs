@@ -110,6 +110,11 @@ const paperAgentPhase3 = fs.readFileSync(
   'utf8',
 );
 
+const paperAgentSignalPipeline = fs.readFileSync(
+  `${R}/prisma/migrations/20260827100000_fix_paper_agent_signal_pipeline/migration.sql`,
+  'utf8',
+);
+
 // ── Проверяется ли вообще то, что лежит в репозитории ──────────────
 /*
  * Файл называет миграции поимённо, и это его слабое место: миграция
@@ -134,6 +139,7 @@ const KNOWN = [
   '20260826100000_add_paper_agent',
   '20260826110000_add_paper_agent_phase2',
   '20260826120000_add_paper_agent_phase3',
+  '20260827100000_fix_paper_agent_signal_pipeline',
 ];
 
 const onDisk = fs
@@ -1251,6 +1257,39 @@ try {
 }
 check('повтор капиталовой проводки блокируется eventKey', duplicateLedger != null,
   duplicateLedger ? 'ограничение сработало' : 'дубликат записан');
+
+// ───────────── Signal provenance and latency observability ────────────────
+
+console.log('\n=== Paper-agent signal pipeline ===');
+check('миграция pipeline не содержит destructive SQL',
+  !/\b(?:DROP|TRUNCATE|DELETE\s+FROM)\b/i.test(paperAgentSignalPipeline));
+await clean.exec(paperAgentSignalPipeline);
+
+const signalPipelineColumns = (await clean.query(`
+  SELECT table_name,column_name FROM information_schema.columns
+  WHERE table_schema='public' AND (
+    (table_name='OkxSignal' AND column_name IN ('ingestOrigin','paperAgentIngestCode')) OR
+    (table_name='PaperAgentRun' AND column_name IN
+      ('signalOrigin','providerDeliveryLatencyMs','agentDecisionLatencyMs','endToEndLatencyMs'))
+  )
+`)).rows;
+check('все шесть колонок pipeline добавлены', signalPipelineColumns.length === 6,
+  String(signalPipelineColumns.length));
+
+const legacyPipelineRow = (await clean.query(`
+  SELECT "ingestOrigin","paperAgentIngestCode" FROM "OkxSignal" WHERE id='sig-1'
+`)).rows[0];
+const legacyPipelineRun = (await clean.query(`
+  SELECT "signalOrigin","providerDeliveryLatencyMs","agentDecisionLatencyMs","endToEndLatencyMs"
+  FROM "PaperAgentRun" WHERE id='run-1'
+`)).rows[0];
+check('исторические строки сохранены и новые поля остаются NULL',
+  legacyPipelineRow?.ingestOrigin == null &&
+    legacyPipelineRow?.paperAgentIngestCode == null &&
+    legacyPipelineRun?.signalOrigin == null &&
+    legacyPipelineRun?.providerDeliveryLatencyMs == null &&
+    legacyPipelineRun?.agentDecisionLatencyMs == null &&
+    legacyPipelineRun?.endToEndLatencyMs == null);
 
 console.log(`\nИтог: ${failures === 0 ? 'все проверки пройдены' : failures + ' проверок не прошли'}`);
 process.exit(failures === 0 ? 0 : 1);

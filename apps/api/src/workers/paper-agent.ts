@@ -10,6 +10,8 @@ import { Prisma as P } from '@prisma/client';
 import {
   PAPER_AGENT_STRATEGIES,
   evaluatePaperSignal,
+  isLivePaperSignalOrigin,
+  isPaperSignalOrigin,
   markPaperPosition,
   openPaperPosition,
   paperAgentModeVerdict,
@@ -88,6 +90,12 @@ export function queuePaperAgentSignal(signalId: string, duplicate = false): void
 
 function decimal(value: number | null | undefined): P.Decimal | null {
   return value != null && Number.isFinite(value) ? new P.Decimal(value) : null;
+}
+
+function databaseInt(value: number | null): number | null {
+  return value != null && Number.isInteger(value) && value >= 0 && value <= 2_147_483_647
+    ? value
+    : null;
 }
 
 function numberOf(value: unknown): number | null {
@@ -190,6 +198,7 @@ async function createRunIfMissing(
         address: signal.address,
         symbol: signal.symbol,
         source: signal.source,
+        signalOrigin: signal.ingestOrigin,
         state: 'RECEIVED',
         signaledAt: signal.signaledAt,
         receivedAt: signal.receivedAt,
@@ -252,6 +261,8 @@ async function decideRun(
       walletTypes: signal.walletTypes as never,
       amountUsd: numberOf(signal.amountUsd),
       signaledAtMs: signal.signaledAt.getTime(),
+      receivedAtMs: signal.receivedAt.getTime(),
+      origin: signal.ingestOrigin as never,
       poolCreatedAtMs: signal.token?.poolCreatedAt?.getTime() ?? null,
       priceUsd: sourcePrice,
       network: signal.chain,
@@ -263,7 +274,10 @@ async function decideRun(
     state: decision.state,
     decisionCode: decision.code,
     decidedAt: now,
-    latencyMs: Math.min(2_147_483_647, decision.latencyMs),
+    latencyMs: databaseInt(decision.endToEndLatencyMs),
+    providerDeliveryLatencyMs: databaseInt(decision.providerDeliveryLatencyMs),
+    agentDecisionLatencyMs: databaseInt(decision.agentDecisionLatencyMs),
+    endToEndLatencyMs: databaseInt(decision.endToEndLatencyMs),
     tokenAgeMs:
       decision.tokenAgeMs == null ? null : Math.min(2_147_483_647, decision.tokenAgeMs),
     decisionPriceUsd: decimal(sourcePrice),
@@ -392,6 +406,10 @@ async function decideRun(
         address: signal.address,
         signaledAt: signal.signaledAt.toISOString(),
         decidedAt: now.toISOString(),
+        signalOrigin: signal.ingestOrigin,
+        providerDeliveryLatencyMs: decision.providerDeliveryLatencyMs,
+        agentDecisionLatencyMs: decision.agentDecisionLatencyMs,
+        endToEndLatencyMs: decision.endToEndLatencyMs,
         signalPriceUsd: numberOf(signal.priceUsd),
         decisionPriceUsd: sourcePrice,
         entryExecutionPriceUsd: entry.executionPriceUsd,
@@ -411,6 +429,23 @@ async function decideRun(
 export async function processPaperAgentSignal(signalId: string): Promise<void> {
   const signal = await loadSignal(signalId);
   if (!signal) return;
+
+  // GEMS хранит все сети, но исполнитель Phase 2/3 создаёт runs только для
+  // Solana. Это одна сохранённая ingest-метрика вместо пяти одинаковых skip.
+  if (signal.chain !== 'SOLANA') {
+    await prisma.okxSignal.updateMany({
+      where: { id: signal.id },
+      data: { paperAgentIngestCode: 'FILTERED_UNSUPPORTED_NETWORK' },
+    });
+    return;
+  }
+  if (!isPaperSignalOrigin(signal.ingestOrigin) || !isLivePaperSignalOrigin(signal.ingestOrigin)) {
+    await prisma.okxSignal.updateMany({
+      where: { id: signal.id },
+      data: { paperAgentIngestCode: 'BACKFILL_DIAGNOSTIC_ONLY' },
+    });
+    return;
+  }
 
   const [control, strategies] = await Promise.all([
     prisma.paperAgentControl.findUnique({ where: { id: CONTROL_ID } }),
@@ -638,6 +673,8 @@ async function tick(): Promise<void> {
         prisma.okxSignal.findMany({
           where: {
             signaledAt: { gte: new Date(Date.now() - SIGNAL_LOOKBACK_MS) },
+            chain: 'SOLANA',
+            ingestOrigin: { in: ['WEBSOCKET_LIVE', 'REST_RECONCILIATION'] },
             paperAgentRuns: { none: { strategyId: strategy.id } },
           },
           select: { id: true },
@@ -647,7 +684,11 @@ async function tick(): Promise<void> {
       ),
     );
     const waiting = await prisma.paperAgentRun.findMany({
-      where: { state: { in: ['WAITING_PRICE', 'WAITING_ENTRY'] } },
+      where: {
+        state: { in: ['WAITING_PRICE', 'WAITING_ENTRY'] },
+        chain: 'SOLANA',
+        signalOrigin: { in: ['WEBSOCKET_LIVE', 'REST_RECONCILIATION'] },
+      },
       select: { signalId: true },
       orderBy: { updatedAt: 'asc' },
       take: BATCH_SIZE,

@@ -27,6 +27,10 @@ export interface AgentChartMarker {
   freeAfterUsd?: number | null;
   reserveAfterUsd?: number | null;
   exposureAfterUsd?: number | null;
+  signalOrigin?: string | null;
+  providerDeliveryLatencyMs?: number | null;
+  agentDecisionLatencyMs?: number | null;
+  endToEndLatencyMs?: number | null;
 }
 
 interface Props {

@@ -14,7 +14,9 @@ interface AgentRun {
   id: string; tokenId: string | null; state: string; decisionCode: string | null;
   errorCode: string | null; strategyKey: string; strategyLabel: string; chain: string;
   address: string; symbol: string; signaledAt: string; decidedAt: string | null;
-  latencyMs: number | null; entryAt: string | null; exitAt: string | null;
+  latencyMs: number | null; signalOrigin: string | null;
+  providerDeliveryLatencyMs: number | null; agentDecisionLatencyMs: number | null;
+  endToEndLatencyMs: number | null; entryAt: string | null; exitAt: string | null;
   entryPriceUsd: MaybeNumber; currentPriceUsd: MaybeNumber; realizedPnlUsd: MaybeNumber;
   unrealizedPnlUsd: MaybeNumber; maxMultiple: MaybeNumber; maxDrawdownPct: MaybeNumber;
   exitReason: string | null; positionUsd: MaybeNumber; costModelKey: string | null;
@@ -32,7 +34,8 @@ interface StrategyStats {
   averagePnlUsd: MaybeNumber; medianPnlUsd: MaybeNumber; totalNetPnlUsd: MaybeNumber;
   profitFactor: MaybeNumber; averageMaxMultiple: MaybeNumber; worstDrawdownPct: MaybeNumber;
   averageDurationMs: MaybeNumber; decisionLatencyP50Ms: MaybeNumber;
-  decisionLatencyP95Ms: MaybeNumber; totalCostsUsd: MaybeNumber; sampleSize: number;
+  decisionLatencyP95Ms: MaybeNumber; decisionLatencySampleSize: number;
+  totalCostsUsd: MaybeNumber; sampleSize: number;
   minimumSampleSize: number; enoughData: boolean;
 }
 interface AgentData {
@@ -43,13 +46,30 @@ interface AgentData {
   runtime: { running: boolean; refusalReason: string | null; lastTickAt: string | null;
     lastErrorCode: string | null; lastActivityAt: string | null; queued: number;
     duplicatesSeen: number; processingErrors: number; liveExecutionReachable: false };
-  okxSignal: { running: boolean; socket: { state: string; lastMessageAt: number | null;
-    reconnects: number; lastErrorCode: string | null; lastProviderCode: string | null } | null;
+  okxSignal: { running: boolean; transportMode: 'WEBSOCKET' | 'REST_ONLY' | 'DISABLED';
+    permanentDenialCode: string | null; accessMessage: string | null;
+    lastSignalAt: string | null; lastRestSuccessAt: string | null;
+    nextRestReconciliationAt: string | null; lastRestErrorCode: string | null;
+    socket: { state: string; lastMessageAt: number | null;
+    reconnects: number; lastErrorCode: string | null; lastProviderCode: string | null;
+    channelTransportMode: string; channelAccessDeniedCode: string | null } | null;
     lastPersistedSignal: { signaledAt: string; receivedAt: string } | null };
   notifications: { unread: number; pending: number; running: boolean; telegramEnabled: boolean; transport: string };
-  metrics24h: { receivedSignals: number; processedRuns: number; errorRuns: number;
+  metrics24h: { receivedSignals: number; uniqueSignals: number; runs: number;
+    averageRunsPerSignal: MaybeNumber; processedRuns: number; errorRuns: number;
     openPositions: number; states: Record<string, number>; skipReasons: Record<string, number>;
-    decisionLatencyP50Ms: MaybeNumber; decisionLatencyP95Ms: MaybeNumber };
+    skipReasonsUniqueSignals: Record<string, number>;
+    skipReasonsByStrategy: Record<string, Record<string, number>>;
+    skipReasonsByContour: Record<string, Record<string, number>>;
+    signalOrigins: Record<string, number>; ingestCodes: Record<string, number>;
+    runsByOrigin: Record<string, number>; runsByStrategyKind: Record<string, number>;
+    runsByStrategyVersion: Record<string, number>; capitalContours: Record<string, number>;
+    allocationPolicyVersions: Record<string, number>;
+    decisionLatencyP50Ms: MaybeNumber; decisionLatencyP95Ms: MaybeNumber;
+    decisionLatencySampleSize: number; providerDeliveryLatencyP50Ms: MaybeNumber;
+    providerDeliveryLatencyP95Ms: MaybeNumber; providerDeliveryLatencySampleSize: number;
+    endToEndLatencyP50Ms: MaybeNumber; endToEndLatencyP95Ms: MaybeNumber;
+    endToEndLatencySampleSize: number };
   comparison: StrategyStats[];
   allocation?: {
     configured: boolean; execution: 'PAPER'; network: 'Solana';
@@ -117,6 +137,7 @@ const recordOf = (value: unknown): Record<string, unknown> =>
     ? value as Record<string, unknown>
     : {};
 const duration = (value: MaybeNumber) => value == null ? '—' : value < 60_000 ? `${Math.round(value / 1_000)}с` : value < 3_600_000 ? `${Math.round(value / 60_000)}м` : `${(value / 3_600_000).toFixed(1)}ч`;
+const timestamp = (value: string | null) => value ? new Date(value).toLocaleString('ru-RU') : '—';
 const HEALTH_TEXT: Record<AgentData['health'], string> = {
   OFF: 'OFF · отключён администратором', STANDBY: 'STANDBY · ждёт сигнал',
   ACTIVE: 'ACTIVE · обрабатывает', DEGRADED: 'DEGRADED · провайдер или цена недоступны',
@@ -351,18 +372,29 @@ export default function PaperAgentPage() {
       <LearningHypotheses hypotheses={allocation.hypotheses} busy={busy} act={act} />
     </section>
 
-    <section className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-8">
-      <Metric label="Сигналов 24ч" value={num(data.metrics24h.receivedSignals)} />
-      <Metric label="Решений" value={num(data.metrics24h.processedRuns)} />
+    <section className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-10">
+      <Metric label="Уник. сигналов 24ч" value={num(data.metrics24h.uniqueSignals)} />
+      <Metric label="Runs / решений" value={num(data.metrics24h.runs)} />
+      <Metric label="Runs на сигнал" value={num(data.metrics24h.averageRunsPerSignal)} />
       <Metric label="Открыто" value={num(data.metrics24h.openPositions)} />
       <Metric label="Закрыто" value={num(data.metrics24h.states.PAPER_CLOSED ?? 0)} />
-      <Metric label="Latency p50" value={num(data.metrics24h.decisionLatencyP50Ms, ' мс')} />
-      <Metric label="Latency p95" value={num(data.metrics24h.decisionLatencyP95Ms, ' мс')} />
+      <Metric label="Решение агента p50" value={num(data.metrics24h.decisionLatencyP50Ms, ' мс')} />
+      <Metric label="Решение агента p95" value={num(data.metrics24h.decisionLatencyP95Ms, ' мс')} />
+      <Metric label="Валидная выборка" value={num(data.metrics24h.decisionLatencySampleSize)} />
       <Metric label="Очередь" value={num(data.runtime.queued)} /><Metric label="Ошибки" value={num(data.metrics24h.errorRuns)} />
     </section>
 
     <section className="grid gap-3 lg:grid-cols-3">
-      <StatusCard title="OKX Signal WebSocket"><StatusLine label="Состояние" value={data.okxSignal.socket?.state ?? 'не подключён'} /><StatusLine label="Reconnect" value={num(data.okxSignal.socket?.reconnects ?? null)} /><StatusLine label="Ошибка" value={data.okxSignal.socket?.lastErrorCode ?? '—'} /></StatusCard>
+      <StatusCard title="OKX Signal transport">
+        <StatusLine label="Режим" value={data.okxSignal.transportMode === 'REST_ONLY' ? 'REST ONLY' : data.okxSignal.transportMode} />
+        {data.okxSignal.accessMessage && <p className="mt-2 break-words text-xs text-warn">{data.okxSignal.accessMessage}</p>}
+        <StatusLine label="Код OKX" value={data.okxSignal.permanentDenialCode ?? data.okxSignal.socket?.lastProviderCode ?? '—'} />
+        <StatusLine label="Последний REST" value={timestamp(data.okxSignal.lastRestSuccessAt)} />
+        <StatusLine label="Последний сигнал" value={timestamp(data.okxSignal.lastSignalAt)} />
+        <StatusLine label="Следующий REST" value={timestamp(data.okxSignal.nextRestReconciliationAt)} />
+        <StatusLine label="REST ошибка" value={data.okxSignal.lastRestErrorCode ?? '—'} />
+        {data.okxSignal.transportMode !== 'REST_ONLY' && <><StatusLine label="WebSocket" value={data.okxSignal.socket?.state ?? 'не подключён'} /><StatusLine label="Reconnect" value={num(data.okxSignal.socket?.reconnects ?? null)} /></>}
+      </StatusCard>
       <StatusCard title="Уведомления">
         <StatusLine label="Непрочитано" value={num(data.notifications.unread)} /><StatusLine label="Ожидают внимания" value={num(data.notifications.pending)} />
         <StatusLine label="Telegram" value={data.notifications.telegramEnabled ? data.notifications.transport : 'выключен'} />
@@ -372,6 +404,21 @@ export default function PaperAgentPage() {
         )} />Отправлять shadow в Telegram</label>
       </StatusCard>
       <StatusCard title="Гарантии контура"><StatusLine label="Execution" value="paper only" /><StatusLine label="Новые входы" value={data.control.isEnabled ? 'разрешены' : 'запрещены'} /><StatusLine label="Позиции при Stop" value="продолжают оцениваться" /></StatusCard>
+    </section>
+
+    <section className="grid gap-3 lg:grid-cols-3">
+      <StatusCard title="Доставка провайдера · live">
+        <StatusLine label="p50 / p95" value={`${num(data.metrics24h.providerDeliveryLatencyP50Ms)} / ${num(data.metrics24h.providerDeliveryLatencyP95Ms)} мс`} />
+        <StatusLine label="Выборка" value={num(data.metrics24h.providerDeliveryLatencySampleSize)} />
+      </StatusCard>
+      <StatusCard title="End-to-end · не скорость агента">
+        <StatusLine label="p50 / p95" value={`${num(data.metrics24h.endToEndLatencyP50Ms)} / ${num(data.metrics24h.endToEndLatencyP95Ms)} мс`} />
+        <StatusLine label="Выборка" value={num(data.metrics24h.endToEndLatencySampleSize)} />
+      </StatusCard>
+      <StatusCard title="Происхождение сигналов">
+        {Object.entries(data.metrics24h.signalOrigins).map(([key, value]) => <StatusLine key={key} label={key} value={num(value)} />)}
+        <StatusLine label="Отфильтровано не-Solana" value={num(data.metrics24h.ingestCodes.FILTERED_UNSUPPORTED_NETWORK ?? 0)} />
+      </StatusCard>
     </section>
 
     <section className="panel overflow-hidden">
@@ -433,7 +480,24 @@ export default function PaperAgentPage() {
       </article>)}{notificationData?.items.length === 0 && <p className="p-8 text-center text-sm text-muted">Уведомлений пока нет</p>}</div>
     </section>
 
-    <section className="panel p-4"><h2 className="font-semibold">Причины пропусков · 24ч</h2><div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{Object.entries(data.metrics24h.skipReasons).map(([reason, count]) => <div key={reason} className="flex justify-between gap-3 text-xs"><span className="break-all text-muted">{reason}</span><span className="num">{count}</span></div>)}{Object.keys(data.metrics24h.skipReasons).length === 0 && <p className="text-xs text-muted">Пока нет данных</p>}</div></section>
+    <section className="panel p-4">
+      <h2 className="font-semibold">Причины пропусков · 24ч</h2>
+      <p className="mt-1 text-xs text-muted">Runs учитывают каждую стратегию; уникальные сигналы считаются один раз на причину.</p>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        {Object.entries(data.metrics24h.skipReasons).map(([reason, count]) => <div key={reason} className="flex justify-between gap-3 text-xs"><span className="break-all text-muted">{reason}</span><span className="num">{count} runs · {data.metrics24h.skipReasonsUniqueSignals[reason] ?? 0} сигналов</span></div>)}
+        {Object.keys(data.metrics24h.skipReasons).length === 0 && <p className="text-xs text-muted">Пока нет данных</p>}
+      </div>
+      <details className="mt-4 border-t border-border pt-3">
+        <summary className="cursor-pointer text-xs text-muted">По ACTIVE / SHADOW</summary>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+          {Object.entries(data.metrics24h.skipReasonsByContour).map(([contour, reasons]) => <div key={contour}><div className="text-xs font-medium">{contour}</div><div className="mt-1 flex flex-wrap gap-2">{Object.entries(reasons).map(([reason, count]) => <span key={reason} className="rounded border border-border px-2 py-1 text-[10px] text-muted">{reason}: {count}</span>)}</div></div>)}
+        </div>
+      </details>
+      <details className="mt-4 border-t border-border pt-3">
+        <summary className="cursor-pointer text-xs text-muted">По стратегиям и версиям</summary>
+        <div className="mt-3 space-y-3">{Object.entries(data.metrics24h.skipReasonsByStrategy).map(([strategy, reasons]) => <div key={strategy}><div className="break-all text-xs font-medium">{strategy}</div><div className="mt-1 flex flex-wrap gap-2">{Object.entries(reasons).map(([reason, count]) => <span key={reason} className="rounded border border-border px-2 py-1 text-[10px] text-muted">{reason}: {count}</span>)}</div></div>)}</div>
+      </details>
+    </section>
   </div>;
 }
 
