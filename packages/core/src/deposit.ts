@@ -57,6 +57,73 @@ export function assetByMint(mint: string | null): AssetRule | null {
   return SOLANA_DEPOSIT_ASSETS.find((a) => a.mint === mint) ?? null;
 }
 
+/**
+ * Тестовый токен devnet.
+ *
+ * В devnet канонического USDC нет: его адрес принадлежит mainnet,
+ * и в тестовой сети по нему ничего не выпущено. Чтобы проверить
+ * разбор SPL-переводов, нужен какой-то тестовый mint.
+ *
+ * Он **не добавляется** в `SOLANA_DEPOSIT_ASSETS`. Список выше —
+ * боевой, и расширять его тестовым значением значит однажды принять
+ * нарисованную монету за деньги. Тестовый токен живёт отдельным
+ * параметром, включается только в devnet и называется своим именем.
+ *
+ * Название `devnet test token`, а не `USDC`, тоже не косметика:
+ * если в журнале и в интерфейсе он выглядит как USDC, то через
+ * неделю никто уже не вспомнит, что это была подделка для теста.
+ */
+export const DEVNET_TEST_TOKEN_SYMBOL = 'devnet test token';
+
+export interface DevnetTestAssetInput {
+  network: string;
+  /** Адрес выпуска тестового токена. Пусто — тестового токена нет. */
+  mint: string | null;
+  decimals: number;
+}
+
+/**
+ * Правило для тестового токена — только в devnet.
+ *
+ * Возвращает `null` в любой другой сети, каким бы ни было значение
+ * `mint`. Проверка сети сделана здесь, а не у вызывающего: правило,
+ * которое каждый вызывающий обязан помнить, однажды забудут.
+ */
+export function devnetTestAsset(input: DevnetTestAssetInput): AssetRule | null {
+  if (input.network !== 'devnet') return null;
+  if (!input.mint || input.mint.trim().length === 0) return null;
+  if (!Number.isSafeInteger(input.decimals) || input.decimals < 0 || input.decimals > 18) {
+    return null;
+  }
+  // Совпадение с боевым mint запрещено: тестовый токен не имеет
+  // права носить адрес настоящего USDC ни в какой сети.
+  if (SOLANA_DEPOSIT_ASSETS.some((asset) => asset.mint === input.mint)) return null;
+
+  return {
+    symbol: DEVNET_TEST_TOKEN_SYMBOL,
+    mint: input.mint,
+    decimals: input.decimals,
+    minConfirmations: 32,
+    minAmount: '0',
+  };
+}
+
+/**
+ * Разрешённый актив с учётом сети.
+ *
+ * Боевой список остаётся первым и неизменным; тестовый токен
+ * рассматривается только после него и только в devnet.
+ */
+export function assetByMintForNetwork(
+  mint: string | null,
+  devnet: DevnetTestAssetInput,
+): AssetRule | null {
+  const production = assetByMint(mint);
+  if (production) return production;
+  const test = devnetTestAsset(devnet);
+  return test && test.mint === mint ? test : null;
+}
+
 export type DepositState = 'pending' | 'confirmed' | 'credited' | 'rejected';
 
 export const DEPOSIT_REJECT = {

@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { SemiAutoProposals } from '@/components/SemiAutoProposals';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import useSWR from 'swr';
 import { api, errorMessage, fetcher } from '@/lib/api';
@@ -88,6 +89,21 @@ interface Phase4Status {
     enabled: boolean;
     source: 'DISABLED' | 'NOT_CONFIGURED';
     assets: Array<{ symbol: string; mint: string | null; minAmount: string; decimals: number; minConfirmations: number }>;
+  };
+  /*
+   * Может отсутствовать: статика и API выкладываются раздельно, и
+   * браузер какое-то время держит новую страницу против старого
+   * сервера. Обязательное поле здесь означало бы белый экран у
+   * человека, который ни при чём.
+   */
+  depositNetwork?: { status: 'VALIDATING' | 'PAUSED' | 'REVIEW_REQUIRED' | 'NOT_CONNECTED' };
+  /** Может отсутствовать: статика и API выкладываются раздельно. */
+  signing?: {
+    ready: boolean;
+    network: string;
+    broadcastAvailable: boolean;
+    /** Необязательно: старый API этого поля не отдаёт. */
+    status?: string;
   };
   withdrawals: { enabled: boolean };
   compliance: { state: 'NOT_CONFIGURED' | 'REVIEW_REQUIRED' | 'APPROVED' };
@@ -300,18 +316,155 @@ function Overview({ data }: { data: PublicAgentData }) {
       </div>
     </section>
     <section className="panel p-4 sm:p-5"><div className="flex items-center justify-between gap-3"><h2 className="font-semibold">Кривая капитала</h2><span className="text-xs text-muted">последние события</span></div><EquityChart ledger={wallet.ledger} fallback={capital.equityUsd} /><div className="mt-4 grid grid-cols-2 gap-3"><Metric label="Сигналов 24ч" value={String(data.metrics24h.uniqueSignals)} tone="neutral" /><Metric label="Закрыто 24ч" value={String(data.metrics24h.closedPositions)} tone="neutral" /></div></section>
-  </div><Phase4Foundation status={data.phase4} /></>;
+  </div><SemiAutoProposals /><Phase4Foundation status={data.phase4} /></>;
 }
+
+/**
+ * Что человек читает про приём депозитов.
+ *
+ * Формулировки описывают положение дел, а не устройство системы.
+ * Ни адреса узла, ни номера слота, ни кода ошибки RPC здесь нет:
+ * они создают ощущение поломки там, где идёт обычная проверка,
+ * и заодно рассказывают постороннему, как устроен контур.
+ */
+/**
+ * Стадии намерения для человека.
+ *
+ * Четыре шага вместо восьми внутренних состояний. Человеку важно,
+ * докуда дошла подготовка, а не как называется строка в базе.
+ */
+/*
+ * Полный путь, включая последний шаг.
+ *
+ * Отправка показана именно как шаг — заблокированный, но
+ * присутствующий. Убрать её из списка значило бы дать прочитать
+ * «подписано» как «отправлено»: человек, видящий четыре шага и
+ * четвёртый выполненным, считает дело сделанным.
+ */
+const INTENT_STAGES = [
+  { code: 'PROPOSAL', label: 'Предложение' },
+  { code: 'AWAITING_APPROVAL', label: 'Подтверждение' },
+  { code: 'SIGNING', label: 'Безопасная подпись' },
+  { code: 'BROADCAST_LOCKED', label: 'Отправка заблокирована', locked: true },
+] as const;
+
+/**
+ * Что человек видит о контуре подписи.
+ *
+ * Одно состояние, пришедшее с сервера, а не набор флагов. Раньше
+ * рядом могли оказаться «KMS выключен» и «подписант готов»: их
+ * считали из разных переменных, и они расходились. Из одного
+ * состояния противоречивая пара не собирается в принципе.
+ */
+const SIGNING_STATUS_TEXT: Record<string, string> = {
+  SIGNING_OFF: 'подпись выключена',
+  PREPARING: 'контур готовится',
+  AWAITING_KEY_CONFIRMATION: 'ключ ещё не подтверждён',
+  TEST_CIRCUIT_ONLY: 'только проверочный контур',
+  SIGNED_NOT_SENT: 'подписано, не отправлено',
+  MANUAL_REVIEW: 'нужен разбор вручную',
+};
+
+const DEPOSIT_STATUS = {
+  VALIDATING: {
+    badge: 'сеть проверяется',
+    title: 'Сеть депозитов проверяется',
+    note: 'Идёт проверка перед приёмом переводов.',
+    tone: 'border-border bg-raised text-muted',
+    dot: 'bg-muted',
+  },
+  PAUSED: {
+    badge: 'приостановлено',
+    title: 'Депозиты временно приостановлены',
+    note: 'Уже отправленные переводы сохранены и не потеряны.',
+    tone: 'border-warn/30 bg-warn/10 text-warn',
+    dot: 'bg-warn',
+  },
+  REVIEW_REQUIRED: {
+    badge: 'требуется проверка',
+    title: 'Требуется проверка',
+    note: 'Мы разбираемся вручную. Ничего делать не нужно.',
+    tone: 'border-down/30 bg-down/10 text-down',
+    dot: 'bg-down',
+  },
+  NOT_CONNECTED: {
+    badge: 'ещё не подключено',
+    title: 'LIVE-пополнения ещё не подключены',
+    note: 'Реальные переводы пока не принимаются.',
+    tone: 'border-warn/30 bg-warn/10 text-warn',
+    dot: 'bg-warn',
+  },
+} as const;
 
 function Phase4Foundation({ status }: { status: Phase4Status }) {
   const usdc = status.funding.assets.find((asset) => asset.symbol === 'USDC');
+  // Нет поля или незнакомое значение — показываем «ещё не подключено».
+  // Любой другой выбор по умолчанию обещал бы работающие пополнения.
+  const deposit =
+    DEPOSIT_STATUS[status.depositNetwork?.status as keyof typeof DEPOSIT_STATUS] ??
+    DEPOSIT_STATUS.NOT_CONNECTED;
   const steps = ['Ожидаем перевод', 'Обнаружен', 'Подтверждения', 'Финальность', 'Зачисление'];
   return <section className="mt-4 grid gap-4 xl:grid-cols-[1.2fr_.8fr]" aria-label="Подготовка LIVE">
     <article className="panel p-4 sm:p-5">
-      <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-semibold tracking-wider text-muted">ПОПОЛНЕНИЕ SOLANA</p><h2 className="mt-1 font-semibold">Контракт pipeline подготовлен</h2><p className="mt-1 text-xs text-muted">On-chain источник не подключён — реальные переводы не принимаются.</p></div><span className="rounded-full border border-warn/30 bg-warn/10 px-2.5 py-1 text-xs text-warn">адаптер не подключён</span></div>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-semibold tracking-wider text-muted">ПОПОЛНЕНИЕ SOLANA</p>
+          <h2 className="mt-1 font-semibold">{deposit.title}</h2>
+          <p className="mt-1 text-xs text-muted">{deposit.note}</p>
+        </div>
+        <span
+          role="status"
+          data-deposit-status={status.depositNetwork?.status ?? 'NOT_CONNECTED'}
+          className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs transition-colors duration-200 motion-reduce:transition-none ${deposit.tone}`}
+        >
+          <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${deposit.dot}`} />
+          {deposit.badge}
+        </span>
+      </div>
       <div className="mt-5 grid grid-cols-5 gap-1" role="list" aria-label="Этапы пополнения">
         {steps.map((step, index) => <div key={step} role="listitem" className="min-w-0 text-center"><div className="mx-auto grid h-7 w-7 place-items-center rounded-full border border-border bg-raised text-[11px] text-muted">{index + 1}</div><div className="mt-2 break-words text-[10px] leading-tight text-muted sm:text-xs">{step}</div></div>)}
       </div>
+      <div className="mt-5 rounded-lg border border-border p-3" aria-label="Подготовка подписи">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <p className="text-xs font-semibold tracking-wider text-muted">ПОДГОТОВКА ПОДПИСИ</p>
+          <span className="text-[11px] text-muted">
+            сеть {status.signing?.network ?? 'devnet'}
+            {' · '}
+            <span data-signing-status={status.signing?.status ?? 'SIGNING_OFF'}>
+              {SIGNING_STATUS_TEXT[status.signing?.status ?? 'SIGNING_OFF']
+                ?? 'состояние неизвестно'}
+            </span>
+          </span>
+        </div>
+        <ol className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4" role="list">
+          {INTENT_STAGES.map((stage) => (
+            <li
+              key={stage.code}
+              data-intent-stage={stage.code}
+              data-locked={'locked' in stage ? 'true' : undefined}
+              className={`rounded-lg border p-2 transition-colors duration-200 motion-reduce:transition-none ${
+                'locked' in stage
+                  ? 'border-warn/25 bg-warn/5'
+                  : 'border-border bg-raised'
+              }`}
+            >
+              <div className={`text-[11px] ${'locked' in stage ? 'text-warn' : 'text-muted'}`}>
+                {stage.label}
+              </div>
+            </li>
+          ))}
+        </ol>
+        {/*
+          Формулировка выбрана так, чтобы её нельзя было прочитать
+          как «сделки работают». Подпись и отправка — разные события,
+          и второго на этом этапе нет вовсе.
+        */}
+        <p className="mt-3 text-xs leading-relaxed text-muted">
+          Подпись не означает отправку: подписанная транзакция никуда не уходит.
+          Отправка ещё не подключена.
+        </p>
+      </div>
+
       <div className="mt-5 rounded-lg border border-warn/20 bg-warn/5 p-3 text-xs leading-relaxed text-muted">
         Отправлять можно будет только в сети Solana. USDC принимается только с официальным mint <span className="num break-all text-white">{usdc?.mint ?? '—'}</span>. Поддельный mint и сумма ниже {usdc?.minAmount ?? '—'} USDC отклоняются.
       </div>

@@ -49,6 +49,17 @@ type FavoriteDelegate = PrismaClient extends { walletFavorite: infer D }
  * Обращение идёт к тому же клиенту: на выполнение запроса обёртка
  * не влияет никак. Если таблицы в базе ещё нет, Prisma вернёт код
  * P2021, и обработка этого случая — задача вызывающего.
+ *
+ * Делегат берётся при вызове, а не при импорте. Прочитать
+ * `prisma.walletFavorite` на уровне модуля значит создать клиент
+ * базы в момент, когда модуль всего лишь подключили: движок
+ * поднимается до проверки окружения, а в тестах — даже там, где
+ * база вообще не нужна.
  */
-export const favorites = (prisma as unknown as { walletFavorite: FavoriteDelegate })
-  .walletFavorite;
+export const favorites: FavoriteDelegate = new Proxy({} as FavoriteDelegate, {
+  get(_target, property) {
+    const delegate = (prisma as unknown as { walletFavorite: FavoriteDelegate }).walletFavorite;
+    const value = Reflect.get(delegate as object, property);
+    return typeof value === 'function' ? value.bind(delegate) : value;
+  },
+});

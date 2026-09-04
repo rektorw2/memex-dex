@@ -97,11 +97,22 @@ services:
         value: "false"
       - key: LIVE_MIGRATIONS_READY
         value: "false"
-      - key: KMS_SIGNING_ENABLED
+      # Контур подписи транзакций Solana. Отдельный от custody
+      # encryption ниже: общее слово «KMS» в старых именах склеивало
+      # эти понятия, и интерфейс расходился с воркером.
+      - key: SOLANA_SIGNING_ENABLED
+        value: "false"
+      - key: SOLANA_SIGNER_PROVIDER
+        value: unavailable
+      - key: KMS_PREFLIGHT_ALLOW_SIGN
         value: "false"
       - key: LIVE_AGENT_CONTROL_MODE
         value: semi-auto
+      - key: SOLANA_DEPOSIT_SOURCE
+        value: disabled
 
+      # Custody encryption: чем зашифрован сохранённый key material.
+      # К подписи транзакций отношения не имеет.
       - key: KMS_PROVIDER
         value: local
       - key: KMS_LOCAL_MASTER_KEY

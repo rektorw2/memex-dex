@@ -120,6 +120,26 @@ const phase4LiveFoundation = fs.readFileSync(
   'utf8',
 );
 
+const phase4Reconciliation = fs.readFileSync(
+  `${R}/prisma/migrations/20260904100000_add_phase4_reconciliation/migration.sql`,
+  'utf8',
+);
+
+const signingIdentity = fs.readFileSync(
+  `${R}/prisma/migrations/20260904220000_add_signing_identity/migration.sql`,
+  'utf8',
+);
+
+const intentLifecycle = fs.readFileSync(
+  `${R}/prisma/migrations/20260904210000_add_intent_lifecycle/migration.sql`,
+  'utf8',
+);
+
+const transactionIntent = fs.readFileSync(
+  `${R}/prisma/migrations/20260904200000_add_transaction_intent/migration.sql`,
+  'utf8',
+);
+
 // ── Проверяется ли вообще то, что лежит в репозитории ──────────────
 /*
  * Файл называет миграции поимённо, и это его слабое место: миграция
@@ -146,6 +166,10 @@ const KNOWN = [
   '20260826120000_add_paper_agent_phase3',
   '20260827100000_fix_paper_agent_signal_pipeline',
   '20260827160000_add_phase4_live_foundation',
+  '20260904100000_add_phase4_reconciliation',
+  '20260904200000_add_transaction_intent',
+  '20260904210000_add_intent_lifecycle',
+  '20260904220000_add_signing_identity',
 ];
 
 const onDisk = fs
@@ -1339,6 +1363,285 @@ try {
 check('same signature and instruction index cannot be credited twice',
   duplicateDepositEvent != null,
   duplicateDepositEvent ? 'constraint enforced' : 'duplicate inserted');
+
+// ───────────────────── Phase 4 сверка с цепочкой ─────────────────────────
+
+console.log('\n=== Phase 4 сверка ===');
+check('миграция сверки только добавляет',
+  !/\b(?:DROP|TRUNCATE|DELETE\s+FROM|ALTER\s+COLUMN|RENAME)\b/i.test(phase4Reconciliation));
+
+// Строка, существовавшая до миграции: боевая база не пуста.
+await clean.exec(phase4Reconciliation);
+
+const legacyDepositEvent = (await clean.query(`
+  SELECT "reconciliationState", "lastChainSeenAt", "missingSince",
+         "consecutiveMissingChecks", "reconcileAttempts"
+  FROM "SolanaDepositEvent" WHERE "id"='dep-event-1'
+`)).rows[0];
+check('старая строка остаётся несверенной, а не «совпавшей»',
+  legacyDepositEvent?.reconciliationState == null &&
+  legacyDepositEvent?.lastChainSeenAt == null &&
+  legacyDepositEvent?.missingSince == null,
+  JSON.stringify(legacyDepositEvent));
+check('счётчики начинаются с честного нуля',
+  Number(legacyDepositEvent?.consecutiveMissingChecks) === 0 &&
+  Number(legacyDepositEvent?.reconcileAttempts) === 0);
+
+const reconciliationTables = (await clean.query(`
+  SELECT tablename FROM pg_tables
+  WHERE schemaname='public'
+    AND tablename IN ('SolanaDepositAddressCursor','FundingSafetyLatch')
+  ORDER BY 1
+`)).rows.map((row) => row.tablename);
+check('таблицы курсора адресов и защёлки созданы',
+  reconciliationTables.length === 2, reconciliationTables.join(', '));
+
+const latchDefault = (await clean.query(`
+  INSERT INTO "FundingSafetyLatch" ("id","updatedAt") VALUES ('solana-funding-v1', NOW())
+  RETURNING "state"
+`)).rows[0]?.state;
+check('защёлка по умолчанию здорова', latchDefault === 'HEALTHY', String(latchDefault));
+
+// Повторное применение: планировщик может встретить частично
+// применённую миграцию после обрыва деплоя.
+let reapplyError = null;
+try {
+  await clean.exec(phase4Reconciliation);
+} catch (error) {
+  reapplyError = error;
+}
+check('повторное применение не падает', reapplyError == null, reapplyError?.message ?? 'ok');
+
+// ───────────────────── Phase 4D подпись без отправки ─────────────────────
+
+console.log('\n=== Phase 4D подпись ===');
+check('миграция намерений только добавляет',
+  !/\b(?:DROP|TRUNCATE|DELETE\s+FROM|ALTER\s+COLUMN|RENAME)\b/i.test(transactionIntent));
+
+/*
+ * Отправки в модели нет.
+ *
+ * Проверяется отсутствие состояний, а не наличие проверки перед
+ * отправкой: несуществующее состояние обойти нельзя, а проверку —
+ * можно.
+ */
+/*
+ * Комментарии вырезаются: в шапке миграции перечислено ровно то,
+ * чего в ней нет, и совпадение с текстом объяснения не является
+ * совпадением с DDL.
+ */
+const intentDdl = transactionIntent.replace(/--.*$/gm, '');
+check('в модели нет состояний отправки и подтверждения',
+  !/SUBMITTED|CONFIRMED|FINALIZED|broadcast/i.test(intentDdl));
+
+await clean.exec(transactionIntent);
+
+const intentTables = (await clean.query(`
+  SELECT tablename FROM pg_tables
+  WHERE schemaname='public' AND tablename IN ('TransactionIntent','SigningAttempt')
+  ORDER BY 1
+`)).rows.map((row) => row.tablename);
+check('таблицы намерения и попытки подписи созданы',
+  intentTables.length === 2, intentTables.join(', '));
+
+// Суммы хранятся текстом: числовой тип потерял бы точность на u64.
+const amountType = (await clean.query(`
+  SELECT data_type FROM information_schema.columns
+  WHERE table_name='TransactionIntent' AND column_name='rawAmount'
+`)).rows[0]?.data_type;
+check('сумма хранится текстом, а не числом', amountType === 'text', String(amountType));
+
+await clean.exec(`
+  INSERT INTO "TransactionIntent"
+    ("id","userId","walletId","network","purpose","rawAmount","sourceAddress",
+     "destinationAddress","feeLimitLamports","slippageBps","recentBlockhash",
+     "lastValidBlockHeight","messageHash","policyVersion","updatedAt","expiresAt")
+  VALUES
+    ('intent-1','u1','w1','devnet','DEVNET_SELF_TRANSFER','18446744073709551615','addr',
+     'addr','5000',50,'hash','1000','abc','phase4d-1',NOW(),NOW());
+`);
+const storedAmount = (await clean.query(`
+  SELECT "rawAmount" FROM "TransactionIntent" WHERE "id"='intent-1'
+`)).rows[0]?.rawAmount;
+check('u64 на верхней границе не теряет точности',
+  storedAmount === '18446744073709551615', String(storedAmount));
+
+await clean.exec(`
+  INSERT INTO "SigningAttempt" ("id","intentId","outcome","claimedBy")
+  VALUES ('a1','intent-1','SUCCEEDED','worker-a');
+`);
+let secondSignature = null;
+try {
+  await clean.exec(`
+    INSERT INTO "SigningAttempt" ("id","intentId","outcome","claimedBy")
+    VALUES ('a2','intent-1','SUCCEEDED','worker-b');
+  `);
+} catch (error) {
+  secondSignature = error;
+}
+check('одно намерение нельзя подписать дважды',
+  secondSignature != null,
+  secondSignature ? 'ограничение сработало' : 'вторая подпись записана');
+
+// Неудачные попытки не ограничены: их может быть сколько угодно.
+let secondFailure = null;
+try {
+  await clean.exec(`
+    INSERT INTO "SigningAttempt" ("id","intentId","outcome","claimedBy")
+    VALUES ('a3','intent-1','FAILED','worker-b'), ('a4','intent-1','AMBIGUOUS','worker-c');
+  `);
+} catch (error) {
+  secondFailure = error;
+}
+check('неудачные попытки не блокируются', secondFailure == null);
+
+/*
+ * Атомарный захват на настоящем Postgres.
+ *
+ * До сих пор он проверялся только на подделке хранилища, а подделка
+ * реализует ту семантику, которую от неё ждут. Здесь два «процесса»
+ * бьются за одну строку в настоящей базе: выиграть должен ровно один.
+ */
+await clean.exec(`
+  INSERT INTO "TransactionIntent"
+    ("id","userId","walletId","network","purpose","rawAmount","sourceAddress",
+     "destinationAddress","feeLimitLamports","slippageBps","recentBlockhash",
+     "lastValidBlockHeight","messageHash","policyVersion","state","updatedAt","expiresAt")
+  VALUES
+    ('intent-race','u1','w1','devnet','DEVNET_SELF_TRANSFER','1','addr',
+     'addr','5000',50,'hash','1000','abc','phase4d-1','APPROVED',NOW(),NOW() + INTERVAL '1 hour');
+`);
+
+const claimOne = (await clean.query(`
+  UPDATE "TransactionIntent" SET "state"='SIGNING', "signingClaimedBy"='worker-a'
+  WHERE "id"='intent-race' AND "state"='APPROVED' RETURNING "id"
+`)).rows.length;
+const claimTwo = (await clean.query(`
+  UPDATE "TransactionIntent" SET "state"='SIGNING', "signingClaimedBy"='worker-b'
+  WHERE "id"='intent-race' AND "state"='APPROVED' RETURNING "id"
+`)).rows.length;
+
+check('захват достаётся ровно одному процессу',
+  claimOne === 1 && claimTwo === 0, `${claimOne} и ${claimTwo}`);
+
+const claimOwner = (await clean.query(`
+  SELECT "signingClaimedBy" FROM "TransactionIntent" WHERE "id"='intent-race'
+`)).rows[0]?.signingClaimedBy;
+check('второй процесс не перебил владельца захвата',
+  claimOwner === 'worker-a', String(claimOwner));
+
+// Подпись ставится только из состояния захвата: строка, у которой
+// захват потерян, не должна получить подпись задним числом.
+const signFromApproved = (await clean.query(`
+  UPDATE "TransactionIntent" SET "state"='SIGNED', "signature"='sig'
+  WHERE "id"='intent-race' AND "state"='APPROVED' RETURNING "id"
+`)).rows.length;
+check('подпись не ставится в обход захвата', signFromApproved === 0, String(signFromApproved));
+
+// ── Жизненный цикл: происхождение и связь с предложением ──────────
+
+check('миграция жизненного цикла только добавляет',
+  !/\b(?:DROP|TRUNCATE|DELETE\s+FROM|RENAME)\b/i.test(intentLifecycle));
+
+await clean.exec(intentLifecycle);
+
+// Старая строка получает происхождение по умолчанию, но остаётся
+// без связи с предложением: NULL здесь означает «не из предложения»,
+// а не «предложение забыли записать».
+const legacyIntent = (await clean.query(`
+  SELECT "origin", "proposalId", "shownFingerprint"
+  FROM "TransactionIntent" WHERE "id"='intent-1'
+`)).rows[0];
+check('старая строка не выдумывает связь с предложением',
+  legacyIntent?.proposalId == null && legacyIntent?.shownFingerprint == null,
+  JSON.stringify(legacyIntent));
+
+await clean.exec(`
+  INSERT INTO "TransactionIntent"
+    ("id","userId","walletId","network","purpose","rawAmount","sourceAddress",
+     "destinationAddress","feeLimitLamports","slippageBps","recentBlockhash",
+     "lastValidBlockHeight","messageHash","policyVersion","state","proposalId",
+     "updatedAt","expiresAt")
+  VALUES
+    ('intent-p1','u1','w1','devnet','DEVNET_SELF_TRANSFER','1','a','a','5000',50,
+     'h','1000','abc','phase4d-1','APPROVED','proposal-1',NOW(),NOW() + INTERVAL '1 hour');
+`);
+let secondLiveIntent = null;
+try {
+  await clean.exec(`
+    INSERT INTO "TransactionIntent"
+      ("id","userId","walletId","network","purpose","rawAmount","sourceAddress",
+       "destinationAddress","feeLimitLamports","slippageBps","recentBlockhash",
+       "lastValidBlockHeight","messageHash","policyVersion","state","proposalId",
+       "updatedAt","expiresAt")
+    VALUES
+      ('intent-p2','u1','w1','devnet','DEVNET_SELF_TRANSFER','1','a','a','5000',50,
+       'h','1000','abc','phase4d-1','DRAFT','proposal-1',NOW(),NOW() + INTERVAL '1 hour');
+  `);
+} catch (error) {
+  secondLiveIntent = error;
+}
+check('одно предложение не порождает два живых намерения',
+  secondLiveIntent != null,
+  secondLiveIntent ? 'ограничение сработало' : 'создано второе намерение');
+
+// Закрытое намерение освобождает предложение: после отказа человек
+// вправе получить новое предложение по тому же поводу.
+await clean.exec(`UPDATE "TransactionIntent" SET "state"='REJECTED' WHERE "id"='intent-p1'`);
+let afterRejected = null;
+try {
+  await clean.exec(`
+    INSERT INTO "TransactionIntent"
+      ("id","userId","walletId","network","purpose","rawAmount","sourceAddress",
+       "destinationAddress","feeLimitLamports","slippageBps","recentBlockhash",
+       "lastValidBlockHeight","messageHash","policyVersion","state","proposalId",
+       "updatedAt","expiresAt")
+    VALUES
+      ('intent-p3','u1','w1','devnet','DEVNET_SELF_TRANSFER','1','a','a','5000',50,
+       'h','1000','abc','phase4d-1','DRAFT','proposal-1',NOW(),NOW() + INTERVAL '1 hour');
+  `);
+} catch (error) {
+  afterRejected = error;
+}
+check('закрытое намерение освобождает предложение', afterRejected == null,
+  afterRejected?.message ?? 'ok');
+
+// ── Кто подписывает ───────────────────────────────────────────────
+
+check('миграция signing identity только добавляет',
+  !/\b(?:DROP|TRUNCATE|DELETE\s+FROM|ALTER\s+COLUMN|RENAME)\b/i.test(signingIdentity));
+
+await clean.exec(signingIdentity);
+
+// Имя ресурса KMS в таблице отсутствует: по нему восстанавливаются
+// аккаунт и регион, по отпечатку — нет.
+const identityColumns = (await clean.query(`
+  SELECT column_name FROM information_schema.columns
+  WHERE table_name='SigningIdentity'
+`)).rows.map((row) => row.column_name);
+check('в таблице нет идентификатора ресурса KMS',
+  !identityColumns.some((name) => /keyId|resource|arn|keyArn/i.test(name)),
+  identityColumns.join(', '));
+
+const identityDefault = (await clean.query(`
+  INSERT INTO "SigningIdentity"
+    ("id","provider","fingerprint","solanaAddress","keyVersion","algorithm","network","updatedAt")
+  VALUES ('solana-signer-v1','aws-kms','abc','Addr','1','ED25519_SHA_512','devnet',NOW())
+  RETURNING "state"
+`)).rows[0]?.state;
+// Незарегистрированное состояние по умолчанию: ключ, о котором
+// человек не знает, подписывать не должен.
+check('новая identity не зарегистрирована по умолчанию',
+  identityDefault === 'UNREGISTERED', String(identityDefault));
+
+let intentReapply = null;
+try {
+  await clean.exec(transactionIntent);
+} catch (error) {
+  intentReapply = error;
+}
+check('повторное применение миграции не падает',
+  intentReapply == null, intentReapply?.message ?? 'ok');
 
 console.log(`\nИтог: ${failures === 0 ? 'все проверки пройдены' : failures + ' проверок не прошли'}`);
 process.exit(failures === 0 ? 0 : 1);

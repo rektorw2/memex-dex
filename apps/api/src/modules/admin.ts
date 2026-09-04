@@ -2,6 +2,14 @@ import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { Prisma as P } from '@prisma/client';
 import { assessToken } from '@memex/core';
+import {
+  allowsAutomaticCredit,
+  depositPipelineStage,
+  kmsCapability,
+  signerBlockers,
+  DEVNET_TEST_TOKEN_SYMBOL,
+} from '@memex/core';
+import { publicKeyFingerprint } from '../services/solana-signer-contract.js';
 import { findExitPreset, DEFAULT_EXIT_PRESET } from '@memex/core';
 import { prisma } from '../lib/prisma.js';
 import { reconcileUser } from '../services/balances.js';
@@ -11,6 +19,18 @@ import { runResearch, serializeResearch } from '../services/research.js';
 import { isAiConfigured } from '../services/ai-research.js';
 import { decimalOf, priceChangeOrNull } from '../lib/decimal.js';
 import { env } from '../lib/env.js';
+import {
+  clearFundingSafetyLatch,
+  readFundingSafetyLatch,
+  readFundingSafetyState,
+} from '../services/prisma-solana-reconciliation-repository.js';
+import { getSolanaDepositRuntimeStatus } from '../workers/solana-deposit.js';
+import { getSolanaReconciliationRuntimeStatus } from '../workers/solana-reconciliation.js';
+import { getIntentExpiryStatus } from '../workers/intent-expiry.js';
+import { getIntentSigningStatus } from '../workers/intent-signing.js';
+import { blockhashProvider, createBlockhashSource } from '../services/signer-factory.js';
+import { readRegisteredIdentity } from '../services/signing-identity-registry.js';
+import { readSigningState } from '../services/signing-state.js';
 
 export const adminRoutes: FastifyPluginAsync = async (app) => {
 
@@ -352,5 +372,273 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
   app.get('/admin/audit', async (req) => {
     const q = z.object({ limit: z.coerce.number().max(500).default(100) }).parse(req.query);
     return prisma.auditLog.findMany({ orderBy: { createdAt: 'desc' }, take: q.limit });
+  });
+
+  /**
+   * Состояние контура пополнений. Только чтение.
+   *
+   * Наружу выходят счётчики, состояния и машинные коды. Адресов,
+   * RPC-адресов, владельцев аренды и ответов провайдера здесь нет:
+   * страница статуса не должна становиться способом узнать, на
+   * какие кошельки смотрит платформа.
+   *
+   * Маршрут ничего не включает и не выключает. Снять защёлку
+   * запросом отсюда нельзя — на это нет обработчика.
+   */
+  app.get('/admin/funding/status', { preHandler: [app.requireAdmin] }, async () => {
+    const [deposits, issues, safety, byState, latch, unreconciled] = await Promise.all([
+      getSolanaDepositRuntimeStatus(),
+      prisma.solanaReconciliationIssue.count({ where: { status: 'OPEN' } }),
+      readFundingSafetyState(),
+      prisma.solanaDepositEvent.groupBy({ by: ['state'], _count: { _all: true } }),
+      readFundingSafetyLatch(),
+      prisma.solanaDepositEvent.count({ where: { reconciliationState: null } }),
+    ]);
+    const reconciliation = getSolanaReconciliationRuntimeStatus();
+
+    const stages: Record<string, number> = {};
+    for (const row of byState) {
+      const stage = depositPipelineStage(row.state);
+      stages[stage] = (stages[stage] ?? 0) + row._count._all;
+    }
+
+    return {
+      network: env.SOLANA_NETWORK,
+      // Подтверждение выключенности читается из настроек, а не
+      // из памяти воркера: воркер мог не стартовать по другой причине.
+      fundingEnabled: env.FUNDING_ENABLED,
+      liveReachable: env.LIVE_AGENT_ENABLED || env.LIVE_EXECUTION_ENABLED,
+      withdrawalsEnabled: env.WITHDRAWALS_ENABLED,
+      executionMode: env.EXECUTION_MODE,
+      depositSource: env.SOLANA_DEPOSIT_SOURCE,
+      safetyState: safety,
+      automaticCreditAllowed: allowsAutomaticCredit(safety),
+      openIssues: issues,
+      stages,
+      depositWorker: {
+        running: deposits.running,
+        lastCycleAt: deposits.lastCycleAt,
+        lastSuccessAt: deposits.lastSuccessAt,
+        lastErrorCode: deposits.lastErrorCode,
+        checkpoint: deposits.checkpoint,
+        heldBack: deposits.heldBack,
+      },
+      reconciliationWorker: {
+        running: reconciliation.running,
+        lastCycleAt: reconciliation.lastCycleAt,
+        lastSuccessAt: reconciliation.lastSuccessAt,
+        lastErrorCode: reconciliation.lastErrorCode,
+        claimed: reconciliation.claimed,
+        matched: reconciliation.matched,
+        mismatched: reconciliation.mismatched,
+        missing: reconciliation.missing,
+        unreachable: reconciliation.unreachable,
+      },
+      latch: {
+        state: latch.state,
+        reasonKind: latch.reasonKind,
+        raisedAt: latch.raisedAt,
+        clearedAt: latch.clearedAt,
+      },
+      // Сколько строк ни разу не сверялись. NULL в колонке означает
+      // именно это и отличается от «сверено и совпало».
+      neverReconciled: unreconciled,
+      /*
+       * Тестовый токен devnet называется своим именем.
+       *
+       * Если бы он показывался как USDC, через неделю никто бы уже
+       * не вспомнил, что это подделка для проверки разбора.
+       */
+      devnetTestToken: env.SOLANA_DEVNET_TEST_MINT ? DEVNET_TEST_TOKEN_SYMBOL : null,
+    };
+  });
+
+  /**
+   * Состояние контура подписи. Только чтение.
+   *
+   * Наружу выходят провайдер, алгоритм, отпечаток ключа и версия.
+   * Имя ресурса ключа не выходит: оно рассказывает о внутреннем
+   * устройстве облака больше, чем нужно кому бы то ни было, — и
+   * восстановить по нему проект и регион проще, чем кажется.
+   */
+  app.get('/admin/signing/status', { preHandler: [app.requireAdmin] }, async () => {
+    const capability = kmsCapability(env.SOLANA_SIGNER_PROVIDER);
+    const blockers = signerBlockers({
+      provider: env.SOLANA_SIGNER_PROVIDER,
+      keyConfigured: Boolean(env.SOLANA_SIGNER_KEY_ID && env.SOLANA_SIGNER_KEY_VERSION),
+      // Совпадение проверяется живым вызовом KMS при подписи.
+      // Здесь показывается настройка, а не результат проверки.
+      publicKeyMatchesWallet: Boolean(env.SOLANA_SIGNER_WALLET_PUBLIC_KEY),
+      network: env.SOLANA_NETWORK,
+    });
+
+    const byState = await prisma.transactionIntent.groupBy({
+      by: ['state'],
+      _count: { _all: true },
+    });
+    const counts: Record<string, number> = {};
+    for (const row of byState) counts[row.state] = row._count._all;
+
+    const signing = await readSigningState();
+    const lastFailure = await prisma.signingAttempt.findFirst({
+      where: { outcome: { in: ['FAILED', 'AMBIGUOUS'] } },
+      orderBy: { startedAt: 'desc' },
+      select: { code: true, outcome: true, startedAt: true },
+    });
+
+    return {
+      provider: env.SOLANA_SIGNER_PROVIDER,
+      algorithm: capability?.algorithm ?? null,
+      verdict: capability?.verdict ?? 'NOT_VERIFIED',
+      inputMode: capability?.inputMode ?? 'UNKNOWN',
+      privateKeyExportable: capability?.privateKeyExportable ?? true,
+      network: env.SOLANA_NETWORK,
+      keyVersion: env.SOLANA_SIGNER_KEY_VERSION ?? null,
+      /*
+       * Отпечаток, а не публичный ключ.
+       *
+       * Публичный ключ — это адрес кошелька платформы. Показывать
+       * его в диагностике значит раздавать карту наших кошельков
+       * всем, у кого есть доступ к админке.
+       */
+      keyFingerprint: env.SOLANA_SIGNER_WALLET_PUBLIC_KEY
+        ? publicKeyFingerprint(Buffer.from(env.SOLANA_SIGNER_WALLET_PUBLIC_KEY))
+        : null,
+      /*
+       * Два контура показаны раздельно и названы по-разному.
+       *
+       * Общее слово «KMS» в переменных окружения склеивало custody
+       * encryption и подпись транзакций — и на этой странице они
+       * выглядели одним переключателем. Разные вещи с одним именем
+       * на экране администратора это не удобство, а источник
+       * решений, принятых не о том.
+       */
+      custody: {
+        purpose: 'Шифрование сохранённого key material',
+        provider: env.KMS_PROVIDER,
+        // Ни мастер-ключа, ни ARN: назначение и провайдер — всё.
+        productionGrade: env.KMS_PROVIDER !== 'local',
+      },
+      transactionSigner: {
+        purpose: 'Подпись транзакций Solana облачным ключом Ed25519',
+        state: signing.state,
+        provider: signing.facts.signerProvider,
+        network: signing.facts.network,
+        identityState: signing.facts.identityState,
+        keyFingerprint: signing.facts.keyFingerprint,
+        solanaAddress: signing.facts.solanaAddress,
+        networkVerified: signing.facts.networkVerified,
+        signatureValidated: signing.facts.signatureValidated,
+        allowsKmsCall: signing.allowsKmsCall,
+        blockers: signing.blockers,
+      },
+      signingEnabled: signing.facts.signingEnabled,
+      blockers,
+      // Подпись не означает отправку. Транспорта broadcast нет.
+      broadcastAvailable: false,
+      intents: {
+        draft: counts.DRAFT ?? 0,
+        validated: counts.VALIDATED ?? 0,
+        approved: counts.APPROVED ?? 0,
+        signing: counts.SIGNING ?? 0,
+        signed: counts.SIGNED ?? 0,
+        failed: counts.FAILED ?? 0,
+        expired: counts.EXPIRED ?? 0,
+        rejected: counts.REJECTED ?? 0,
+      },
+      lastFailure: lastFailure
+        ? { code: lastFailure.code, outcome: lastFailure.outcome, at: lastFailure.startedAt }
+        : null,
+
+      /*
+       * Реестр ключа и состояние сети.
+       *
+       * Отвечает на два вопроса, которые задают в первую очередь:
+       * тем ли ключом мы подписываем и жива ли сеть, из которой
+       * берётся blockhash.
+       *
+       * Ни имени ресурса, ни адреса узла: и то и другое
+       * восстанавливает внутреннее устройство облака по одной
+       * странице админки.
+       */
+      identity: await readRegisteredIdentity(),
+      blockhash: {
+        configured: createBlockhashSource() !== null,
+        // Возраст, а не значение: свежесть — это всё, что нужно
+        // знать снаружи, а сам blockhash в диагностике не нужен.
+        cacheAgeMs: blockhashProvider()?.cacheAgeMs ?? null,
+        maxAgeMs: blockhashProvider()?.maxAgeMs ?? null,
+      },
+      worker: getIntentSigningStatus(),
+    };
+  });
+
+  /**
+   * Диагностика жизненного цикла предложений и намерений.
+   *
+   * Счётчики и коды, ничего сверх. Ни сумм, ни адресов, ни имён
+   * ресурсов: страница диагностики не должна становиться выгрузкой
+   * чужих сделок.
+   */
+  app.get('/admin/live/lifecycle', { preHandler: [app.requireAdmin] }, async () => {
+    const [proposalStates, intentStates, oldest, ambiguous, auditCount] = await Promise.all([
+      prisma.liveAgentProposal.groupBy({ by: ['status'], _count: { _all: true } }),
+      prisma.transactionIntent.groupBy({ by: ['state'], _count: { _all: true } }),
+      prisma.transactionIntent.findFirst({
+        where: { state: { in: ['DRAFT', 'VALIDATED', 'APPROVED'] } },
+        orderBy: { createdAt: 'asc' },
+        select: { createdAt: true },
+      }),
+      prisma.signingAttempt.count({ where: { outcome: 'AMBIGUOUS' } }),
+      prisma.auditLog.count({ where: { action: { startsWith: 'INTENT_' } } }),
+    ]);
+
+    const byProposal: Record<string, number> = {};
+    for (const row of proposalStates) byProposal[row.status] = row._count._all;
+    const byIntent: Record<string, number> = {};
+    for (const row of intentStates) byIntent[row.state] = row._count._all;
+
+    return {
+      proposals: byProposal,
+      intents: byIntent,
+      // Возраст самой старой очереди: если он растёт, воркер стоит.
+      oldestOpenIntentAgeMs: oldest ? Date.now() - oldest.createdAt.getTime() : null,
+      expiry: getIntentExpiryStatus(),
+      signing: getIntentSigningStatus(),
+      ambiguousAttempts: ambiguous,
+      auditEntries: auditCount,
+      signerProvider: env.SOLANA_SIGNER_PROVIDER,
+      signingEnabled: env.SOLANA_SIGNING_ENABLED,
+      // Не настройка, а факт: транспорта отправки в контуре нет.
+      broadcastAvailable: false,
+    };
+  });
+
+  /**
+   * Снятие защёлки контура пополнений.
+   *
+   * Единственный путь опустить её. `requireAdmin` читает роль из
+   * базы, а не из токена: отзыв прав должен действовать сразу, и
+   * подменить роль телом, query или заголовком нельзя.
+   *
+   * Причина обязательна и попадает в журнал вместе со снимаемым
+   * состоянием. Снятая защёлка без следа означает, что однажды
+   * никто не сможет сказать, кто разрешил продолжить.
+   */
+  app.post('/admin/funding/latch/clear', { preHandler: [app.requireAdmin] }, async (req, reply) => {
+    const body = z
+      .object({ reason: z.string().trim().min(10).max(500) })
+      .parse(req.body);
+
+    const outcome = await clearFundingSafetyLatch({
+      actorId: req.user.sub,
+      reason: body.reason,
+      ip: req.ip,
+    });
+
+    if (outcome === 'already-healthy') {
+      return reply.code(409).send({ error: 'Защёлка не поднята', code: 'LATCH_NOT_RAISED' });
+    }
+    return { ok: true, state: 'HEALTHY' };
   });
 };

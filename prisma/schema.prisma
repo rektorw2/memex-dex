@@ -1887,9 +1887,211 @@ model SolanaDepositEvent {
   creditedAt       DateTime?
   reorgedAt        DateTime?
 
+  // ─── Сверка с цепочкой ──────────────────────────────────────────────
+  //
+  // Все поля допускают NULL намеренно. `reconciliationState IS NULL`
+  // означает «ни разу не сверялось» — это не то же самое, что
+  // «сверено и совпало». Значение по умолчанию стёрло бы разницу
+  // между честным незнанием и проверенным фактом.
+  /** Когда цепочка в последний раз подтвердила это событие. */
+  lastChainSeenAt          DateTime?
+  /** Когда сверка в последний раз завершилась без ошибки. */
+  lastReconciledAt         DateTime?
+  /** Когда транзакция перестала находиться. NULL — находится. */
+  missingSince             DateTime?
+  /** Сколько успешных ответов подряд сказали «такой нет». */
+  consecutiveMissingChecks Int       @default(0)
+  /** MATCHED | MISSING | MISMATCHED | UNREACHABLE. NULL — не сверялось. */
+  reconciliationState      String?
+  /** Сколько раз подряд сверка этой строки заканчивалась ошибкой. */
+  reconcileAttempts        Int       @default(0)
+  /** Раньше этого времени строку не берут: отступление с джиттером. */
+  reconcileNotBefore       DateTime?
+
   @@unique([signature, instructionIndex])
   @@index([state, slot])
   @@index([destination, state])
+  @@index([state, reconcileNotBefore])
+}
+
+/**
+ * Докуда просмотрен отдельный адрес пополнения.
+ *
+ * Общий checkpoint отвечает только за адреса, которые были в книге,
+ * когда он двигался. Кошелёк, заведённый позже, до сих пор не
+ * просматривался ни разу, и общий край для него — не факт, а
+ * предположение.
+ */
+model SolanaDepositAddressCursor {
+  address            String   @id
+  scannedThroughSlot BigInt
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
+/**
+ * Намерение совершить транзакцию.
+ *
+ * Собирается сервером, подтверждается человеком, подписывается KMS.
+ * Байты транзакции от клиента не принимаются никогда: проверить
+ * чужую готовую структуру сложнее, чем построить свою.
+ *
+ * `SIGNED` здесь означает ровно «байты подписаны». Состояния
+ * `SUBMITTED`, `CONFIRMED` и `FINALIZED` в этой модели отсутствуют
+ * намеренно — отправки на этом этапе нет, и склеивать четыре разных
+ * вопроса в один статус нельзя.
+ */
+model TransactionIntent {
+  id        String @id @default(cuid())
+  userId    String
+  walletId  String
+  network   String
+  /** DEVNET_SELF_TRANSFER | DEVNET_SELF_SPL_TRANSFER. Список закрытый. */
+  purpose   String
+
+  // ─── Денежная часть. После APPROVED не меняется ────────────────────
+  mint             String?
+  /** Сумма в минимальных единицах. Строка: u64 не влезает в число. */
+  rawAmount        String
+  sourceAddress    String
+  destinationAddress String
+  /** Потолок комиссии в lamports. Тоже строкой. */
+  feeLimitLamports String
+  slippageBps      Int
+  /** Разрешённые программы, отсортированы. Пишутся в подписываемые факты. */
+  allowedProgramIds String[]
+
+  recentBlockhash      String
+  /** Высота, после которой blockhash мёртв. Строкой: значение растёт. */
+  lastValidBlockHeight String
+  /** SHA-256 сообщения. Само сообщение не хранится. */
+  messageHash          String
+  policyVersion        String
+
+  /** DRAFT | VALIDATED | APPROVED | SIGNING | SIGNED | EXPIRED | REJECTED | FAILED. */
+  state       String    @default("DRAFT")
+  approvedAt  DateTime?
+  approvedBy  String?
+
+  // ─── Ключ, которым подписывают ─────────────────────────────────────
+  keyProvider String?
+  keyId       String?
+  keyVersion  String?
+  /** Короткий отпечаток публичного ключа. Сам ключ публичен, но адрес — нет. */
+  keyFingerprint String?
+
+  /** Владелец захвата на подпись. Второй захват невозможен. */
+  signingClaimedBy String?
+  signingClaimedAt DateTime?
+  /** Подпись в base64. Публичное значение: приватного ключа здесь нет. */
+  signature   String?
+  signedAt    DateTime?
+  failureCode String?
+
+  /**
+   * Откуда взялось намерение.
+   *
+   * AGENT_PROPOSAL | ADMIN_DEVNET_FIXTURE. Клиента в этом списке нет:
+   * денежное намерение не рождается из данных браузера.
+   */
+  origin     String  @default("AGENT_PROPOSAL")
+  /** Предложение, из которого выросло намерение. */
+  proposalId String?
+  /** Отпечаток денежной части в момент показа человеку. */
+  shownFingerprint String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  expiresAt DateTime
+
+  @@index([userId, state])
+  @@index([state, expiresAt])
+  /**
+   * Одно предложение — не больше одного живого намерения.
+   *
+   * Частичный индекс, а не проверка в коде: два параллельных
+   * подтверждения иначе создали бы два намерения на одну сумму.
+   */
+  @@index([proposalId])
+}
+
+/**
+ * Попытка подписи.
+ *
+ * Отдельно от намерения, потому что отвечает на другой вопрос:
+ * не «чем кончилось», а «что происходило». Неоднозначный ответ KMS
+ * оставляет строку, по которой видно, что вторая попытка запрещена
+ * до ручного разбора.
+ */
+model SigningAttempt {
+  id        String   @id @default(cuid())
+  intentId  String
+  /** CLAIMED | SUCCEEDED | FAILED | AMBIGUOUS. */
+  outcome   String
+  /** Безопасный машинный код. Ни ответа провайдера, ни сообщения. */
+  code      String?
+  keyVersion String?
+  claimedBy String
+  startedAt DateTime @default(now())
+  endedAt   DateTime?
+
+  @@index([intentId, startedAt])
+}
+
+/**
+ * Кто подписывает.
+ *
+ * Связь между ключом в облаке и адресом Solana, с которого уходят
+ * деньги. Создаётся только явным действием администратора:
+ * автоматическая привязка означала бы, что смена ключа в облаке
+ * молча меняет адрес отправителя.
+ *
+ * Идентификатор ресурса KMS здесь не хранится. В базу идут отпечаток
+ * и адрес — по ним нельзя восстановить ни аккаунт, ни регион.
+ */
+model SigningIdentity {
+  id            String  @id
+  provider      String
+  /** UNREGISTERED | REGISTERED | PAUSED. */
+  state         String  @default("UNREGISTERED")
+  /** Короткий отпечаток публичного ключа. Не сам ключ. */
+  fingerprint   String
+  /** Адрес Solana, вычисленный из публичного ключа. */
+  solanaAddress String
+  keyVersion    String
+  algorithm     String
+  network       String
+
+  registeredBy  String?
+  registeredAt  DateTime?
+  /** Почему контур переведён в паузу. Безопасный машинный код. */
+  pausedReason  String?
+  pausedAt      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([state])
+}
+
+/**
+ * Защёлка контура пополнений.
+ *
+ * Поднимается сервером при расхождении и снимается только человеком.
+ * Отдельная таблица, а не поле в настройках: состояние денежного
+ * контура должно переживать перезапуск и не зависеть от переменных
+ * окружения, которые правятся при каждом деплое.
+ */
+model FundingSafetyLatch {
+  id         String    @id
+  /** HEALTHY | DEGRADED | PAUSED | REVIEW_REQUIRED. */
+  state      String    @default("HEALTHY")
+  reasonKind String?
+  eventKey   String?
+  raisedAt   DateTime?
+  clearedAt  DateTime?
+  clearedBy  String?
+  updatedAt  DateTime  @updatedAt
 }
 
 enum SolanaTransactionState {

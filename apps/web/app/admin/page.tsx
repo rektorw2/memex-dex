@@ -3,6 +3,7 @@
 import useSWR from 'swr';
 import Link from 'next/link';
 import { api, fetcher, fmtUsd } from '@/lib/api';
+import { FundingStatusPanel } from '@/components/FundingStatusPanel';
 
 export default function AdminPage() {
   const { data: overview } = useSWR<any>('/admin/overview', fetcher, { refreshInterval: 20_000 });
@@ -26,6 +27,8 @@ export default function AdminPage() {
         <Metric label="Доход платформы" value={fmtUsd(overview?.platformRevenueUsd)} />
         <Metric label="Выплаты лидерам" value={fmtUsd(overview?.leaderPayoutsUsd)} />
       </section>
+
+      <FundingStatusPanel />
 
       <section className="space-y-3">
         <div className="flex items-center justify-between gap-3">

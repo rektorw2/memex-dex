@@ -25,7 +25,10 @@
     "admin:create": "tsx prisma/create-admin.ts",
     "access:legacy-grant": "tsx apps/api/scripts/grant-legacy-access.ts",
     "access:service-grant": "tsx apps/api/scripts/grant-service-access.ts",
-    "trades:backfill": "tsx apps/api/scripts/backfill-trades.ts"
+    "trades:backfill": "tsx apps/api/scripts/backfill-trades.ts",
+    "solana:deposit-preflight": "tsx apps/api/scripts/solana-deposit-preflight.ts",
+    "solana:kms-preflight": "tsx apps/api/scripts/kms-preflight.ts",
+    "phase4:config-audit": "tsx apps/api/scripts/phase4-config-audit.ts"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.5",

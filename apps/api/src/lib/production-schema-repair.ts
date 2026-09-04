@@ -33,6 +33,14 @@ export const PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION =
   '20260827100000_fix_paper_agent_signal_pipeline';
 export const PHASE4_LIVE_FOUNDATION_MIGRATION =
   '20260827160000_add_phase4_live_foundation';
+export const PHASE4_RECONCILIATION_MIGRATION =
+  '20260904100000_add_phase4_reconciliation';
+export const TRANSACTION_INTENT_MIGRATION =
+  '20260904200000_add_transaction_intent';
+export const INTENT_LIFECYCLE_MIGRATION =
+  '20260904210000_add_intent_lifecycle';
+export const SIGNING_IDENTITY_MIGRATION =
+  '20260904220000_add_signing_identity';
 
 /**
  * Миграции, которые загрузчику разрешено применять.
@@ -56,6 +64,10 @@ export const KNOWN_MIGRATIONS = [
   PAPER_AGENT_PHASE3_MIGRATION,
   PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION,
   PHASE4_LIVE_FOUNDATION_MIGRATION,
+  PHASE4_RECONCILIATION_MIGRATION,
+  TRANSACTION_INTENT_MIGRATION,
+  INTENT_LIFECYCLE_MIGRATION,
+  SIGNING_IDENTITY_MIGRATION,
 ] as const;
 
 export const BASE_USER_COLUMNS = ['id', 'email', 'passwordHash'] as const;

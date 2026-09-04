@@ -9,10 +9,13 @@ import {
   summarizePaperDecisionDimensions,
   liveReadiness,
   SOLANA_DEPOSIT_ASSETS,
+  depositNetworkStatus,
 } from '@memex/core';
 import { env } from '../lib/env.js';
 import { prisma } from '../lib/prisma.js';
 import { getOkxSignalIngestStatus } from '../workers/okx-signal-ingest.js';
+import { readFundingSafetyState } from '../services/prisma-solana-reconciliation-repository.js';
+import { readSigningState } from '../services/signing-state.js';
 import {
   ensurePaperAgentConfig,
   getPaperAgentRuntimeStatus,
@@ -712,13 +715,25 @@ export const paperAgentRoutes: FastifyPluginAsync = async (app) => {
       lastActivityAtMs: runtime.lastActivityAt == null ? null : Date.parse(runtime.lastActivityAt),
       nowMs: Date.now(),
     });
+    // Состояние защёлки читается из базы: её поднимает воркер сверки,
+    // возможно в другом процессе.
+    const fundingSafety = await readFundingSafetyState();
+    /*
+     * Реестр ключа читается один раз на ответ.
+     *
+     * Наружу пойдёт только производное состояние: отпечаток и адрес
+     * — для администратора, а этот ответ видит обычный человек.
+     */
+    const signing = await readSigningState();
     const live = liveReadiness({
       executionMode: env.EXECUTION_MODE,
       liveAgentEnabled: env.LIVE_AGENT_ENABLED,
       liveExecutionEnabled: env.LIVE_EXECUTION_ENABLED,
       withdrawalsEnabled: env.WITHDRAWALS_ENABLED,
-      kmsProvider: env.KMS_PROVIDER,
-      kmsSigningReady: env.KMS_SIGNING_ENABLED,
+      // Два разных контура, два разных источника. Раньше второй
+      // читал устаревший флаг, и интерфейс расходился с воркером.
+      custodyProvider: env.KMS_PROVIDER,
+      transactionSigningEnabled: env.SOLANA_SIGNING_ENABLED,
       rpcReady: env.LIVE_RPC_READY,
       reconciliationReady: env.LIVE_RECONCILIATION_ENABLED,
       migrationsReady: env.LIVE_MIGRATIONS_READY,
@@ -749,6 +764,54 @@ export const paperAgentRoutes: FastifyPluginAsync = async (app) => {
             decimals: asset.decimals,
             minConfirmations: asset.minConfirmations,
           })),
+        },
+        /*
+         * Состояние приёма депозитов для человека.
+         *
+         * Один код и ничего больше: ни адреса узла, ни номера слота,
+         * ни кода ошибки RPC. Внутренние подробности здесь создают
+         * ощущение поломки там, где идёт обычная проверка, и при этом
+         * рассказывают постороннему, как устроен контур.
+         */
+        depositNetwork: {
+          status: depositNetworkStatus({
+            fundingEnabled: env.FUNDING_ENABLED,
+            safety: fundingSafety,
+          }),
+        },
+        /*
+         * Контур подписи для человека.
+         *
+         * Ни имени ресурса ключа, ни адреса узла, ни кода ошибки.
+         * `broadcastAvailable: false` — не настройка, которую можно
+         * включить, а факт: транспорта отправки в контуре нет.
+         */
+        signing: {
+          /*
+           * Наружу идёт вычисленное состояние, а не сырые флаги.
+           *
+           * Флаг отвечает на вопрос «что попросили», состояние — на
+           * вопрос «что получилось». Раньше здесь стоял флаг, и
+           * человек видел «готово» там, где ключ не подтверждён.
+           */
+          state: signing.state,
+          status: signing.publicView,
+          network: signing.facts.network,
+          signingEnabled: signing.facts.signingEnabled,
+          signingConfigured: !signing.blockers.includes('KEY_NOT_CONFIGURED')
+            && !signing.blockers.includes('PROVIDER_NOT_SELECTED'),
+          identityVerified: !signing.blockers.includes('IDENTITY_NOT_REGISTERED')
+            && !signing.blockers.includes('IDENTITY_MISMATCH'),
+          networkVerified: signing.facts.networkVerified,
+          signatureValidated: signing.facts.signatureValidated,
+          safetyState: fundingSafety,
+          /*
+           * Не настройка, которую можно включить, а факт: транспорта
+           * отправки в контуре нет. `SIGNED` не равно `SUBMITTED`.
+           */
+          broadcastAvailable: signing.facts.broadcastAvailable,
+          // Старое поле сохранено: фронт и API выкатываются раздельно.
+          ready: signing.allowsKmsCall,
         },
         withdrawals: { enabled: env.WITHDRAWALS_ENABLED },
         compliance: { state: 'NOT_CONFIGURED' },

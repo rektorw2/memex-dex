@@ -117,5 +117,28 @@ export * from './okx-budget.js';
 export * from './plans-presentation.js';
 export * from './deposit.js';
 export * from './phase4.js';
+
+// Сверка зачислений с цепочкой: что считать расхождением, когда
+// исчезновение транзакции перестаёт быть сбоем сети и что при этом
+// происходит с контуром пополнений.
+export * from './solana-reconciliation.js';
+
+// Помещается ли окно просмотра в пределы одного прохода и с какого
+// слота вообще начинать в первый раз.
+export * from './solana-scan-budget.js';
+
+// Умеет ли хранилище ключей подписывать Solana, и что именно
+// подписывается: намерение, собранное сервером, а не байты клиента.
+export * from './kms-compatibility.js';
+export * from './transaction-intent.js';
+
+// Откуда берётся намерение, что вправе прислать клиент и что
+// остаётся в журнале после каждого перехода.
+export * from './intent-lifecycle.js';
+
+// Чей ключ подписывает, свеж ли blockhash и что показывать
+// человеку про готовность контура подписи.
+export * from './signing-identity.js';
+export * from './transaction-signing-state.js';
 export * from './email-verification.js';
 export * from './email-message.js';

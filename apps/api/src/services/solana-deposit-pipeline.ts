@@ -1,9 +1,11 @@
 import {
+  allowsAutomaticCredit,
   assetByMint,
   decideCredit,
   depositKey,
   type AssetRule,
   type DepositRejectCode,
+  type FundingSafetyState,
 } from '@memex/core';
 
 export type SolanaCommitment = 'processed' | 'confirmed' | 'finalized' | 'reorged';
@@ -30,20 +32,39 @@ export interface ResolvedDepositDestination {
 
 export type ResolvedSolanaDepositEvent = SolanaDepositSourceEvent & ResolvedDepositDestination;
 
-/** Network adapter. Phase 4 ships only the deterministic mock implementation. */
+export interface SolanaDepositReadBatch {
+  events: SolanaDepositSourceEvent[];
+  /**
+   * Highest slot that the source fully inspected, including empty slots.
+   * Advancing only to the newest transfer would rescan the same empty range
+   * forever and eventually exhaust a production RPC provider.
+   */
+  scannedThroughSlot: bigint;
+}
+
+/** Network adapter. Implementations must never return a partial scan as complete. */
 export interface SolanaDepositEventSource {
-  readAfterSlot(afterSlot: bigint): Promise<SolanaDepositSourceEvent[]>;
+  readAfterSlot(afterSlot: bigint): Promise<SolanaDepositReadBatch>;
   /** Refresh previously observed non-final events even after checkpoint advanced. */
   readByEventKeys(eventKeys: readonly string[]): Promise<SolanaDepositSourceEvent[]>;
 }
 
 export class MockSolanaDepositEventSource implements SolanaDepositEventSource {
-  constructor(private readonly events: SolanaDepositSourceEvent[]) {}
+  constructor(
+    private readonly events: SolanaDepositSourceEvent[],
+    private readonly headSlot: bigint = events.reduce(
+      (latest, event) => event.slot > latest ? event.slot : latest,
+      0n,
+    ),
+  ) {}
 
-  async readAfterSlot(afterSlot: bigint): Promise<SolanaDepositSourceEvent[]> {
-    return this.events
-      .filter((event) => event.slot > afterSlot)
-      .sort((a, b) => Number(a.slot - b.slot));
+  async readAfterSlot(afterSlot: bigint): Promise<SolanaDepositReadBatch> {
+    return {
+      events: this.events
+        .filter((event) => event.slot > afterSlot)
+        .sort(compareEventSlots),
+      scannedThroughSlot: this.headSlot > afterSlot ? this.headSlot : afterSlot,
+    };
   }
 
   async readByEventKeys(eventKeys: readonly string[]): Promise<SolanaDepositSourceEvent[]> {
@@ -81,6 +102,8 @@ export interface SolanaDepositRepository {
   advanceCheckpoint(consumer: string, workerId: string, slot: bigint): Promise<void>;
   releaseCheckpointLease(consumer: string, workerId: string): Promise<void>;
   reconciliationIssues(): Promise<Array<{ eventKey: string; kind: string }>>;
+  /** Server-owned latch. No client action can lower it. */
+  fundingSafetyState(): Promise<FundingSafetyState>;
 }
 
 export interface DepositCycleResult {
@@ -91,10 +114,13 @@ export interface DepositCycleResult {
   pending: number;
   rejected: number;
   reviewRequired: number;
+  /** Finalized and resolved, but not credited: the latch is up. */
+  heldBack: number;
+  safetyState: FundingSafetyState;
   checkpoint: bigint;
 }
 
-const CHECKPOINT_OVERLAP_SLOTS = 64n;
+const DEFAULT_CHECKPOINT_OVERLAP_SLOTS = 512n;
 
 /**
  * One safe ingestion cycle. A checkpoint lease prevents two API/worker
@@ -108,6 +134,10 @@ export async function processSolanaDepositCycle(input: {
   consumer?: string;
   now?: Date;
   leaseMs?: number;
+  /** Explicit chain boundary for the first ever production scan. */
+  initialStartSlot?: bigint;
+  /** Re-read a bounded tail to tolerate RPC indexing lag and newly added wallets. */
+  overlapSlots?: bigint;
 }): Promise<DepositCycleResult> {
   const consumer = input.consumer ?? 'solana-deposits-v1';
   const now = input.now ?? new Date();
@@ -123,20 +153,52 @@ export async function processSolanaDepositCycle(input: {
 
   const result = emptyResult(true, current);
   try {
-    const after = current > CHECKPOINT_OVERLAP_SLOTS ? current - CHECKPOINT_OVERLAP_SLOTS : -1n;
-    const [newEvents, refreshedEvents] = await Promise.all([
+    const overlapSlots = input.overlapSlots ?? DEFAULT_CHECKPOINT_OVERLAP_SLOTS;
+    if (overlapSlots < 0n) throw new Error('SOLANA_DEPOSIT_OVERLAP_INVALID');
+    const isBootstrap = current === 0n && input.initialStartSlot !== undefined;
+    const after = isBootstrap
+      ? input.initialStartSlot!
+      : current > overlapSlots
+        ? current - overlapSlots
+        : -1n;
+    const [newBatch, refreshedEvents] = await Promise.all([
       input.source.readAfterSlot(after),
       input.repository.pendingEventKeys().then((keys) => input.source.readByEventKeys(keys)),
     ]);
+    if (isBootstrap && newBatch.scannedThroughSlot < after) {
+      throw new Error('SOLANA_DEPOSIT_BOOTSTRAP_SLOT_AHEAD_OF_CHAIN');
+    }
     const byKey = new Map<string, SolanaDepositSourceEvent>();
-    for (const event of [...newEvents, ...refreshedEvents]) {
+    for (const event of [...newBatch.events, ...refreshedEvents]) {
       byKey.set(depositKey(event.signature, event.instructionIndex), event);
     }
-    const events = [...byKey.values()].sort((a, b) => Number(a.slot - b.slot));
+    const events = [...byKey.values()].sort(compareEventSlots);
+    if (newBatch.scannedThroughSlot > result.checkpoint) {
+      result.checkpoint = newBatch.scannedThroughSlot;
+    }
+
+    /*
+     * Останавливать зачисления решает сервер, а не воркер.
+     *
+     * Проверка делается один раз за цикл и до первой проводки:
+     * состояние, поднятое сверкой, обязано подействовать сразу, а не
+     * со следующего запуска.
+     */
+    const safety = await input.repository.fundingSafetyState();
+    const creditAllowed = allowsAutomaticCredit(safety);
+    result.safetyState = safety;
 
     for (const event of events) {
       result.observed += 1;
-      if (event.slot > result.checkpoint) result.checkpoint = event.slot;
+      /*
+       * Checkpoint не поднимается выше просмотренного края.
+       *
+       * Повторно прочитанное событие может вернуться из более
+       * позднего слота, чем тот, до которого дошёл этот проход.
+       * Записать его номер как границу значит объявить просмотренным
+       * диапазон, в который никто не смотрел, — и потерять всё,
+       * что в нём лежало.
+       */
 
       if (event.commitment === 'reorged') {
         const outcome = await input.repository.markReorg(event);
@@ -189,6 +251,17 @@ export async function processSolanaDepositCycle(input: {
       // but keep the assertion explicit before crossing the atomic boundary.
       if (!destination) throw new Error('CREDITED_DESTINATION_NOT_RESOLVED');
 
+      if (!creditAllowed) {
+        /*
+         * Контур остановлен сверкой. Событие сохраняется как
+         * финализированное — данные не теряются и не искажаются, —
+         * но денег на баланс не попадает, пока человек не разберётся.
+         */
+        await input.repository.observe({ ...event, ...destination }, 'FINALIZED');
+        result.heldBack += 1;
+        continue;
+      }
+
       const credited = await input.repository.creditFinalizedAtomically(
         { ...event, ...destination },
         decision.asset!,
@@ -203,6 +276,11 @@ export async function processSolanaDepositCycle(input: {
   }
 }
 
+function compareEventSlots(a: SolanaDepositSourceEvent, b: SolanaDepositSourceEvent): number {
+  if (a.slot === b.slot) return a.instructionIndex - b.instructionIndex;
+  return a.slot < b.slot ? -1 : 1;
+}
+
 function emptyResult(acquired: boolean, checkpoint: bigint): DepositCycleResult {
   return {
     acquired,
@@ -212,6 +290,8 @@ function emptyResult(acquired: boolean, checkpoint: bigint): DepositCycleResult 
     pending: 0,
     rejected: 0,
     reviewRequired: 0,
+    heldBack: 0,
+    safetyState: 'HEALTHY',
     checkpoint,
   };
 }
@@ -230,6 +310,7 @@ export class InMemorySolanaDepositRepository implements SolanaDepositRepository 
   readonly balances = new Map<string, bigint>();
   readonly issues = new Map<string, { eventKey: string; kind: string }>();
   failAtomicCreditFor: string | null = null;
+  safety: FundingSafetyState = 'HEALTHY';
   private readonly checkpoints = new Map<string, bigint>();
   private readonly leases = new Map<string, { owner: string; until: number }>();
   private readonly destinations = new Map<string, ResolvedDepositDestination>();
@@ -312,6 +393,10 @@ export class InMemorySolanaDepositRepository implements SolanaDepositRepository 
 
   async reconciliationIssues() {
     return [...this.issues.values()];
+  }
+
+  async fundingSafetyState() {
+    return this.safety;
   }
 }
 

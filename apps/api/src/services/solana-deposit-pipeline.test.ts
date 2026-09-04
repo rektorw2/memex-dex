@@ -100,6 +100,37 @@ describe('Solana deposit pipeline', () => {
     expect(next.result.checkpoint).toBe(101n);
   });
 
+  it('advances the checkpoint across an empty fully scanned range', async () => {
+    const repo = new InMemorySolanaDepositRepository();
+    const result = await processSolanaDepositCycle({
+      source: new MockSolanaDepositEventSource([], 500n),
+      repository: repo,
+      workerId: 'worker-a',
+    });
+    expect(result.observed).toBe(0);
+    expect(result.checkpoint).toBe(500n);
+    expect(await repo.checkpoint('solana-deposits-v1')).toBe(500n);
+  });
+
+  it('uses an explicit first-run bootstrap slot without historical backfill', async () => {
+    const repo = new InMemorySolanaDepositRepository();
+    repo.registerDestination({
+      expectedDestination: DEST, walletId: 'wallet-1', userId: 'user-1', tokenId: 'usdc-token',
+    });
+    const result = await processSolanaDepositCycle({
+      source: new MockSolanaDepositEventSource([
+        event({ signature: 'old', slot: 90n }),
+        event({ signature: 'new', slot: 110n }),
+      ], 120n),
+      repository: repo,
+      workerId: 'worker-a',
+      initialStartSlot: 100n,
+    });
+    expect(result.credited).toBe(1);
+    expect([...repo.deposits.keys()]).toEqual(['new:0']);
+    expect(result.checkpoint).toBe(120n);
+  });
+
   it('refreshes a pending signature even after the checkpoint moved beyond overlap', async () => {
     const repo = new InMemorySolanaDepositRepository();
     repo.registerDestination({
@@ -151,5 +182,29 @@ describe('Solana deposit pipeline', () => {
     expect(repo.deposits.size).toBe(0);
     expect(repo.ledger.size).toBe(0);
     expect(repo.balances.size).toBe(0);
+  });
+
+  it('does not advance the checkpoint and releases the lease after an incomplete scan', async () => {
+    const repo = new InMemorySolanaDepositRepository();
+    const source = {
+      async readAfterSlot() {
+        throw new Error('SOLANA_RPC_SCAN_WINDOW_EXHAUSTED');
+      },
+      async readByEventKeys() {
+        return [];
+      },
+    };
+    await expect(processSolanaDepositCycle({
+      source,
+      repository: repo,
+      workerId: 'worker-a',
+    })).rejects.toThrow('SOLANA_RPC_SCAN_WINDOW_EXHAUSTED');
+    expect(await repo.checkpoint('solana-deposits-v1')).toBe(0n);
+    await expect(repo.acquireCheckpointLease(
+      'solana-deposits-v1',
+      'worker-b',
+      new Date(),
+      30_000,
+    )).resolves.toBe(true);
   });
 });

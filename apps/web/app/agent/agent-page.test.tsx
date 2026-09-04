@@ -79,7 +79,10 @@ describe('/agent для обычного пользователя', () => {
     expect(screen.getByText('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Подтверждение LIVE недоступно' }).hasAttribute('disabled')).toBe(true);
     expect(screen.getByRole('button', { name: 'LIVE kill switch недоступен' }).hasAttribute('disabled')).toBe(true);
-    expect(screen.getByText('On-chain источник не подключён — реальные переводы не принимаются.')).toBeTruthy();
+    // Формулировка сменилась на статусную, смысл прежний: приём
+    // не работает, и страница не должна обещать обратного.
+    expect(screen.getByText('LIVE-пополнения ещё не подключены')).toBeTruthy();
+    expect(screen.getByText('Реальные переводы пока не принимаются.')).toBeTruthy();
   });
 
   it('не показывает административную вкладку и кнопки Start/Stop', () => {

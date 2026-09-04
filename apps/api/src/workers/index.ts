@@ -18,6 +18,13 @@ import {
   startPaperAgentNotifications,
   stopPaperAgentNotifications,
 } from './paper-agent-notifications.js';
+import { startSolanaDepositWorker, stopSolanaDepositWorker } from './solana-deposit.js';
+import {
+  startSolanaReconciliationWorker,
+  stopSolanaReconciliationWorker,
+} from './solana-reconciliation.js';
+import { startIntentExpiryWorker, stopIntentExpiryWorker } from './intent-expiry.js';
+import { startIntentSigningWorker, stopIntentSigningWorker } from './intent-signing.js';
 import { logger } from '../lib/logger.js';
 import { prisma } from '../lib/prisma.js';
 import { guardSchemaOnStartup } from '../lib/schema-guard.js';
@@ -51,6 +58,15 @@ const walletWorkersReady = guardSchemaOnStartup().then(async (ready) => {
   await startPaperAgent();
   startPaperAgentNotifications();
   startOkxSignalIngest();
+  startSolanaDepositWorker();
+  // Сверка идёт своим циклом: приём не должен ждать перепроверки
+  // старых записей, а перепроверка — торопиться за приёмом.
+  startSolanaReconciliationWorker();
+  // Закрытие забытых предложений и намерений. Ничего не подписывает.
+  startIntentExpiryWorker();
+  // Подпись. Технически выключена: провайдер `unavailable`,
+  // разрешение подписывать снято, общий блокер на месте.
+  startIntentSigningWorker();
   return true;
 });
 
@@ -78,6 +94,10 @@ const shutdown = async () => {
     stopOkxSignalIngest();
     stopPaperAgent();
     stopPaperAgentNotifications();
+    stopSolanaDepositWorker();
+    stopSolanaReconciliationWorker();
+    stopIntentExpiryWorker();
+    stopIntentSigningWorker();
   }
 
   await prisma.$disconnect();

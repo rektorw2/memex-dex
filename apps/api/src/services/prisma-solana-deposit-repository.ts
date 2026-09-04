@@ -2,6 +2,7 @@ import { Prisma as P } from '@prisma/client';
 import { depositKey, type AssetRule } from '@memex/core';
 import { prisma, serializable } from '../lib/prisma.js';
 import * as balances from './balances.js';
+import { readFundingSafetyState } from './prisma-solana-reconciliation-repository.js';
 import type {
   SolanaDepositRepository,
   SolanaDepositSourceEvent,
@@ -18,8 +19,8 @@ export function rawAmountToDecimal(raw: bigint, decimals: number): string {
 }
 
 /**
- * Persistent Phase 4 adapter. It is not registered as a running worker while
- * FUNDING_ENABLED=false. The mock source remains the only shipped source.
+ * Persistent Phase 4 adapter. The RPC reader is wired separately, but the
+ * worker remains inert while FUNDING_ENABLED=false.
  */
 export class PrismaSolanaDepositRepository implements SolanaDepositRepository {
   async acquireCheckpointLease(consumer: string, workerId: string, now: Date, leaseMs: number) {
@@ -268,5 +269,16 @@ export class PrismaSolanaDepositRepository implements SolanaDepositRepository {
       where: { status: 'OPEN' },
       select: { eventKey: true, kind: true },
     });
+  }
+
+  /**
+   * Состояние защёлки читается из базы на каждом цикле.
+   *
+   * Не из памяти процесса: защёлку поднимает другой воркер, возможно
+   * в другом процессе, и кэш означал бы, что зачисления продолжаются
+   * ещё столько времени, сколько живёт кэш.
+   */
+  async fundingSafetyState() {
+    return readFundingSafetyState();
   }
 }

@@ -1,4 +1,8 @@
 import { z } from 'zod';
+import {
+  legacySigningFlagVerdict,
+  LEGACY_SIGNING_FLAG_MESSAGE,
+} from '@memex/core';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -138,6 +142,15 @@ const schema = z.object({
 
   KMS_PROVIDER: z.enum(['local', 'aws-kms', 'gcp-kms']).default('local'),
   KMS_LOCAL_MASTER_KEY: optional(z.string()),
+  /**
+   * Ключ AWS для конвертного шифрования DEK.
+   *
+   * Это НЕ ключ подписи Solana: у них разные типы (симметричный
+   * против `ECC_NIST_EDWARDS25519`) и разное назначение. Ключ
+   * подписи задаётся отдельно, `SOLANA_SIGNER_KEY_ID`; попытка
+   * обойтись одним привела бы к отказу провайдера в лучшем случае
+   * и к подписи неправильным ключом в худшем.
+   */
   AWS_KMS_KEY_ID: optional(z.string()),
   HOT_WALLET_MAX_USD: z.coerce.number().default(25_000),
 
@@ -321,8 +334,125 @@ const schema = z.object({
   LIVE_RPC_READY: booleanFromEnv.default(false),
   LIVE_RECONCILIATION_ENABLED: booleanFromEnv.default(false),
   LIVE_MIGRATIONS_READY: booleanFromEnv.default(false),
-  KMS_SIGNING_ENABLED: booleanFromEnv.default(false),
+  /**
+   * Устаревший флаг. Читается только слоем совместимости ниже.
+   *
+   * Он означал «LIVE-контур готов» в те времена, когда контура
+   * подписи не существовало. Сегодня подписью управляет
+   * `SOLANA_SIGNING_ENABLED`, а этот флаг остался в Render и в
+   * production-примерах — то есть в тех самых местах, где ошибка
+   * дороже всего.
+   *
+   * Умолчания нет намеренно: `undefined` отличается от `false`.
+   * Первое — «переменной нет», второе — «старое окружение явно
+   * сказало нет». Слить их значило бы потерять единственный
+   * признак, по которому видно, что окружение пора чистить.
+   */
+  KMS_SIGNING_ENABLED: optional(booleanFromEnv),
   LIVE_AGENT_CONTROL_MODE: z.enum(['semi-auto', 'auto']).default('semi-auto'),
+  /** Phase 4 deposit reader. It remains inert while FUNDING_ENABLED=false. */
+  SOLANA_DEPOSIT_SOURCE: z.enum(['disabled', 'rpc']).default('disabled'),
+  SOLANA_DEPOSIT_BOOTSTRAP_SLOT: optional(z.string().regex(/^\d+$/)),
+  SOLANA_DEPOSIT_POLL_INTERVAL_MS: z.coerce.number().int().min(5_000).max(300_000).default(30_000),
+  SOLANA_DEPOSIT_OVERLAP_SLOTS: z.coerce.number().int().min(64).max(100_000).default(512),
+  SOLANA_DEPOSIT_RPC_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(60_000).default(10_000),
+  SOLANA_DEPOSIT_SIGNATURE_PAGE_SIZE: z.coerce.number().int().min(1).max(1_000).default(100),
+  SOLANA_DEPOSIT_MAX_PAGES: z.coerce.number().int().min(1).max(100).default(10),
+  SOLANA_DEPOSIT_MAX_TRANSACTIONS: z.coerce.number().int().min(1).max(5_000).default(250),
+  /**
+   * Насколько глубоко просматривается адрес, который не сверялся ни разу.
+   *
+   * Общий checkpoint не отвечает за кошелёк, заведённый после того,
+   * как он сдвинулся. Окно ограничено: неограниченная история либо
+   * исчерпает бюджет страниц, либо остановится на середине.
+   */
+  SOLANA_DEPOSIT_NEW_ADDRESS_LOOKBACK_SLOTS: z.coerce
+    .number().int().min(1_000).max(10_000_000).default(216_000),
+
+  /**
+   * Ожидаемая сеть Solana.
+   *
+   * Отдельно от `SOLANA_RPC_URL`, потому что URL ничего не доказывает:
+   * платный endpoint выглядит одинаково для devnet и mainnet, а имя
+   * хоста может быть каким угодно. Настоящая проверка — genesis hash.
+   */
+  SOLANA_NETWORK: z.enum(['devnet', 'testnet', 'mainnet-beta']).default('devnet'),
+  /**
+   * Genesis hash, которому обязана соответствовать сеть.
+   *
+   * Пустое значение означает «сверять со встроенным списком».
+   * Оператор может задать значение сам, если доверяет своему
+   * `solana genesis-hash` больше, чем константе в коде.
+   */
+  SOLANA_EXPECTED_GENESIS_HASH: optional(z.string().min(32).max(64)),
+  /** Сверка зачислений с цепочкой. Инертна при FUNDING_ENABLED=false. */
+  SOLANA_RECONCILE_INTERVAL_MS: z.coerce.number().int().min(10_000).max(3_600_000).default(120_000),
+  SOLANA_RECONCILE_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(50),
+  /**
+   * Тестовый SPL-токен devnet.
+   *
+   * Нужен потому, что канонического USDC в devnet не существует:
+   * его адрес принадлежит mainnet. В боевой список разрешённых
+   * активов этот токен не попадает никогда — он живёт отдельным
+   * параметром и в любой сети кроме devnet запрещён на старте.
+   */
+  SOLANA_DEVNET_TEST_MINT: optional(z.string().min(32).max(64)),
+  SOLANA_DEVNET_TEST_MINT_DECIMALS: z.coerce.number().int().min(0).max(18).default(6),
+  /** Ожидаемая активность адреса. Нужна для расчёта бюджета просмотра. */
+  SOLANA_EXPECTED_SIGNATURES_PER_HOUR: z.coerce.number().int().min(0).max(100_000).default(20),
+
+  // ─── Подпись транзакций Solana (Phase 4D) ──────────────────────────
+  //
+  // Подпись отделена от отправки. Ничего из перечисленного ниже
+  // не включает broadcast: транспорта отправки в контуре нет.
+  /** Провайдер подписи. `unavailable` — честный отказ, а не заглушка. */
+  SOLANA_SIGNER_PROVIDER: z.enum(['unavailable', 'aws-kms', 'gcp-kms']).default('unavailable'),
+  /** Идентификатор ключа. Наружу за пределы сервера не выходит. */
+  SOLANA_SIGNER_KEY_ID: optional(z.string().min(1).max(512)),
+  SOLANA_SIGNER_KEY_VERSION: optional(z.string().min(1).max(64)),
+  /**
+   * Публичный ключ кошелька в base58.
+   *
+   * Сверяется с тем, что отдаёт KMS. Расхождение означает, что
+   * подпись пойдёт с чужого адреса, и это повод не стартовать.
+   */
+  SOLANA_SIGNER_WALLET_PUBLIC_KEY: optional(z.string().min(32).max(64)),
+  /** Разрешение подписывать. Отправку не включает и включить не может. */
+  SOLANA_SIGNING_ENABLED: booleanFromEnv.default(false),
+  /**
+   * Регион AWS.
+   *
+   * Учётных данных здесь нет и не будет: их находит стандартная
+   * цепочка SDK. Секрет, прошедший через конфигурацию приложения,
+   * рано или поздно окажется в журнале запуска.
+   */
+  AWS_REGION: optional(z.string().min(2).max(32)),
+  /**
+   * Адрес devnet-узла для проверки сети и получения blockhash.
+   *
+   * Отдельно от `SOLANA_RPC_URL`, у которого значение по умолчанию
+   * указывает на mainnet. Значение по умолчанию здесь однажды
+   * отправило бы подпись в боевую сеть, поэтому его нет.
+   *
+   * Наружу не выходит: путь и query могут содержать API-ключ.
+   */
+  SOLANA_PREFLIGHT_RPC_URL: optional(z.string().url()),
+  /**
+   * Ожидаемый адрес Solana подписывающего ключа.
+   *
+   * Задаётся человеком отдельно от базы и служит независимым
+   * свидетелем: если и база, и KMS изменились согласованно, это
+   * единственное, что заметит подмену.
+   */
+  AWS_KMS_EXPECTED_PUBLIC_KEY: optional(z.string().min(32).max(64)),
+  /**
+   * Разрешение на настоящий вызов Sign в preflight.
+   *
+   * Отдельно от разрешения подписывать: проверка узла и подпись
+   * боевого намерения — разные решения, и включать их одним флагом
+   * значит однажды подписать, собираясь только проверить.
+   */
+  KMS_PREFLIGHT_ALLOW_SIGN: booleanFromEnv.default(false),
 
   // ─── Почта ─────────────────────────────────────────────────────────
   //
@@ -690,10 +820,167 @@ if (phase4NetworkRequested) {
   }
 }
 
-if ((env.LIVE_EXECUTION_ENABLED || env.WITHDRAWALS_ENABLED) && !env.KMS_SIGNING_ENABLED) {
-  throw new Error('LIVE execution и withdrawals требуют KMS_SIGNING_ENABLED=true.');
+/*
+ * Тестовый токен devnet не существует нигде, кроме devnet.
+ *
+ * Проверка на старте, а не в месте использования: параметр,
+ * задаваемый переменной окружения, рано или поздно окажется
+ * скопирован в боевую конфигурацию вместе с остальным блоком.
+ * Тогда платформа начнёт принимать нарисованную монету как деньги,
+ * и заметить это можно будет только по балансам.
+ */
+if (env.SOLANA_DEVNET_TEST_MINT && env.SOLANA_NETWORK !== 'devnet') {
+  throw new Error(
+    'SOLANA_DEVNET_TEST_MINT допустим только при SOLANA_NETWORK=devnet. ' +
+      'Тестовый токен не является средством платежа.',
+  );
 }
 
+if (env.SOLANA_DEVNET_TEST_MINT && env.NODE_ENV === 'production') {
+  throw new Error(
+    'SOLANA_DEVNET_TEST_MINT запрещён в production независимо от сети.',
+  );
+}
+
+/*
+ * Подпись включается только с проверенным провайдером.
+ *
+ * Проверки идут списком, а не первой найденной: оператор, чинящий
+ * их по одной, узнаёт о следующей только после перезапуска.
+ */
+if (env.SOLANA_SIGNING_ENABLED) {
+  /*
+   * Боевая сеть отвергается первой — до всех проверок полноты.
+   *
+   * Порядок здесь и есть защита. Сообщение «требуется AWS_REGION»
+   * читается как «допиши регион и заработает», и оператор допишет —
+   * а следующим отказом будет уже не отказ. Правильная реакция на
+   * mainnet: не чинить конфигурацию, а вернуть сеть.
+   *
+   * Раньше эта проверка стояла ниже, внутри чужого блока и после
+   * `throw`, то есть не выполнялась никогда.
+   */
+  if (env.SOLANA_NETWORK === 'mainnet-beta') {
+    throw new Error('Подпись mainnet на текущем этапе запрещена.');
+  }
+
+  const blockers = [
+    env.SOLANA_SIGNER_PROVIDER === 'unavailable' ? 'SOLANA_SIGNER_PROVIDER' : null,
+    !env.SOLANA_SIGNER_KEY_ID ? 'SOLANA_SIGNER_KEY_ID' : null,
+    !env.SOLANA_SIGNER_KEY_VERSION ? 'SOLANA_SIGNER_KEY_VERSION' : null,
+    !env.SOLANA_SIGNER_WALLET_PUBLIC_KEY ? 'SOLANA_SIGNER_WALLET_PUBLIC_KEY' : null,
+  ].filter(Boolean);
+
+  if (blockers.length > 0) {
+    throw new Error(
+      `SOLANA_SIGNING_ENABLED=true требует: ${blockers.join(', ')}. ` +
+        'Подписывать неизвестно каким ключом запрещено.',
+    );
+  }
+
+  /*
+   * `KMS_PROVIDER` здесь больше не проверяется — и это не ослабление.
+   *
+   * Он относится к custody encryption: чем зашифрован сохранённый
+   * key material в `crypto.ts`. К подписи транзакций Solana он не
+   * имеет отношения — там приватного ключа у нас нет вовсе, он
+   * не покидает облачный HSM. Общее слово «KMS» в названии не
+   * делает эти понятия одним.
+   *
+   * Требовать production-custody ради devnet-подписи значило бы
+   * научить оператора обходить непонятный запрет, а заодно скрыть
+   * настоящее условие. Настоящее — ниже: провайдер подписи выбран,
+   * ключ задан, сеть devnet. Custody-провайдер остаётся условием
+   * для LIVE и для приёма средств, где ему и место.
+   */
+  if (env.SOLANA_SIGNER_PROVIDER === 'unavailable') {
+    throw new Error(
+      'SOLANA_SIGNING_ENABLED=true требует SOLANA_SIGNER_PROVIDER. ' +
+        'Локальным ключом контур подписи не работает.',
+    );
+  }
+
+  // AWS без региона не найдёт даже endpoint: отказать на старте
+  // честнее, чем упасть на первой подписи.
+  if (env.SOLANA_SIGNER_PROVIDER === 'aws-kms' && !env.AWS_REGION) {
+    throw new Error('SOLANA_SIGNER_PROVIDER=aws-kms требует AWS_REGION.');
+  }
+
+  /*
+   * Подпись требует проверенной сети.
+   *
+   * Без адреса devnet blockhash взять неоткуда, а без blockhash
+   * подписывать нечего: намерение будет собрано над значением,
+   * которого в сети не существует.
+   */
+  if (!env.SOLANA_PREFLIGHT_RPC_URL) {
+    throw new Error(
+      'SOLANA_SIGNING_ENABLED=true требует SOLANA_PREFLIGHT_RPC_URL: ' +
+        'blockhash берётся только из проверенной сети.',
+    );
+  }
+
+  // Выводы и подпись не включаются одной рукой: это разные решения
+  // с разной ценой ошибки.
+  if (env.WITHDRAWALS_ENABLED) {
+    throw new Error('SOLANA_SIGNING_ENABLED=true запрещён при включённых выводах.');
+  }
+}
+
+/*
+ * Настоящий Sign в preflight требует настроенной подписи.
+ *
+ * Иначе флаг «разрешаю подписать при проверке» включал бы подпись
+ * в обход всех условий, поставленных выше.
+ */
+if (env.KMS_PREFLIGHT_ALLOW_SIGN && !env.SOLANA_SIGNING_ENABLED) {
+  throw new Error('KMS_PREFLIGHT_ALLOW_SIGN=true требует SOLANA_SIGNING_ENABLED=true.');
+}
+
+if (env.KMS_PREFLIGHT_ALLOW_SIGN && env.SOLANA_NETWORK !== 'devnet') {
+  throw new Error('KMS_PREFLIGHT_ALLOW_SIGN=true допустим только в devnet.');
+}
+
+if (env.FUNDING_ENABLED && env.SOLANA_DEPOSIT_SOURCE !== 'rpc') {
+  throw new Error('FUNDING_ENABLED=true требует SOLANA_DEPOSIT_SOURCE=rpc.');
+}
+
+if (env.FUNDING_ENABLED && !env.SOLANA_DEPOSIT_BOOTSTRAP_SLOT) {
+  throw new Error(
+    'FUNDING_ENABLED=true требует явный SOLANA_DEPOSIT_BOOTSTRAP_SLOT. ' +
+      'Автоматический backfill с нулевого слота запрещён.',
+  );
+}
+
+/*
+ * Слой совместимости со старым флагом. Единственное место, где он
+ * вообще читается.
+ *
+ * Тихий alias был бы худшим из решений: в Render стоит
+ * `KMS_SIGNING_ENABLED=false`, и превращение его в синоним нового
+ * флага сегодня ничего не сломает, а завтра, когда кто-то поставит
+ * `true`, включит подпись в окружении, которое об этом не просило.
+ *
+ * Поэтому `false` и отсутствие проходят молча, а `true` — это
+ * остановка с объяснением, куда переехала настройка.
+ */
+const legacySigningVerdict = legacySigningFlagVerdict({
+  legacyValue: env.KMS_SIGNING_ENABLED,
+  canonicalValue: env.SOLANA_SIGNING_ENABLED,
+});
+
+if (legacySigningVerdict === 'REFUSED') {
+  throw new Error(LEGACY_SIGNING_FLAG_MESSAGE);
+}
+
+/*
+ * Структура флагов проверяется раньше их возможностей.
+ *
+ * «Выводы без исполнителя» — ошибка построения конфигурации, а
+ * «нужен контур подписи» — отсутствие возможности. Сообщить второе
+ * первым значит отправить оператора настраивать подпись для
+ * комбинации, которая всё равно не имеет смысла.
+ */
 if (env.LIVE_EXECUTION_ENABLED && !env.LIVE_AGENT_ENABLED) {
   throw new Error('LIVE_EXECUTION_ENABLED требует LIVE_AGENT_ENABLED=true.');
 }
@@ -702,13 +989,31 @@ if (env.WITHDRAWALS_ENABLED && !env.LIVE_EXECUTION_ENABLED) {
   throw new Error('WITHDRAWALS_ENABLED требует LIVE_EXECUTION_ENABLED=true.');
 }
 
+/*
+ * Единственная запись правила «отправка требует контура подписи».
+ *
+ * Раньше таких записей было две: одна здесь по старому флагу и одна
+ * ниже, за общим блокером, «на будущее». После перевода обеих на
+ * канонический флаг они стали одним и тем же условием, записанным
+ * дважды. Второе удалено: дубликат правила — это будущее
+ * расхождение, ровно то, из-за чего и затевалась эта работа.
+ */
+if ((env.LIVE_EXECUTION_ENABLED || env.WITHDRAWALS_ENABLED) && !env.SOLANA_SIGNING_ENABLED) {
+  throw new Error(
+    'LIVE execution и withdrawals требуют SOLANA_SIGNING_ENABLED=true. ' +
+      'Раньше здесь проверялся KMS_SIGNING_ENABLED — флаг, который ' +
+      'не управляет подписью транзакций.',
+  );
+}
+
 if (env.LIVE_AGENT_CONTROL_MODE === 'auto') {
   throw new Error('Полный Auto в Phase 4 запрещён. Доступен только Semi-Auto.');
 }
 
-// Contracts and mocks are present, but production Solana source, RPC
-// confirmation transport and production KMS adapters are deliberately absent.
-// No combination of optimistic env flags may turn a stub into a money path.
+// A read-only Solana deposit source now exists, but it has not passed live RPC
+// validation and the reconciliation scheduler, confirmation transport and
+// production KMS adapters are still absent. No combination of optimistic env
+// flags may turn this partial path into a money path.
 if (phase4NetworkRequested) {
   throw new Error(
     'Phase 4 network adapters are not implemented. FUNDING/LIVE/WITHDRAWALS must remain false.',

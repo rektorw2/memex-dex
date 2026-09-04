@@ -138,8 +138,15 @@ export interface LiveReadinessInput {
   liveAgentEnabled: boolean;
   liveExecutionEnabled: boolean;
   withdrawalsEnabled: boolean;
-  kmsProvider: 'local' | 'aws-kms' | 'gcp-kms';
-  kmsSigningReady: boolean;
+  /**
+   * Провайдер custody encryption: чем зашифрован сохранённый
+   * key material. К подписи транзакций отношения не имеет —
+   * общее слово «KMS» в переменной окружения склеивало эти
+   * понятия, и от этого расходились интерфейс и воркер.
+   */
+  custodyProvider: 'local' | 'aws-kms' | 'gcp-kms';
+  /** Канонический флаг контура подписи Solana. */
+  transactionSigningEnabled: boolean;
   rpcReady: boolean;
   reconciliationReady: boolean;
   migrationsReady: boolean;
@@ -163,8 +170,8 @@ export function liveReadiness(input: LiveReadinessInput): LiveReadiness {
   if (input.executionMode !== 'live') blockers.push('EXECUTION_MODE_NOT_LIVE');
   if (!input.liveAgentEnabled) blockers.push('LIVE_AGENT_DISABLED');
   if (!input.liveExecutionEnabled) blockers.push('LIVE_EXECUTION_DISABLED');
-  if (input.kmsProvider === 'local') blockers.push('PRODUCTION_KMS_REQUIRED');
-  if (!input.kmsSigningReady) blockers.push('KMS_SIGNING_NOT_READY');
+  if (input.custodyProvider === 'local') blockers.push('PRODUCTION_CUSTODY_REQUIRED');
+  if (!input.transactionSigningEnabled) blockers.push('TRANSACTION_SIGNING_NOT_READY');
   if (!input.rpcReady) blockers.push('RPC_NOT_READY');
   if (!input.reconciliationReady) blockers.push('RECONCILIATION_NOT_READY');
   if (!input.migrationsReady) blockers.push('MIGRATIONS_NOT_READY');

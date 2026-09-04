@@ -15,6 +15,7 @@ import { orderRoutes } from './modules/orders.js';
 import { copyRoutes } from './modules/copytrade.js';
 import { portfolioRoutes } from './modules/portfolio.js';
 import { adminRoutes } from './modules/admin.js';
+import { liveIntentRoutes } from './modules/live-intents.js';
 import { tokenRoutes } from './modules/tokens.js';
 import { walletRoutes } from './modules/wallets.js';
 import { radarRoutes } from './modules/radar.js';
@@ -143,6 +144,9 @@ export async function buildServer() {
   await app.register(ingestRoutes, { prefix: '/api/v1' });
   await app.register(paperAgentRoutes, { prefix: '/api/v1' });
   await app.register(adminRoutes, { prefix: '/api/v1' });
+  // Тот же префикс и та же модель авторизации, что у остальных
+  // маршрутов: параллельная модель прав однажды разойдётся с этой.
+  await app.register(liveIntentRoutes, { prefix: '/api/v1' });
 
   return app;
 }

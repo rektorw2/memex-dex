@@ -62,8 +62,8 @@ describe('server-side LIVE readiness', () => {
     liveAgentEnabled: true,
     liveExecutionEnabled: true,
     withdrawalsEnabled: false,
-    kmsProvider: 'aws-kms' as const,
-    kmsSigningReady: true,
+    custodyProvider: 'aws-kms' as const,
+    transactionSigningEnabled: true,
     rpcReady: true,
     reconciliationReady: true,
     migrationsReady: true,
@@ -76,9 +76,9 @@ describe('server-side LIVE readiness', () => {
   });
 
   it('requires every operational dependency', () => {
-    const result = liveReadiness({ ...ready, kmsProvider: 'local', rpcReady: false, reconciliationReady: false });
+    const result = liveReadiness({ ...ready, custodyProvider: 'local', rpcReady: false, reconciliationReady: false });
     expect(result.ready).toBe(false);
-    expect(result.blockers).toEqual(expect.arrayContaining(['PRODUCTION_KMS_REQUIRED', 'RPC_NOT_READY', 'RECONCILIATION_NOT_READY']));
+    expect(result.blockers).toEqual(expect.arrayContaining(['PRODUCTION_CUSTODY_REQUIRED', 'RPC_NOT_READY', 'RECONCILIATION_NOT_READY']));
   });
 
   it('blocks Auto even if all Semi-Auto dependencies are ready', () => {
