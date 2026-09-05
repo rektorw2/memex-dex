@@ -135,7 +135,9 @@ describe('Resend через HTTPS API', () => {
 
     const body = JSON.parse(init.body as string);
     expect(body.to).toEqual(['myron@example.com']);
-    expect(body.subject).toContain('482913');
+    // Кода в теме нет: она видна на заблокированном экране и
+    // в списке входящих. Транспорт передаёт тему как есть.
+    expect(body.subject).not.toContain('482913');
     expect(body.text).toContain('482913');
     expect(body.html).toContain('482913');
   });
@@ -240,7 +242,7 @@ describe('SMTP', () => {
       expect.objectContaining({
         from: 'Memex DEX <no-reply@example.test>',
         to: 'myron@example.com',
-        subject: expect.stringContaining('482913'),
+        subject: expect.not.stringContaining('482913'),
         text: expect.stringContaining('482913'),
         html: expect.stringContaining('482913'),
         messageId: expect.stringMatching(/^<[a-f0-9]{64}@memex\.invalid>$/),

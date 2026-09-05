@@ -13,7 +13,8 @@ import {
   applyCacheHeaders,
 } from '../services/entitlement.js';
 import { activateTrial } from '../services/trial.js';
-import { issueCode, verifyCode } from '../services/email-verify.js';
+import { issueCode } from '../services/email-verify.js';
+import { verifyEmailAndStartTrial } from '../services/verify-and-trial.js';
 import { logger } from '../lib/logger.js';
 import { serverNow } from '../lib/clock.js';
 
@@ -190,16 +191,47 @@ export const accessRoutes: FastifyPluginAsync = async (app) => {
       applyCacheHeaders(reply);
 
       const body = z.object({ code: z.string().min(1).max(16) }).parse(req.body);
-      const { result, verifiedAt } = await verifyCode(req.user.sub, body.code, serverNow());
+      const now = serverNow();
+
+      /*
+       * Подтверждение и бесплатный период — одно действие.
+       *
+       * Отдельная кнопка «включить период» не несла решения:
+       * отказаться от бесплатного доступа никто не хотел, — но
+       * исправно теряла часть людей между экранами.
+       *
+       * Период выдаётся только в момент перехода «не подтверждён →
+       * подтверждён». Повторное подтверждение и подтверждение
+       * существующим пользователем не выдают ничего.
+       */
+      const outcome = await verifyEmailAndStartTrial(req.user.sub, body.code, now);
+      const { result, verifiedAt } = outcome;
 
       if (result === VERIFY_RESULT.ok || result === VERIFY_RESULT.alreadyVerified) {
+        // Права пересчитываются по базе, а не собираются из того, что
+        // мы только что записали: ответ должен совпадать с тем, что
+        // покажет следующий запрос.
+        const ent = await entitlementOfRequest(req, now);
+
         return {
           verified: true,
           verifiedAt: verifiedAt?.toISOString() ?? null,
-          // Подтверждение почты — единственное, что стояло между
-          // человеком и бесплатным периодом. Сообщаем об этом сразу,
-          // чтобы интерфейсу не пришлось догадываться.
-          canStartTrial: (await entitlementOfRequest(req, serverNow())).canStartTrial,
+          /*
+           * Что произошло с бесплатным периодом. Отдельное поле, а не
+           * догадка интерфейса по набору прав: «выдан только что» и
+           * «был выдан раньше» — разные сообщения человеку.
+           */
+          trial: {
+            outcome: outcome.trialOutcome,
+            startsAt: outcome.trial?.startsAt.toISOString() ?? null,
+            expiresAt: outcome.trial?.expiresAt.toISOString() ?? null,
+          },
+          plan: ent.plan,
+          capabilities: capabilityList(ent),
+          serverTime: now.toISOString(),
+          // Оставлено для совместимости: старый интерфейс читает
+          // это поле, а фронт и API выкатываются раздельно.
+          canStartTrial: ent.canStartTrial,
         };
       }
 

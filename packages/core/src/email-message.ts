@@ -72,7 +72,18 @@ export function verificationEmail(input: VerificationEmailInput): EmailMessage {
   const ttl = ttlLabel(input.ttlMs ?? CODE_TTL_MS);
   const product = input.productName;
 
-  const subject = `${product}: код подтверждения ${input.code}`;
+  /*
+   * Кода в теме нет.
+   *
+   * Тема письма показывается на заблокированном экране, в списке
+   * входящих и в предпросмотре на чужом мониторе — везде, где
+   * человек кода не показывал. Удобство «увидеть код, не открывая
+   * письмо» здесь оплачивается тем, что его увидит и любой, кто
+   * стоит рядом.
+   *
+   * Раньше код в теме был. Нашлось это сквозным тестом почты.
+   */
+  const subject = `${product}: подтверждение адреса`;
 
   const text = [
     `Код подтверждения: ${input.code}`,

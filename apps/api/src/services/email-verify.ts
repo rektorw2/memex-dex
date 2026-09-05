@@ -287,10 +287,25 @@ export async function verifyCode(
 
   if (result !== VERIFY_RESULT.ok) return { result };
 
-  // Код стирается вместе с подтверждением. Оставить его значило бы
-  // держать в базе действующий ключ к аккаунту без всякой надобности.
-  await prisma.user.update({
-    where: { id: userId },
+  /*
+   * Условное обновление, а не безусловное.
+   *
+   * `emailVerifiedAt: null` в условии делает переход
+   * «не подтверждён → подтверждён» атомарным: из двух одновременных
+   * запросов с верным кодом ровно один получает `count === 1`.
+   *
+   * Это важнее, чем кажется. К подтверждению теперь привязана выдача
+   * бесплатного периода, и без условия оба запроса сообщили бы
+   * «подтверждено только что» — то есть оба попытались бы выдать
+   * период. От двух записей защищает уникальность в таблице подписок,
+   * но два события в журнале и две попытки записи — это шум там, где
+   * потом разбирают инцидент.
+   *
+   * Код стирается вместе с подтверждением: оставить его значило бы
+   * держать в базе действующий ключ к аккаунту без надобности.
+   */
+  const applied = await prisma.user.updateMany({
+    where: { id: userId, emailVerifiedAt: null },
     data: {
       emailVerifiedAt: now,
       emailCodeHash: null,
@@ -299,6 +314,20 @@ export async function verifyCode(
       emailCodeAttempts: 0,
     },
   });
+
+  if (applied.count !== 1) {
+    // Пока мы проверяли код, подтверждение сделал другой запрос.
+    // Это не ошибка, но и не переход: бесплатный период за ним
+    // не следует.
+    const current = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { emailVerifiedAt: true },
+    });
+    return {
+      result: VERIFY_RESULT.alreadyVerified,
+      verifiedAt: current?.emailVerifiedAt ?? undefined,
+    };
+  }
 
   logger.info({ userId }, 'адрес почты подтверждён');
 

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { safeNextPath } from '@memex/core';
+import { readNextParam } from './app-path';
 
 /**
  * Адрес возврата из строки запроса.
@@ -26,8 +26,14 @@ export function useNextParam(): string | null {
     // остаётся частью строки, а не отрезается: `#` попал в параметр
     // закодированным как `%23`, поэтому разбор запроса о него
     // не спотыкается.
-    const raw = new URLSearchParams(window.location.search).get('next');
-    setNext(safeNextPath(raw));
+    /*
+     * Префикс развёртывания снимается при чтении.
+     *
+     * В закладках и в открытых вкладках уже лежат ссылки, где `next`
+     * записан вместе с `/memex-dex`. Они должны продолжать работать,
+     * а не приводить на несуществующий адрес с двойным префиксом.
+     */
+    setNext(readNextParam(window.location.search));
   }, []);
 
   return next;

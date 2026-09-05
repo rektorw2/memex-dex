@@ -26,6 +26,8 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     globals: false,
+    // Возможности браузера, которых в jsdom нет вовсе.
+    setupFiles: ['./vitest.setup.ts'],
     include: ['**/*.test.ts', '**/*.test.tsx'],
     exclude: ['node_modules/**', '.next/**', 'out/**'],
   },

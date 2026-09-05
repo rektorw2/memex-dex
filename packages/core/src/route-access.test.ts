@@ -241,80 +241,86 @@ const base: OnboardingState = {
   plan: 'EXPIRED',
   emailVerified: false,
   canStartTrial: true,
-  choseTrial: false,
 };
 
 describe('шаги первого сценария', () => {
+  /*
+   * Модель изменилась: бесплатный период выдаётся автоматически
+   * при подтверждении адреса, а не отдельным нажатием.
+   *
+   * Прежнее нажатие не несло решения — отказаться от бесплатного
+   * доступа никто не хотел, — но исправно теряло часть людей между
+   * экранами. Вместе с ним ушёл шаг «выбор тарифа» до подтверждения:
+   * решать там было нечего.
+   */
   it('гостю — вход', () => {
     expect(onboardingStep({ ...base, authenticated: false })).toBe('login');
   });
 
-  it('после регистрации — выбор тарифа', () => {
-    expect(onboardingStep(base)).toBe('choose-plan');
+  it('после регистрации — подтверждение адреса', () => {
+    expect(onboardingStep(base)).toBe('verify-email');
   });
 
-  it('пробный период не начинается сам', () => {
-    // Ни регистрация, ни вход, ни открытие первого экрана его
-    // не включают: пять суток даются один раз за всё время.
-    expect(onboardingStep(base)).not.toBe('activate');
-    expect(onboardingStep({ ...base, emailVerified: true })).not.toBe('activate');
+  it('выбор тарифа до подтверждения не показывается', () => {
+    // Человеку нечего там решать, пока период ещё не начался.
+    expect(onboardingStep(base)).not.toBe('plans-only');
   });
 
-  it('после выбора Pro без подтверждённой почты — подтверждение', () => {
-    expect(onboardingStep({ ...base, choseTrial: true })).toBe('verify-email');
+  it('неподтверждённый адрес важнее действующего плана', () => {
+    /*
+     * Такое сочетание есть у существующих пользователей: план
+     * достался им до того, как подтверждение стало обязательным.
+     * Провести их через подтверждение нужно всё равно.
+     */
+    expect(onboardingStep({ ...base, plan: 'PRO' })).toBe('verify-email');
   });
 
-  it('после подтверждения почты — активация', () => {
-    expect(onboardingStep({ ...base, choseTrial: true, emailVerified: true })).toBe('activate');
-  });
-
-  it('с подтверждённой почтой выбор Pro сразу ведёт к активации', () => {
-    const state = { ...base, emailVerified: true, choseTrial: true };
+  it('во время выдачи периода — отдельный шаг', () => {
+    const state = { ...base, emailVerified: true, activating: true };
     expect(onboardingStep(state)).toBe('activate');
   });
 
   it('с действующим пробным периодом онбординг пройден', () => {
-    expect(onboardingStep({ ...base, plan: 'TRIAL', canStartTrial: false })).toBe('done');
+    const state = { ...base, emailVerified: true, plan: 'TRIAL' as const, canStartTrial: false };
+    expect(onboardingStep(state)).toBe('done');
   });
 
-  it('платный план имеет приоритет и пропускает онбординг', () => {
+  it('платный план после подтверждения пропускает онбординг', () => {
     for (const plan of ['PRO', 'SEMI_AUTO', 'FULL_AUTO'] as const) {
-      expect(onboardingStep({ ...base, plan, canStartTrial: false })).toBe('done');
-      // Даже если пробный период формально ещё доступен.
-      expect(onboardingStep({ ...base, plan, canStartTrial: true })).toBe('done');
+      const state = { ...base, emailVerified: true, plan };
+      expect(onboardingStep({ ...state, canStartTrial: false })).toBe('done');
+      expect(onboardingStep({ ...state, canStartTrial: true })).toBe('done');
     }
   });
 
-  it('истёкший пробный период не выдаётся второй раз', () => {
-    const used = { ...base, canStartTrial: false, emailVerified: true, choseTrial: true };
+  it('израсходованный период ведёт к тарифам, а не по кругу', () => {
+    const used = { ...base, emailVerified: true, canStartTrial: false };
 
     expect(onboardingStep(used)).toBe('plans-only');
-    // Ни ожиданием, ни повторным нажатием, ни новым входом.
-    expect(onboardingStep({ ...used, choseTrial: false })).toBe('plans-only');
+    // Второй период не выдаётся ни ожиданием, ни новым входом.
+    expect(onboardingStep({ ...used, activating: false })).toBe('plans-only');
   });
 
   it('администратора онбординг не касается', () => {
     // Возможности у него полные независимо от плана; вести его
     // выбирать тариф значит показывать, что мы не знаем состояния.
     expect(onboardingStep({ ...base, serviceAccess: true })).toBe('done');
-    expect(onboardingStep({ ...base, serviceAccess: true, choseTrial: true })).toBe('done');
+    // Даже с неподтверждённым адресом: служебный доступ выше.
+    expect(onboardingStep({ ...base, serviceAccess: true, emailVerified: false })).toBe('done');
     expect(needsOnboarding({ ...base, serviceAccess: true })).toBe(false);
-  });
-
-  it('без служебного доступа поведение прежнее', () => {
-    expect(onboardingStep({ ...base, serviceAccess: false })).toBe('choose-plan');
-    expect(onboardingStep(base)).toBe('choose-plan');
   });
 
   it('онбординг нужен только тем, кто его не прошёл', () => {
     expect(needsOnboarding(base)).toBe(true);
-    expect(needsOnboarding({ ...base, choseTrial: true })).toBe(true);
-    expect(needsOnboarding({ ...base, plan: 'TRIAL' })).toBe(false);
-    expect(needsOnboarding({ ...base, plan: 'PRO' })).toBe(false);
+    expect(needsOnboarding({ ...base, emailVerified: true, activating: true })).toBe(true);
+
+    const verified = { ...base, emailVerified: true };
+    expect(needsOnboarding({ ...verified, plan: 'TRIAL' })).toBe(false);
+    expect(needsOnboarding({ ...verified, plan: 'PRO' })).toBe(false);
     expect(needsOnboarding({ ...base, authenticated: false })).toBe(false);
-    // Тарифы вместо онбординга: второй пробный период не выдаётся,
-    // и держать человека в сценарии, из которого нет выхода, нельзя.
-    expect(needsOnboarding({ ...base, canStartTrial: false })).toBe(false);
+    // Тарифы вместо онбординга: второй период не выдаётся, и держать
+    // человека в сценарии, из которого нет выхода, нельзя.
+    expect(needsOnboarding({ ...verified, canStartTrial: false })).toBe(false);
   });
 });
 
@@ -580,19 +586,21 @@ describe('единственный путь включения периода', 
       plan: 'EXPIRED',
       emailVerified: false,
       canStartTrial: true,
-      choseTrial: false,
     };
 
     expect(needsOnboarding(fresh)).toBe(true);
   });
 
   it('не гоняет в онбординг того, у кого период уже идёт', () => {
-    expect(needsOnboarding({ ...base, plan: 'TRIAL', canStartTrial: false })).toBe(false);
+    // Подтверждённый адрес обязателен: без него человек остаётся
+    // в сценарии независимо от плана.
+    const running = { ...base, emailVerified: true, plan: 'TRIAL' as const, canStartTrial: false };
+    expect(needsOnboarding(running)).toBe(false);
   });
 
   it('не гоняет туда и того, кто период уже израсходовал', () => {
     // Держать человека в сценарии, из которого нет выхода, нельзя.
-    expect(needsOnboarding({ ...base, canStartTrial: false })).toBe(false);
+    expect(needsOnboarding({ ...base, emailVerified: true, canStartTrial: false })).toBe(false);
   });
 });
 

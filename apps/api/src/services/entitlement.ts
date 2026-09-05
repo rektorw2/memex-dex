@@ -176,7 +176,28 @@ export async function entitlementOfRequest(
    * и потратить единственную попытку на человека, у которого доступ
    * и так полный, значит отобрать её у него же после снятия роли.
    */
-  const capabilities = serviceAccess ? ALL_CAPABILITIES : entitlementFor(plan).capabilities;
+  /*
+   * Пробный период без подтверждённого адреса не даёт ничего.
+   *
+   * Второй рубеж, а не первый: создать такой период нельзя —
+   * `activateTrial` требует подтверждения. Но защита, держащаяся
+   * на одном условии в одном месте, перестаёт работать в тот день,
+   * когда рядом появится второй способ создать запись — ручная
+   * выдача, восстановление из бэкапа, миграция.
+   *
+   * Оплаченная подписка сюда не попадает намеренно. Человек,
+   * заплативший деньги, продолжает работать: отобрать у него доступ
+   * из-за нового требования к почте значит наказать за наше
+   * изменение. Требование к нему остаётся — интерфейс проведёт его
+   * через подтверждение, — но доступ не отбирается.
+   */
+  const trialWithoutVerification = plan === 'TRIAL' && !emailVerified && !serviceAccess;
+
+  const capabilities = serviceAccess
+    ? ALL_CAPABILITIES
+    : trialWithoutVerification
+      ? entitlementFor('EXPIRED').capabilities
+      : entitlementFor(plan).capabilities;
 
   return {
     plan,

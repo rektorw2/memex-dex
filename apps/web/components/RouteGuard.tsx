@@ -3,6 +3,7 @@
 import { useEffect } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { guard, isPublicRoute, withNext, type VisitorState } from '@memex/core';
+import { currentAppPath } from '@/lib/app-path';
 import { useAccess } from '@/lib/access';
 import { useRole } from '@/lib/role';
 
@@ -56,10 +57,16 @@ export function RouteGuard({ children }: { children: React.ReactNode }) {
      * без `?filter=new` — другой экран, и вернуть человека туда
      * значит вернуть не туда.
      */
-    const full =
-      typeof window !== 'undefined'
-        ? `${window.location.pathname}${window.location.search}${window.location.hash}`
-        : verdict.next;
+    /*
+     * Префикс развёртывания снимается здесь же.
+     *
+     * `window.location.pathname` на GitHub Pages содержит
+     * `/memex-dex`, а роутер добавляет его сам при переходе. Раньше
+     * сюда попадал путь вместе с префиксом, и получалось
+     * `/memex-dex/memex-dex/agent` — человека возвращало на
+     * несуществующую страницу после успешного входа.
+     */
+    const full = currentAppPath() ?? verdict.next;
 
     router.replace(withNext(verdict.to, full));
   }, [verdict, router]);

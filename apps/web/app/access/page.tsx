@@ -35,9 +35,9 @@ export default function AccessPage() {
       emailVerified: access.emailVerified,
       canStartTrial: access.canStartTrial,
       serviceAccess: access.serviceAccess,
-      // Намерения у страницы нет: она никого ни к чему не подталкивает,
-      // а только отправляет туда, где выбор делается явно.
-      choseTrial: false,
+      // Выдача периода здесь не идёт: страница только отправляет
+      // туда, где сценарий проходят целиком.
+      activating: false,
     });
 
   useEffect(() => {

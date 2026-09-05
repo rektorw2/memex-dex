@@ -84,6 +84,19 @@ function baseFor(kind: ApiBase): string {
   return kind === 'root' ? BASE.replace(/\/v1$/, '') : BASE;
 }
 
+/**
+ * Адрес проверки живости сервера.
+ *
+ * Лежит в корне узла, а не под `/api`: он существует для платформы,
+ * которая решает, поднялся ли сервис. Нам он годится по той же
+ * причине — отвечает раньше всего остального и ничего не требует.
+ *
+ * Собран из общего значения, а не записан отдельно: две строки
+ * с адресом сервера однажды разойдутся, и проверка начнёт стучаться
+ * не туда, куда идут запросы.
+ */
+export const HEALTH_URL = `${BASE.replace(/\/api\/v1$/, '')}/health`;
+
 export async function api<T = unknown>(
   path: string,
   init: RequestInit & { idempotencyKey?: string; base?: ApiBase } = {},

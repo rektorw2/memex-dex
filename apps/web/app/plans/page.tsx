@@ -179,12 +179,27 @@ function PlansPageContent() {
         )}
 
         {!accessLoading && !serviceAccess && trialActive && access && (
-          <div className="surface-2 mt-6 flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3 text-sm">
-            <span className="font-medium">Бесплатный период активен</span>
+          <div className="surface-2 mt-6 flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 text-sm">
+            <span className="font-medium">Бесплатный период Pro активен</span>
             <span className="text-muted">
               осталось {trialRemainingLabel(access.trialRemainingSeconds)} · до{' '}
               {formatUntil(access.trialExpiresAt)}
             </span>
+            {/*
+              Действие рядом с сообщением, а не где-то ниже.
+              Человек, только что получивший доступ, пришёл сюда
+              не читать про тарифы — ему надо в продукт.
+
+              Кнопки «начать период» здесь нет и быть не может:
+              период уже идёт, и предлагать запустить его второй раз
+              значит обещать то, чего не будет.
+            */}
+            <Link
+              href="/agent"
+              className="ml-auto inline-flex min-h-9 items-center rounded-lg bg-accent px-4 text-sm font-medium text-white transition hover:bg-[#7C3AED] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            >
+              Перейти к агенту
+            </Link>
           </div>
         )}
 

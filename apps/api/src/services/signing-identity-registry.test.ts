@@ -105,7 +105,14 @@ describe('ключ не привязывается сам', () => {
       actorId: 'admin-1', provider: 'aws-kms', network: 'devnet',
     });
 
-    expect(found.facts.solanaAddress).toHaveLength(44);
+    /*
+     * Длина адреса плавает: base58 от 32 байт даёт 43 или 44 знака
+     * в зависимости от ведущих нулей. Жёсткая 44 давала редкие
+     * ложные падения — примерно одно на несколько десятков прогонов.
+     */
+    expect(found.facts.solanaAddress.length).toBeGreaterThanOrEqual(43);
+    expect(found.facts.solanaAddress.length).toBeLessThanOrEqual(44);
+    expect(found.facts.solanaAddress).toMatch(/^[1-9A-HJ-NP-Za-km-z]+$/);
     // Главное: успешный вызов KMS сам по себе не привязывает ключ.
     expect(await readRegisteredIdentity()).toBeNull();
   });

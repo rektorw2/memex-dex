@@ -31,7 +31,9 @@ vi.mock('next/link', () => ({
   ),
 }));
 
-const apiCalls = vi.hoisted(() => [] as Array<{ path: string; body: any }>);
+const apiCalls = vi.hoisted(
+  () => [] as Array<{ path: string; body: any; idempotencyKey?: string }>,
+);
 const apiImpl = vi.hoisted(() => ({ handler: async (_path: string, _body: any) => ({}) as any }));
 
 vi.mock('@/lib/api', async () => {
@@ -41,7 +43,9 @@ vi.mock('@/lib/api', async () => {
     ...actual,
     api: async (path: string, init: any) => {
       const body = init?.body ? JSON.parse(init.body) : null;
-      apiCalls.push({ path, body });
+      // Ключ идемпотентности записывается вместе с вызовом: без него
+      // повтор регистрации проверить нечем.
+      apiCalls.push({ path, body, idempotencyKey: init?.idempotencyKey });
       return apiImpl.handler(path, body);
     },
     setToken: vi.fn(),
@@ -356,7 +360,7 @@ describe('переключение входа и регистрации', () => 
       screen.getByRole('button', { name: 'Нет аккаунта? Зарегистрироваться' }).click();
     });
 
-    expect(screen.getByRole('heading').textContent).toBe('Регистрация');
+    expect(screen.getByRole('heading').textContent).toBe('Создание аккаунта');
     expect(nav.replace).toHaveBeenCalledWith(
       '/login?next=%2Fradar%3Ffilter%3Dnew&mode=register',
       { scroll: false },
@@ -449,8 +453,23 @@ describe('повторная регистрация', () => {
 // ───────────────────────── Успешная регистрация ─────────────────────────────
 
 describe('успешная регистрация', () => {
+  /*
+   * Продуктовое решение изменилось вместе с этими тестами.
+   *
+   * Раньше после регистрации форма переключалась на вход, и человек
+   * вводил те же данные второй раз подряд. Это не несло смысла и
+   * теряло людей на ровном месте: пароль они только что придумали
+   * и он уже в памяти формы.
+   *
+   * Теперь регистрация сразу входит и ведёт на подтверждение адреса.
+   * Доступа это не даёт — платные возможности открывает сервер после
+   * подтверждения, а не наличие сессии.
+   */
   async function registerOk() {
-    apiImpl.handler = async () => ({ ok: true });
+    apiImpl.handler = async (path: string) =>
+      path === '/auth/login'
+        ? { accessToken: 'a', refreshToken: 'r', role: 'USER' }
+        : { ok: true };
 
     open('register');
     type(emailField(), ' User@Example.com ');
@@ -458,36 +477,38 @@ describe('успешная регистрация', () => {
     await submit();
   }
 
-  it('форма переключается на вход', async () => {
+  it('ключ идемпотентности отправляется', async () => {
+    /*
+     * Главная защита этого шага. Обрыв связи не говорит, дошёл ли
+     * запрос; без ключа повтор рискует создать второй аккаунт или
+     * упереться в «адрес занят» — тем самым адресом, который человек
+     * только что зарегистрировал.
+     */
     await registerOk();
 
-    expect(screen.getByRole('heading').textContent).toBe('Вход');
+    const register = apiCalls.find((c) => c.path === '/auth/register');
+    expect(register?.idempotencyKey).toBeTruthy();
   });
 
-  it('сообщение нейтральное', async () => {
+  it('ведёт на подтверждение адреса, а не на повторный вход', async () => {
     await registerOk();
 
-    expect(screen.getByText('Аккаунт создан — теперь войдите')).toBeTruthy();
+    expect(nav.push).toHaveBeenCalled();
+    expect(String(nav.push.mock.calls[0]?.[0])).toContain('/onboarding');
   });
 
-  it('адрес сохраняется, пароль очищается', async () => {
+  it('сессия создаётся тем же паролем, что человек только что задал', async () => {
     await registerOk();
 
-    expect(emailField().value).toBe('user@example.com');
-    expect(passwordField().value).toBe('');
+    // Второй ввод тех же данных подряд не несёт решения.
+    expect(nav.push).toHaveBeenCalledTimes(1);
   });
 
-  it('сессия не создаётся сама', async () => {
+  it('адрес нормализуется перед отправкой', async () => {
     await registerOk();
 
-    // Сервер токена не выдавал: переход в приложение был бы выдумкой.
-    expect(nav.push).not.toHaveBeenCalled();
-  });
-
-  it('адрес страницы обновляется', async () => {
-    await registerOk();
-
-    expect(nav.replace).toHaveBeenCalledWith('/login', { scroll: false });
+    const register = apiCalls.find((c) => c.path === '/auth/register');
+    expect(register?.body?.email).toBe('user@example.com');
   });
 });
 

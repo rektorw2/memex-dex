@@ -256,6 +256,33 @@ export async function createCheckout(
   const treasury = treasuryAddress();
   if (!treasury) return { ok: false, error: CHECKOUT_ERROR.treasuryMissing };
 
+  /*
+   * Подтверждённый адрес — условие оформления, а не только проверки
+   * личности.
+   *
+   * Раньше здесь проверки не было: считалось, что до оплаты нельзя
+   * дойти, не пройдя `startOnboarding`, который подтверждение
+   * требует. Гарантия настоящая, но транзитивная — она держится на
+   * том, что запись клиента провайдера появляется единственным
+   * способом. Ручная выдача, перенос данных или восстановление из
+   * копии эту цепочку разрывают молча.
+   *
+   * Проверка стоит до обращения к провайдеру. Создать заказ, а потом
+   * отказать — значит оставить висящий заказ и, возможно, деньги
+   * в пути.
+   *
+   * Тот же порядок у Coinbase: два пути к оплате должны отвечать
+   * на этот вопрос одинаково.
+   */
+  const account = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { emailVerifiedAt: true },
+  });
+
+  if (!account?.emailVerifiedAt) {
+    return { ok: false, error: CHECKOUT_ERROR.emailNotVerified };
+  }
+
   const customer = await prisma.paymentCustomer.findUnique({
     where: { userId_provider: { userId, provider: 'BRIDGE' } },
   });

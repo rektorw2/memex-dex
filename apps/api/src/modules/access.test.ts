@@ -471,16 +471,51 @@ describe('подтверждение почты', () => {
     expect(again.json().sent).toBe(true);
   });
 
-  it('подтверждение не запускает пробный период само', async () => {
-    // Подтверждение только снимает препятствие. Пять суток,
-    // начавшиеся сами собой, кончаются раньше, чем человек успевает
-    // посмотреть продукт.
+  it('подтверждение сразу выдаёт пробный период', async () => {
+    /*
+     * Продуктовое решение изменилось, и вместе с ним этот тест.
+     *
+     * Раньше подтверждение только снимало препятствие, а период
+     * включался вторым нажатием. Второе нажатие не несло решения —
+     * отказаться от бесплатного доступа никто не хотел, — но
+     * исправно теряло часть людей между экранами.
+     *
+     * Опасение «пять суток начнутся, пока человек не смотрит»
+     * осталось, но подтверждение адреса — это уже действие человека
+     * здесь и сейчас, а не фоновое событие.
+     */
     state.emailVerified = false;
-    await post('/api/access/email/verify', { code: '123456' });
+    const verify = await post('/api/access/email/verify', { code: '123456' });
+
+    expect(verify.json().trial.outcome).toBe('STARTED');
+    expect(verify.json().plan).toBe('TRIAL');
 
     const me = await get('/api/access/me');
-    expect(me.json().effectivePlan).toBe('EXPIRED');
-    expect(me.json().canStartTrial).toBe(true);
+    expect(me.json().effectivePlan).toBe('TRIAL');
+    // Второй раз выдавать нечего.
+    expect(me.json().canStartTrial).toBe(false);
+  });
+
+  it('повторное подтверждение не выдаёт второй период', async () => {
+    state.emailVerified = false;
+    await post('/api/access/email/verify', { code: '123456' });
+    const again = await post('/api/access/email/verify', { code: '123456' });
+
+    /*
+     * Проверяется исход, а не путь к нему.
+     *
+     * От второго периода защищают два независимых рубежа: условный
+     * переход «не подтверждён → подтверждён» и уникальность в
+     * таблице подписок. Подделка в этом тесте первый рубеж
+     * не моделирует, и срабатывает второй — что само по себе ценно:
+     * значит, защита не держится на одном условии.
+     *
+     * Разделение исходов проверяется отдельно, на настоящем
+     * `verifyEmailAndStartTrial`.
+     */
+    expect(again.json().verified).toBe(true);
+    expect(again.json().trial.outcome).not.toBe('STARTED');
+    expect(again.json().plan).toBe('TRIAL');
   });
 
   it('чужой адрес в теле запроса ни на что не влияет', async () => {
@@ -508,16 +543,24 @@ describe('подтверждение почты', () => {
     expect(r.json().code).toBe('CODE_WRONG');
   });
 
-  it('верный код открывает дорогу к пробному периоду', async () => {
+  it('верный код сам включает пробный период', async () => {
     state.emailVerified = false;
 
     const v = await post('/api/access/email/verify', { code: '123456' });
     expect(v.statusCode).toBe(200);
     expect(v.json().verified).toBe(true);
-    expect(v.json().canStartTrial).toBe(true);
+    expect(v.json().trial.outcome).toBe('STARTED');
+    expect(v.json().trial.expiresAt).not.toBeNull();
 
+    /*
+     * Отдельная активация осталась как путь восстановления: если
+     * выдача не удалась после успешного подтверждения, повторить её
+     * можно тем же идемпотентным вызовом. Второго периода он
+     * не создаёт.
+     */
     const t = await post('/api/access/trial/activate');
-    expect(t.statusCode).toBe(201);
+    expect(t.statusCode).toBe(200);
+    expect(t.json().status).toBe('already_active');
   });
 
   it('подтверждение требует авторизации', async () => {

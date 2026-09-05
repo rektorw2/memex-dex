@@ -16,7 +16,12 @@ import {
   PASSWORD_MAX,
   PASSWORD_HINT,
 } from '@memex/core';
-import { api, setToken, ApiError, NetworkError } from '@/lib/api';
+import { appRelativePath } from '@memex/core';
+import { DEPLOY_BASE_PATH } from '@/lib/app-path';
+import { api, setToken, ApiError, NetworkError, HEALTH_URL } from '@/lib/api';
+import { AuthShell } from '@/components/AuthShell';
+import { ONBOARDING_STEPS } from '@/components/onboarding-steps';
+import { useServerWakeup, isNetworkFailure, type WakeupState } from '@/lib/server-wakeup';
 import { useAccess } from '@/lib/access';
 
 /**
@@ -62,6 +67,36 @@ type Notice =
 
 const EMAIL_MAX = 254;
 
+/**
+ * Вход с одной повторной попыткой.
+ *
+ * Повтор разрешён ровно при подтверждённом сбое связи: сервер не
+ * ответил, значит запрос, скорее всего, не дошёл. Ответ с кодом
+ * состояния — 401, 403, 409, 422 — сбоем связи не является: запрос
+ * дошёл и был рассмотрен, и повторять его бессмысленно.
+ *
+ * Одна попытка, а не цикл: спящий сервер поднимается за десятки
+ * секунд, и настойчивый повтор мешает ему это делать.
+ */
+async function login(
+  email: string,
+  password: string,
+  totp: string | null,
+): Promise<{ accessToken: string; refreshToken: string; role: string }> {
+  const send = () =>
+    api<{ accessToken: string; refreshToken: string; role: string }>('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email, password, ...(totp ? { totp } : {}) }),
+    });
+
+  try {
+    return await send();
+  } catch (error: unknown) {
+    if (!isNetworkFailure(error)) throw error;
+    return send();
+  }
+}
+
 function LoginForm() {
   const router = useRouter();
   const params = useSearchParams();
@@ -94,11 +129,28 @@ function LoginForm() {
    */
   const inFlight = useRef(false);
 
+  /**
+   * Ключ идемпотентности регистрации.
+   *
+   * Один на попытку. Пересоздаётся при смене режима и после успеха:
+   * новая регистрация — это новый запрос, а повтор той же — тот же.
+   */
+  const registrationKey = useRef(crypto.randomUUID());
+
   const emailRef = useRef<HTMLInputElement>(null);
   const passwordRef = useRef<HTMLInputElement>(null);
   const totpRef = useRef<HTMLInputElement>(null);
 
   const isDev = process.env.NODE_ENV === 'development';
+
+  /*
+   * Проверка живости сервера при открытии формы.
+   *
+   * Только `GET` и только чтение: повторять его безопасно, и именно
+   * поэтому автоматический повтор здесь допустим. Ни вход, ни
+   * регистрация автоматически не повторяются.
+   */
+  const wakeup = useServerWakeup(HEALTH_URL);
 
   /*
    * Адрес — источник режима при навигации назад/вперёд и при клике
@@ -227,28 +279,43 @@ function LoginForm() {
 
     try {
       if (mode === 'register') {
+        /*
+         * Ключ идемпотентности обязателен именно здесь.
+         *
+         * Регистрацию нельзя повторять вслепую: обрыв связи не
+         * говорит, дошёл ли запрос. Без ключа повтор рискует создать
+         * второй аккаунт или упереться в «адрес занят» — тем самым
+         * адресом, который человек только что зарегистрировал.
+         *
+         * Ключ живёт до конца попытки: пока человек не изменил
+         * данные, это тот же запрос.
+         */
         await api('/auth/register', {
           method: 'POST',
+          idempotencyKey: registrationKey.current,
           // Пароль уходит как есть: пробелы могут быть его частью,
           // и `trim` сломал бы вход тем, кто их использует.
           body: JSON.stringify({ email: address, password }),
         });
 
-        switchToLogin('Аккаунт создан — теперь войдите', 'info');
+        /*
+         * Сразу вход, а не «теперь войдите».
+         *
+         * Второй ввод тех же данных подряд не несёт смысла и теряет
+         * людей на ровном месте. Пароль уже здесь, в памяти формы.
+         */
+        const created = await login(address, password, null);
+        setToken(created.accessToken);
+        writeStored('local', 'refreshToken', created.refreshToken);
+        writeStored('local', 'role', created.role);
+        await reload();
+
+        const nextAfterRegister = appRelativePath(params.get('next'), DEPLOY_BASE_PATH);
+        router.push(withNext('/onboarding', nextAfterRegister));
         return;
       }
 
-      const res = await api<{ accessToken: string; refreshToken: string; role: string }>(
-        '/auth/login',
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            email: address,
-            password,
-            ...(need2fa ? { totp: totp.trim() } : {}),
-          }),
-        },
-      );
+      const res = await login(address, password, need2fa ? totp.trim() : null);
 
       setToken(res.accessToken);
 
@@ -274,7 +341,8 @@ function LoginForm() {
       // `//evil.example/x` ей удовлетворяет, а браузер прочитает
       // его как чужой хост. Это открытый редирект, и стоит он
       // введённого у мошенника пароля.
-      const next = safeNextPath(params.get('next'));
+      // Префикс развёртывания снимается: роутер добавит его сам.
+      const next = appRelativePath(params.get('next'), DEPLOY_BASE_PATH);
 
       // Онбординг сам решит, показывать выбор тарифа или пропустить:
       // он спрашивает сервер, а не помнит о себе.
@@ -332,9 +400,32 @@ function LoginForm() {
         : 'border-down/30 bg-down/10 text-down';
 
   return (
-    <div className="mx-auto mt-16 max-w-sm">
-      <form onSubmit={submit} noValidate className="panel space-y-4 p-6">
-        <h1 className="text-xl font-bold">{mode === 'login' ? 'Вход' : 'Регистрация'}</h1>
+    <AuthShell
+      steps={ONBOARDING_STEPS}
+      currentStep="auth"
+      title={mode === 'login' ? 'Вход' : 'Создание аккаунта'}
+      subtitle={
+        mode === 'register'
+          ? 'После регистрации подтвердите адрес — это открывает 5 дней Pro.'
+          : undefined
+      }
+      footer={
+        <Link
+          href="/terminal"
+          className="rounded px-2 py-1 underline underline-offset-4 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+        >
+          Посмотреть терминал без входа
+        </Link>
+      }
+    >
+      {/*
+        Состояние сервера показывается над формой и никогда не стирает
+        введённое. Человек, ждавший минуту запуска, не должен вводить
+        адрес и пароль заново.
+      */}
+      <WakeupNotice state={wakeup.state} onRetry={wakeup.retry} />
+
+      <form onSubmit={submit} noValidate className="space-y-4">
 
         <div>
           <label className="label" htmlFor="auth-email">
@@ -484,11 +575,6 @@ function LoginForm() {
           {mode === 'login' ? 'Нет аккаунта? Зарегистрироваться' : 'Уже есть аккаунт? Войти'}
         </button>
 
-        <p className="text-center text-xs text-muted">
-          <Link href="/terminal" className="hover:text-white">
-            Посмотреть терминал без входа
-          </Link>
-        </p>
       </form>
 
       {isDev && (
@@ -512,8 +598,53 @@ function LoginForm() {
           ))}
         </div>
       )}
-    </div>
+    </AuthShell>
   );
+}
+
+/**
+ * Состояние спящего сервера.
+ *
+ * Бесплатный сервис засыпает, и первый запрос ждёт до минуты. Молчащая
+ * форма читается как поломка, и человек уходит — не потому, что продукт
+ * плохой, а потому, что не понял, что происходит.
+ *
+ * Технических подробностей здесь нет: ни адреса API, ни слова CORS,
+ * ни инструкций. Они не помогают тому, кто просто хочет войти.
+ */
+function WakeupNotice({ state, onRetry }: { state: WakeupState; onRetry: () => void }) {
+  if (state === 'waking') {
+    return (
+      <p
+        className="mb-4 rounded-lg border border-white/10 bg-white/5 p-3 text-sm text-white/70"
+        role="status"
+        aria-live="polite"
+      >
+        Запускаем защищённый сервер… Это занимает до минуты после простоя.
+      </p>
+    );
+  }
+
+  if (state === 'unreachable') {
+    return (
+      <div
+        className="mb-4 rounded-lg border border-warn/30 bg-warn/10 p-3 text-sm text-warn"
+        role="status"
+        aria-live="polite"
+      >
+        <p>Сервер пока не отвечает. Введённые данные сохранены.</p>
+        <button
+          type="button"
+          onClick={onRetry}
+          className="mt-2 rounded px-2 py-1 underline underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+        >
+          Попробовать ещё раз
+        </button>
+      </div>
+    );
+  }
+
+  return null;
 }
 
 export default function LoginPage() {
