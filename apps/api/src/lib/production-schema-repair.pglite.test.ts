@@ -11,6 +11,7 @@ import {
   INTENT_LIFECYCLE_MIGRATION,
   SIGNING_IDENTITY_MIGRATION,
   SOLANA_NETWORK_PROOF_MIGRATION,
+  PAPER_EXIT_PLAN_MIGRATION,
   BASELINE_MIGRATION,
   planProductionSchemaRepair,
 } from './production-schema-repair.js';
@@ -164,14 +165,17 @@ describe('загрузчик на настоящей схеме', () => {
     expect([...KNOWN_MIGRATIONS], 'каталог знает о доказательстве сети').toContain(
       SOLANA_NETWORK_PROOF_MIGRATION,
     );
-    expect(KNOWN_MIGRATIONS.at(-1), 'оно последнее в каталоге').toBe(
-      SOLANA_NETWORK_PROOF_MIGRATION,
+    expect([...KNOWN_MIGRATIONS], 'каталог знает о плане выхода').toContain(
+      PAPER_EXIT_PLAN_MIGRATION,
+    );
+    expect(KNOWN_MIGRATIONS.at(-1), 'он последний в каталоге').toBe(
+      PAPER_EXIT_PLAN_MIGRATION,
     );
     expect(applied, 'сценарий применил доказательство проверки сети').toContain(
       SOLANA_NETWORK_PROOF_MIGRATION,
     );
-    expect(applied.at(-1), 'и применил его последним — перед ready').toBe(
-      SOLANA_NETWORK_PROOF_MIGRATION,
+    expect(applied.at(-1), 'и применил план выхода последним — перед ready').toBe(
+      PAPER_EXIT_PLAN_MIGRATION,
     );
     expect(applied, 'применено ровно то и в том порядке, что в каталоге').toEqual(IN_ORDER);
 
@@ -329,6 +333,7 @@ const LATE_PHASE4 = [
   { migration: INTENT_LIFECYCLE_MIGRATION, prefix: 'INTENT_LIFECYCLE' },
   { migration: SIGNING_IDENTITY_MIGRATION, prefix: 'SIGNING_IDENTITY' },
   { migration: SOLANA_NETWORK_PROOF_MIGRATION, prefix: 'SOLANA_NETWORK_PROOF' },
+  { migration: PAPER_EXIT_PLAN_MIGRATION, prefix: 'PAPER_EXIT_PLAN' },
 ] as const;
 
 describe('матрица поздних миграций не отстала от каталога', () => {
@@ -341,7 +346,8 @@ describe('матрица поздних миграций не отстала о�
     const covered = LATE_PHASE4.map((row) => row.migration);
 
     expect(covered).toContain(SOLANA_NETWORK_PROOF_MIGRATION);
-    expect(covered, 'поздних миграций Phase 4').toHaveLength(5);
+    expect(covered).toContain(PAPER_EXIT_PLAN_MIGRATION);
+    expect(covered, 'поздних миграций Phase 4').toHaveLength(6);
     expect(covered, 'дубликатов нет').toEqual([...new Set(covered)]);
 
     // Опечатка в имени превратила бы `applyBefore` в применение

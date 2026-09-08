@@ -304,20 +304,252 @@ body {
   .plan-card:hover { transform: none; }
 }
 
-/* PAPER-agent: calm product feedback, never a casino animation. */
+/* ══════════════════════ Страница агента ════════════════════════════════
+
+   Движение здесь объясняет состояние, а не украшает его: точка бежит
+   по соединителю, потому что сигналы действительно идут; число
+   доезжает до значения, потому что оно действительно изменилось.
+   Ничего не мигает и не светится постоянно — это торговый инструмент,
+   а не игровой автомат.                                                  */
+
+/* ─── Появление карточек ──────────────────────────────────────────── */
+
+/* Каждая карточка задаёт свой порядок через --i; шаг 60 мс. Только
+   прозрачность и сдвиг: соседние блоки не двигаются. */
 @keyframes agent-enter {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.agent-card {
+  opacity: 0;
+  animation: agent-enter 420ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  animation-delay: calc(var(--i, 0) * 60ms);
+}
+
+/* Смена вкладки — короткий кроссфейд. */
+@keyframes agent-fade {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: none; }
+}
+.agent-fade { animation: agent-fade 220ms ease-out both; }
+
+/* Строки истории появляются каскадом; после десятой — без задержки,
+   иначе длинный список «догружается» слишком долго. */
+.agent-row { animation: agent-enter 260ms ease-out both; }
+.agent-row:nth-child(1)  { animation-delay: 0ms; }
+.agent-row:nth-child(2)  { animation-delay: 40ms; }
+.agent-row:nth-child(3)  { animation-delay: 80ms; }
+.agent-row:nth-child(4)  { animation-delay: 120ms; }
+.agent-row:nth-child(5)  { animation-delay: 160ms; }
+.agent-row:nth-child(6)  { animation-delay: 200ms; }
+.agent-row:nth-child(7)  { animation-delay: 240ms; }
+.agent-row:nth-child(8)  { animation-delay: 280ms; }
+.agent-row:nth-child(9)  { animation-delay: 320ms; }
+.agent-row:nth-child(10) { animation-delay: 360ms; }
+
+/* ─── Шапка ───────────────────────────────────────────────────────── */
+
+/* Мягкий свет в углу шапки. Не свечение вокруг элементов, а подложка:
+   даёт странице точку входа для взгляда. */
+.agent-hero-light {
+  @apply pointer-events-none absolute -left-24 -top-32 h-72 w-72 rounded-full;
+  background: radial-gradient(closest-side, rgb(139 92 246 / 0.18), transparent);
 }
 
 @keyframes agent-status-pulse {
   0%, 100% { opacity: .55; box-shadow: 0 0 0 0 currentColor; }
-  50% { opacity: 1; box-shadow: 0 0 0 4px transparent; }
+  50%      { opacity: 1;   box-shadow: 0 0 0 4px transparent; }
 }
-
-.agent-enter { animation: agent-enter 300ms ease-out both; }
 .agent-status-dot { animation: agent-status-pulse 1.8s ease-in-out infinite; }
 
+/* Значок PAPER-контура: точка обходит кольцо. Медленно — это
+   ориентир «контур живой», а не индикатор загрузки. */
+@keyframes agent-orbit { to { transform: rotate(360deg); } }
+.agent-orbit { position: relative; }
+.agent-orbit > span {
+  position: absolute;
+  top: 2px; left: 50%;
+  margin-left: -5px;
+  transform-origin: 5px 18px;
+  animation: agent-orbit 6s linear infinite;
+}
+
+/* Полоса активного контура слегка «дышит». */
+@keyframes agent-bar-breathe { 0%, 100% { opacity: .7; } 50% { opacity: 1; } }
+.agent-mode-bar { animation: agent-bar-breathe 3s ease-in-out infinite; }
+
+/* ─── Путь решения ────────────────────────────────────────────────── */
+
+.agent-flow {
+  display: grid;
+  gap: 8px;
+}
+@media (min-width: 640px) {
+  .agent-flow { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; }
+}
+
+.agent-flow-step { position: relative; display: flex; flex-direction: column; }
+@media (min-width: 640px) {
+  .agent-flow-step { padding-right: 16px; }
+  .agent-flow-step:last-child { padding-right: 0; }
+}
+
+/* Соединитель: на телефоне вертикальный под карточкой, на широком
+   экране горизонтальный справа. По нему бежит точка, когда оба
+   соседних шага включены. */
+.agent-flow-link {
+  position: relative;
+  display: block;
+  margin: 4px auto 0;
+  width: 2px; height: 14px;
+  background: theme('colors.border');
+  border-radius: 2px;
+  overflow: hidden;
+}
+@media (min-width: 640px) {
+  .agent-flow-link {
+    position: absolute;
+    right: 0; top: 50%;
+    margin: 0;
+    width: 16px; height: 2px;
+    transform: translateY(-50%);
+  }
+}
+.agent-flow-link[data-flowing] { background: rgb(139 92 246 / 0.35); }
+
+.agent-flow-dot {
+  position: absolute;
+  inset: 0;
+  background: theme('colors.accent');
+  border-radius: 2px;
+  opacity: 0;
+}
+@keyframes agent-flow-v { from { transform: translateY(-100%); } to { transform: translateY(100%); } }
+@keyframes agent-flow-h { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+.agent-flow-link[data-flowing] .agent-flow-dot {
+  opacity: 1;
+  animation: agent-flow-v 1.2s linear infinite;
+}
+@media (min-width: 640px) {
+  .agent-flow-link[data-flowing] .agent-flow-dot { animation-name: agent-flow-h; }
+}
+
+/* Включённый узел: одно кольцо расходится и гаснет. */
+@keyframes agent-node-ring {
+  from { box-shadow: 0 0 0 0 rgb(139 92 246 / 0.45); }
+  to   { box-shadow: 0 0 0 8px rgb(139 92 246 / 0); }
+}
+.agent-node-on { animation: agent-node-ring 2.4s ease-out infinite; }
+
+/* ─── Вкладки ─────────────────────────────────────────────────────── */
+
+.agent-tab-indicator {
+  position: absolute;
+  left: 0; bottom: -1px;
+  height: 2px;
+  background: theme('colors.accent');
+  border-radius: 2px;
+  transition: transform 260ms cubic-bezier(0.22, 1, 0.36, 1), width 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* ─── Обзор ───────────────────────────────────────────────────────── */
+
+/* Кольцо: при появлении делает один оборот из «пустого» состояния. */
+@keyframes agent-donut-in { from { transform: rotate(-90deg) scale(.92); opacity: 0; } to { transform: none; opacity: 1; } }
+.agent-donut { animation: agent-donut-in 600ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+/* Полосы прогресса доезжают до значения, а не появляются сразу. */
+.agent-bar { transition: width 700ms cubic-bezier(0.22, 1, 0.36, 1), background-color 300ms ease; }
+
+/* Линия капитала рисуется слева направо; заливка проявляется следом. */
+@keyframes agent-draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+.agent-line { stroke-dasharray: 1; animation: agent-draw 1100ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+@keyframes agent-area-in { from { opacity: 0; } to { opacity: 1; } }
+.agent-area { animation: agent-area-in 600ms ease-out 700ms both; }
+.agent-line-end { animation: agent-area-in 300ms ease-out 1000ms both; }
+
+/* Плитка метрики чуть подсвечивает рамку под указателем. */
+@media (hover: hover) and (pointer: fine) {
+  .agent-metric { transition: border-color 160ms ease, background-color 160ms ease; }
+  .agent-metric:hover { @apply border-accent/40; }
+  .agent-cta { transition: border-color 160ms ease, color 160ms ease, transform 160ms ease; }
+  .agent-cta:hover { transform: translateY(-1px); }
+}
+
+/* Галочка пройденной ступени. */
+@keyframes agent-pop { from { transform: scale(.6); opacity: 0; } to { transform: none; opacity: 1; } }
+.agent-step-done { animation: agent-pop 260ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+/* Пустое состояние: точка медленно пульсирует — агент ждёт. */
+@keyframes agent-idle { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+.agent-idle > span { animation: agent-idle 2.2s ease-in-out infinite; }
+
+/* Этапы пополнения соединены линией под кружками. */
+.agent-steps { position: relative; }
+.agent-steps::before {
+  content: '';
+  position: absolute;
+  top: 14px; left: 10%; right: 10%;
+  height: 1px;
+  background: theme('colors.border');
+}
+
+/* ─── Карточки правил выхода ──────────────────────────────────────── */
+
+/* Появление при попадании в видимую область: прозрачность и сдвиг,
+   размеры карточки не меняются — соседи не двигаются. */
+.agent-exit-card {
+  background: theme('colors.panel');
+  transition: opacity 420ms cubic-bezier(0.22, 1, 0.36, 1), transform 420ms cubic-bezier(0.22, 1, 0.36, 1), border-color 160ms ease;
+  transition-delay: calc(var(--i, 0) * 50ms), calc(var(--i, 0) * 50ms), 0ms;
+}
+.agent-exit-card[data-inview="false"] { opacity: 0; transform: translateY(10px); }
+.agent-exit-card:has(:focus-visible) { @apply ring-2 ring-accent/70; }
+
+/* Пелена над фоном: текст слева должен читаться на любой картинке.
+   На телефоне колонка одна, и пелена идёт сверху вниз. */
+.agent-exit-veil {
+  background: linear-gradient(90deg, rgb(17 21 27 / 0.9) 0%, rgb(17 21 27 / 0.62) 50%, rgb(17 21 27 / 0.2) 100%);
+}
+@media (max-width: 639px) {
+  .agent-exit-veil { background: linear-gradient(180deg, rgb(17 21 27 / 0.9) 0%, rgb(17 21 27 / 0.45) 100%); }
+}
+
+/* Сцена: маска открывает время слева направо (transform, не размеры),
+   отметки появляются в свой момент — задержка считается из доли
+   времени сцены `--at`. Статичное состояние — та же картинка без
+   движения. */
+.agent-scene-halo { paint-order: stroke; stroke: theme('colors.panel'); stroke-width: 3px; stroke-linejoin: round; }
+.agent-scene-reveal { transform-box: fill-box; transform-origin: left center; }
+.agent-scene-mark { transform-box: fill-box; transform-origin: center; }
+@keyframes agent-scene-reveal { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+@keyframes agent-scene-pop { from { opacity: 0; transform: scale(0.6); } to { opacity: 1; transform: none; } }
+@keyframes agent-scene-in { from { opacity: 0; } to { opacity: 1; } }
+.agent-scene[data-play="demo"] .agent-scene-reveal { animation: agent-scene-reveal var(--demo, 3600ms) linear both; }
+.agent-scene[data-play="demo"] .agent-scene-level { animation: agent-scene-in 400ms ease-out both; animation-delay: calc(var(--at, 0) * var(--demo, 3600ms)); }
+.agent-scene[data-play="demo"] .agent-scene-mark { animation: agent-scene-pop 320ms cubic-bezier(0.22, 1, 0.36, 1) both; animation-delay: calc(var(--at, 0) * var(--demo, 3600ms)); }
+.agent-scene[data-play="demo"] .agent-scene-done { animation: agent-scene-in 400ms ease-out both; animation-delay: calc(var(--at, 0) * var(--demo, 3600ms) + 320ms); }
+
+/* ─── Уважение к настройке системы ────────────────────────────────── */
+
 @media (prefers-reduced-motion: reduce) {
-  .agent-enter, .agent-status-dot { animation: none; }
+  .agent-exit-card { transition: none; }
+  .agent-exit-card[data-inview="false"] { opacity: 1; transform: none; }
+  .agent-scene .agent-scene-reveal, .agent-scene .agent-scene-level, .agent-scene .agent-scene-mark, .agent-scene .agent-scene-done {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+  .agent-card, .agent-fade, .agent-row, .agent-donut, .agent-line, .agent-area,
+  .agent-line-end, .agent-step-done {
+    animation: none;
+    opacity: 1;
+    transform: none;
+    stroke-dasharray: none;
+  }
+  .agent-status-dot, .agent-orbit > span, .agent-mode-bar, .agent-node-on,
+  .agent-idle > span, .agent-flow-dot { animation: none; }
+  .agent-flow-link[data-flowing] .agent-flow-dot { opacity: .6; }
+  .agent-tab-indicator, .agent-bar, .agent-metric, .agent-cta { transition: none; }
 }

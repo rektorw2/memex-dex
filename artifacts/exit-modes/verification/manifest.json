@@ -1,0 +1,381 @@
+{
+  "cards": 10,
+  "layers": 15,
+  "webImages": 20,
+  "webImageBytes": 90892,
+  "coreTests": 2037,
+  "apiTests": 1677,
+  "webTests": 437,
+  "staticBuild": "passed",
+  "browserChecks": [
+    {
+      "width": 390,
+      "cards": 5,
+      "overflow": false,
+      "imagesLoaded": true,
+      "keyboard": false,
+      "reducedMotion": true,
+      "confirmation": true,
+      "pageErrors": 0
+    },
+    {
+      "width": 1280,
+      "cards": 5,
+      "overflow": false,
+      "imagesLoaded": true,
+      "keyboard": true,
+      "reducedMotion": true,
+      "confirmation": true,
+      "pageErrors": 0
+    }
+  ],
+  "assets": [
+    {
+      "path": "artifacts/exit-modes/ladder-desktop.png",
+      "width": 2400,
+      "height": 1350,
+      "bytes": 318690,
+      "sha256": "92c5ec8b962d9ea10cb58422547fec978045d96fe4723e7e0b2129c0b34ad62c"
+    },
+    {
+      "path": "artifacts/exit-modes/ladder-mobile.png",
+      "width": 1350,
+      "height": 2400,
+      "bytes": 296925,
+      "sha256": "78228c949c9e706685cf10c4962222fb01653cee8e6b548a3d4efa885f9ee596"
+    },
+    {
+      "path": "artifacts/exit-modes/protected-desktop.png",
+      "width": 2400,
+      "height": 1350,
+      "bytes": 287771,
+      "sha256": "e80f3a1127d7c4313c3cdcf64f4dbce9e7bcf28b4756fc7467bc7b104a994d7d"
+    },
+    {
+      "path": "artifacts/exit-modes/protected-mobile.png",
+      "width": 1350,
+      "height": 2400,
+      "bytes": 260605,
+      "sha256": "9cbb0e6b3d6986a8ee67c31e727a1add613b8b7e1d5fe790f2f3a91b73871457"
+    },
+    {
+      "path": "artifacts/exit-modes/target-desktop.png",
+      "width": 2400,
+      "height": 1350,
+      "bytes": 301753,
+      "sha256": "f861f014aea444b97b7db11c895cbb66134165fd445d0d2b25c6ed53be7db201"
+    },
+    {
+      "path": "artifacts/exit-modes/target-mobile.png",
+      "width": 1350,
+      "height": 2400,
+      "bytes": 257822,
+      "sha256": "e8178d3255b768a583c6273043765e57372ff675f2b13f7b488306db54385011"
+    },
+    {
+      "path": "artifacts/exit-modes/trailing-desktop.png",
+      "width": 2400,
+      "height": 1350,
+      "bytes": 320703,
+      "sha256": "f982e2dfa28c178e1bab0c965bf6c924c1c28f7d98ecb1db48f18ca72db40215"
+    },
+    {
+      "path": "artifacts/exit-modes/trailing-mobile.png",
+      "width": 1350,
+      "height": 2400,
+      "bytes": 287984,
+      "sha256": "d2fbb4a716fe96b6cf11f9163e909f48c8fb4511b562dca7516cad25f884c90c"
+    },
+    {
+      "path": "artifacts/exit-modes/trailing-pure-desktop.png",
+      "width": 2400,
+      "height": 1350,
+      "bytes": 311121,
+      "sha256": "b9782cafb3ff65114ddc062f096336db5c9fe7b6070be10870907b885386604b"
+    },
+    {
+      "path": "artifacts/exit-modes/trailing-pure-mobile.png",
+      "width": 1350,
+      "height": 2400,
+      "bytes": 286115,
+      "sha256": "34dd8c3c2acc7371d10be9b1a5053ffd7a7a9c12eab67242dbebca2f64f03158"
+    },
+    {
+      "path": "artifacts/exit-modes/layers/ladder-art.png",
+      "width": 2400,
+      "height": 1350,
+      "bytes": 246682,
+      "sha256": "fb68d9f5ba94cac6a0ff70209bcbf052f7dc8a0551626384c8c5ae3f28445ea1"
+    },
+    {
+      "path": "artifacts/exit-modes/layers/ladder-scene.png",
+      "width": 2400,
+      "height": 1350,
+      "bytes": 89351,
+      "sha256": "0079c4aa658b349f4e4ef4f04ae12134f935f1c4e6789d4890936657b7a254fc"
+    },
+    {
+      "path": "artifacts/exit-modes/layers/ladder-text.png",
+      "width": 2400,
+      "height": 1350,
+      "bytes": 103884,
+      "sha256": "d003f4faa69778918da4c903866fdd1fe8d873ceca9c4d51c7552158f40f3bdb"
+    },
+    {
+      "path": "artifacts/exit-modes/layers/protected-art.png",
+      "width": 2400,
+      "height": 1350,
+      "bytes": 256541,
+      "sha256": "f05f93e57ba58d8617e93ddc8add6d4549021e18ff4fef177500b89f972e20c6"
+    },
+    {
+      "path": "artifacts/exit-modes/layers/protected-scene.png",
+      "width": 2400,
+      "height": 1350,
+      "bytes": 71938,
+      "sha256": "1be59a5aa875e6e25eb745d0a35df048e92da9603e049d8dd435255aba909b2e"
+    },
+    {
+      "path": "artifacts/exit-modes/layers/protected-text.png",
+      "width": 2400,
+      "height": 1350,
+      "bytes": 87380,
+      "sha256": "267ae4205aea79497ffc35b16b11d4e1948c1b64e3ba5194caff808aaf20e3a2"
+    },
+    {
+      "path": "artifacts/exit-modes/layers/target-art.png",
+      "width": 2400,
+      "height": 1350,
+      "bytes": 308050,
+      "sha256": "f3241c119d0da14c71bf41c7f53df6f141ac5e6155fc602d927923bc1c476234"
+    },
+    {
+      "path": "artifacts/exit-modes/layers/target-scene.png",
+      "width": 2400,
+      "height": 1350,
+      "bytes": 68370,
+      "sha256": "b5fd9c5794a4e6c00bd4ad672fae1df3d7c361fddbc8930487dba317a9d60ce2"
+    },
+    {
+      "path": "artifacts/exit-modes/layers/target-text.png",
+      "width": 2400,
+      "height": 1350,
+      "bytes": 59595,
+      "sha256": "d8110931a5449d4fec9800ad811632dbe0d159a10395e76bb95945aeec18ec81"
+    },
+    {
+      "path": "artifacts/exit-modes/layers/trailing-art.png",
+      "width": 2400,
+      "height": 1350,
+      "bytes": 280812,
+      "sha256": "6db7e5e8fede83caa8500881ce88db5964c7a97ac573b4e8e21cdc4bf73b8001"
+    },
+    {
+      "path": "artifacts/exit-modes/layers/trailing-pure-art.png",
+      "width": 2400,
+      "height": 1350,
+      "bytes": 260705,
+      "sha256": "feb0eda7d4f57c9eeb311c2ad86bfedab6fb83cf607f1ecc0248898eb114e85e"
+    },
+    {
+      "path": "artifacts/exit-modes/layers/trailing-pure-scene.png",
+      "width": 2400,
+      "height": 1350,
+      "bytes": 78977,
+      "sha256": "8a32acb36b8724bd6d7783084764ef8de7452da799739dc1ca81ac46470777fa"
+    },
+    {
+      "path": "artifacts/exit-modes/layers/trailing-pure-text.png",
+      "width": 2400,
+      "height": 1350,
+      "bytes": 98432,
+      "sha256": "ac792698277bafd6d5c66d2f43b3355fc668a0ddd27092f1d2f7a506161f4493"
+    },
+    {
+      "path": "artifacts/exit-modes/layers/trailing-scene.png",
+      "width": 2400,
+      "height": 1350,
+      "bytes": 77661,
+      "sha256": "80e2d3d9866f164de9e5d6be9e042d39233b9dd181a351f60e984044f79ca6a7"
+    },
+    {
+      "path": "artifacts/exit-modes/layers/trailing-text.png",
+      "width": 2400,
+      "height": 1350,
+      "bytes": 92813,
+      "sha256": "c16baea5d3f026b9ae85fb5efb235fb2db6ad60fbcd1ee99154f46e229250757"
+    },
+    {
+      "path": "apps/web/public/exit-modes/ladder-desktop.avif",
+      "width": 1600,
+      "height": 900,
+      "bytes": 1864,
+      "sha256": "b107967b1ced408954e2d27ca17bd0004142db7bd32d721af6159f6c35dac7fd"
+    },
+    {
+      "path": "apps/web/public/exit-modes/ladder-desktop.webp",
+      "width": 1600,
+      "height": 900,
+      "bytes": 5050,
+      "sha256": "1f7c747e41308ea8e1ef7416b76d04e3621cb1059897a62b7fd60d0279c6c522"
+    },
+    {
+      "path": "apps/web/public/exit-modes/ladder-mobile.avif",
+      "width": 900,
+      "height": 1600,
+      "bytes": 1741,
+      "sha256": "af85773045e97431c1b5bfe7e46afec74ea2e4a156274dd05275352c10e208bd"
+    },
+    {
+      "path": "apps/web/public/exit-modes/ladder-mobile.webp",
+      "width": 900,
+      "height": 1600,
+      "bytes": 4764,
+      "sha256": "30f48945d581f0f9d31c9111b4b3f0e01d71310e238ca5da7235ee4899cab048"
+    },
+    {
+      "path": "apps/web/public/exit-modes/protected-desktop.avif",
+      "width": 1600,
+      "height": 900,
+      "bytes": 2563,
+      "sha256": "b2308fe2eb07b5c3ca0cb6af7a35f70f531a60e765059579d6f2bf2a249a91b2"
+    },
+    {
+      "path": "apps/web/public/exit-modes/protected-desktop.webp",
+      "width": 1600,
+      "height": 900,
+      "bytes": 5836,
+      "sha256": "1dcd528b86886c30e6828f0d7b6389c16b5c6776b5b62ea396ca3dfc16eccc7f"
+    },
+    {
+      "path": "apps/web/public/exit-modes/protected-mobile.avif",
+      "width": 900,
+      "height": 1600,
+      "bytes": 2356,
+      "sha256": "64952583b4c9711a000c464d277a0de3dd07d3c843ce70d3d0f47af441190449"
+    },
+    {
+      "path": "apps/web/public/exit-modes/protected-mobile.webp",
+      "width": 900,
+      "height": 1600,
+      "bytes": 5440,
+      "sha256": "d240c59cc16c02f7e629238e37bb8d978c5b9a1086d9defa6fee48cfc21a8363"
+    },
+    {
+      "path": "apps/web/public/exit-modes/target-desktop.avif",
+      "width": 1600,
+      "height": 900,
+      "bytes": 2954,
+      "sha256": "7648c8d82ed46566933e18cfd2d87f70ab781b25509b499abeb3c43c3565c0b7"
+    },
+    {
+      "path": "apps/web/public/exit-modes/target-desktop.webp",
+      "width": 1600,
+      "height": 900,
+      "bytes": 7334,
+      "sha256": "e07f57e0352424115e7bb8f03b05057125886d96735a447543ac212edf28cfa8"
+    },
+    {
+      "path": "apps/web/public/exit-modes/target-mobile.avif",
+      "width": 900,
+      "height": 1600,
+      "bytes": 2831,
+      "sha256": "b20839d7e37fc82ca8c9ecb09338ca71bb3331768c400734ec49bd12f226b736"
+    },
+    {
+      "path": "apps/web/public/exit-modes/target-mobile.webp",
+      "width": 900,
+      "height": 1600,
+      "bytes": 7148,
+      "sha256": "a0f57bb5b36b2b13a048d1ea96e5049d654772b3019a79fd5505a79962706ec5"
+    },
+    {
+      "path": "apps/web/public/exit-modes/trailing-desktop.avif",
+      "width": 1600,
+      "height": 900,
+      "bytes": 2894,
+      "sha256": "be5dbddee96794af003af04321b99498cac5c481b0a8ed09c8e0b7cd65d2232c"
+    },
+    {
+      "path": "apps/web/public/exit-modes/trailing-desktop.webp",
+      "width": 1600,
+      "height": 900,
+      "bytes": 7566,
+      "sha256": "05620ac49031fdca243b0484cc793de59edd87db6357f6647aebb1fcd498995e"
+    },
+    {
+      "path": "apps/web/public/exit-modes/trailing-mobile.avif",
+      "width": 900,
+      "height": 1600,
+      "bytes": 2727,
+      "sha256": "994e8ec1e9a7bb40cd87c2bd9b5780df618d77d1bc41376a3421fab86c6c4d2d"
+    },
+    {
+      "path": "apps/web/public/exit-modes/trailing-mobile.webp",
+      "width": 900,
+      "height": 1600,
+      "bytes": 7044,
+      "sha256": "79b84c461b8c89a1d0615d26d175aee6703f77b292e5cff45930076c31ff3386"
+    },
+    {
+      "path": "apps/web/public/exit-modes/trailing-pure-desktop.avif",
+      "width": 1600,
+      "height": 900,
+      "bytes": 3046,
+      "sha256": "78a614a0e041f015cdcb5855ae4dbfafa417e81461cfcad33efbc16aa9eaad4f"
+    },
+    {
+      "path": "apps/web/public/exit-modes/trailing-pure-desktop.webp",
+      "width": 1600,
+      "height": 900,
+      "bytes": 7820,
+      "sha256": "2b5125f6933faf3ee1eb98f95b86822102fd078b5c07dda63750a135f1c2ec32"
+    },
+    {
+      "path": "apps/web/public/exit-modes/trailing-pure-mobile.avif",
+      "width": 900,
+      "height": 1600,
+      "bytes": 2840,
+      "sha256": "a81e19c60a18f9c69fbde047ec1ed61f31f8ebecb688c1b1010a24ce1b41f5ea"
+    },
+    {
+      "path": "apps/web/public/exit-modes/trailing-pure-mobile.webp",
+      "width": 900,
+      "height": 1600,
+      "bytes": 7074,
+      "sha256": "4d5339710af47c8479721a1b20a715d51b1bc1b902fc1c210c6113df4e568cad"
+    }
+  ],
+  "videos": {
+    "demo.webm": {
+      "programs": [],
+      "stream_groups": [],
+      "streams": [
+        {
+          "codec_name": "vp8",
+          "width": 1280,
+          "height": 900
+        }
+      ],
+      "format": {
+        "duration": "15.680000",
+        "size": "1227199"
+      }
+    },
+    "demo.gif": {
+      "programs": [],
+      "stream_groups": [],
+      "streams": [
+        {
+          "codec_name": "gif",
+          "width": 800,
+          "height": 563
+        }
+      ],
+      "format": {
+        "duration": "15.660000",
+        "size": "4352908"
+      }
+    }
+  }
+}

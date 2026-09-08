@@ -18,6 +18,17 @@ import {
   openPaperCapitalLedger,
   revaluePaperCapital,
   openPaperPosition,
+  advancePaperExitState,
+  evaluatePaperExit,
+  initialPaperExitState,
+  paperStopPrice,
+  partialExitPaperCapitalLedger,
+  policyExitPlan,
+  validatePaperExitPlan,
+  type PaperExitDecision,
+  type PaperExitPlan,
+  type PaperExitReason,
+  type PaperExitState,
   type AllocationPolicySnapshot,
   type PaperAgentStrategy,
   type PaperAllocationLimits,
@@ -49,6 +60,8 @@ export interface ConfigurePaperAllocationInput {
     riskProfile: PaperRiskProfile;
     overrides?: Partial<PaperAllocationLimits>;
   };
+  /** Правило выхода для обоих счётов пары. Без него — TARGET, как раньше. */
+  exitPlan?: PaperExitPlan;
 }
 
 export interface AllocationSignalSnapshot {
@@ -109,7 +122,7 @@ function utcDay(value: Date): Date {
 
 function policyWithStableIdentity(policy: AllocationPolicySnapshot): AllocationPolicySnapshot {
   const signature = createHash('sha256')
-    .update(JSON.stringify({ mode: policy.mode, riskProfile: policy.riskProfile, limits: policy.limits }))
+    .update(JSON.stringify({ mode: policy.mode, riskProfile: policy.riskProfile, limits: policy.limits, exitPlan: policy.exitPlan ?? null }))
     .digest('hex')
     .slice(0, 12);
   return { ...policy, policyKey: `${policy.policyKey}-${signature}` };
@@ -123,6 +136,7 @@ function makeFixed(input: ConfigurePaperAllocationInput): AllocationPolicySnapsh
       maxOpenPositions: fixed.maxOpenPositions,
       reservePct: fixed.reservePct,
       minimumPositionUsd: fixed.minimumPositionUsd,
+      exitPlan: input.exitPlan,
     }),
   );
 }
@@ -132,6 +146,7 @@ function makeAutopilot(input: ConfigurePaperAllocationInput): AllocationPolicySn
     autopilotAllocationPolicy(
       input.autopilot?.riskProfile ?? 'BALANCED',
       input.autopilot?.overrides,
+      input.exitPlan,
     ),
   );
 }
@@ -533,6 +548,13 @@ async function allocateForSession(input: {
           entry.sourcePriceUsd,
         );
         if (!mark) throw new Error('PAPER_ALLOCATION_INITIAL_MARK_FAILED');
+        /*
+         * План выхода снимается при входе. Ближайшая цель для человека —
+         * первая ступень или полная цель; у TARGET это прежние 2×.
+         */
+        const exitPlan = policyExitPlan(policy);
+        const entryTargetPriceUsd =
+          entry.sourcePriceUsd * (exitPlan.legs[0]?.multiple ?? exitPlan.targetMultiple ?? input.strategy.targetMultiple);
 
         const before = ledgerSnapshot(session);
         const after = openPaperCapitalLedger(before, decision.amountUsd);
@@ -605,7 +627,9 @@ async function allocateForSession(input: {
             entrySourcePriceUsd: priceDecimal(entry.sourcePriceUsd),
             entryExecutionPriceUsd: priceDecimal(entry.executionPriceUsd),
             entryQuantity: priceDecimal(entry.quantity),
-            targetSourcePriceUsd: priceDecimal(entry.targetSourcePriceUsd),
+            targetSourcePriceUsd: priceDecimal(entryTargetPriceUsd),
+            exitPlan: json(exitPlan),
+            exitState: json(exitStateForStorage(exitPlan, initialPaperExitState(entry.sourcePriceUsd, input.now.getTime()))),
             currentSourcePriceUsd: priceDecimal(entry.sourcePriceUsd),
             unrealizedPnlUsd: decimal(mark.pnlUsd),
             peakSourcePriceUsd: priceDecimal(entry.sourcePriceUsd),
@@ -670,7 +694,7 @@ async function allocateForSession(input: {
               entryNetworkFeeUsd: decimal(entry.entryNetworkFeeUsd),
               entrySlippageUsd: decimal(entry.entrySlippageUsd),
               entryFeeUsd: decimal(entry.entryFeeUsd),
-              targetSourcePriceUsd: priceDecimal(entry.targetSourcePriceUsd),
+              targetSourcePriceUsd: priceDecimal(entryTargetPriceUsd),
               currentSourcePriceUsd: priceDecimal(entry.sourcePriceUsd),
               currentExecutionPriceUsd: priceDecimal(mark.executionExitPriceUsd),
               unrealizedPnlUsd: decimal(mark.pnlUsd),
@@ -906,16 +930,439 @@ export async function proposePaperAllocationHypothesisIfReady(
   return true;
 }
 
+/*
+ * Сопровождение открытых позиций Phase 3.
+ *
+ * Одна функция на «держать», «продать часть» и «закрыть»: правило
+ * решает ядро (`evaluatePaperExit`), здесь только применение к счёту
+ * и запись. Раньше единственным выходом была цель; теперь план снят
+ * при входе и лежит на самой позиции — смена режима на счёте уже
+ * открытые позиции не переписывает.
+ */
+
+interface OpenAllocationRow {
+  id: string;
+  sessionId: string;
+  runId: string;
+  isShadow: boolean;
+  mode: string;
+  policyKey: string;
+  policyVersion: number;
+  riskProfile: string | null;
+  policySnapshot: unknown;
+  allocationReason: string;
+  allocatedUsd: P.Decimal | null;
+  capitalPct: P.Decimal | null;
+  entryAt: Date | null;
+  entrySourcePriceUsd: P.Decimal | null;
+  entryExecutionPriceUsd: P.Decimal | null;
+  entryQuantity: P.Decimal | null;
+  peakSourcePriceUsd: P.Decimal | null;
+  maxMultiple: P.Decimal | null;
+  maxDrawdownPct: P.Decimal | null;
+  realizedPnlUsd: P.Decimal | null;
+  tradingFeesUsd: P.Decimal | null;
+  slippageUsd: P.Decimal | null;
+  networkCostsUsd: P.Decimal | null;
+  exitPlan: unknown;
+  exitState: unknown;
+  run: {
+    tokenId: string | null;
+    symbol: string;
+    address: string;
+    strategy: { key: string; version: number; label: string; config: unknown };
+  };
+}
+
+const OPEN_ALLOCATION_INCLUDE = {
+  run: {
+    select: {
+      tokenId: true,
+      symbol: true,
+      address: true,
+      strategy: { select: { key: true, version: true, label: true, config: true } },
+    },
+  },
+} as const;
+
+/** План позиции: снятый при входе, иначе — из политики счёта, иначе TARGET. */
+function allocationExitPlan(row: { exitPlan: unknown; policySnapshot: unknown }): PaperExitPlan {
+  const stored = row.exitPlan as PaperExitPlan | null;
+  if (stored && validatePaperExitPlan(stored) == null) return stored;
+  return policyExitPlan(policyOf(row.policySnapshot));
+}
+
+/**
+ * Состояние плана. У позиций, открытых до появления режимов, поля нет:
+ * оно восстанавливается из цены входа и пика — этого достаточно, чтобы
+ * TARGET вёл себя как прежде.
+ */
+function allocationExitState(row: OpenAllocationRow, entrySource: number): PaperExitState {
+  const stored = row.exitState as Partial<PaperExitState> | null;
+  const entryAtMs = row.entryAt?.getTime() ?? Date.now();
+  if (stored && typeof stored.remainingPct === 'number' && typeof stored.legsFilled === 'number') {
+    return {
+      entrySourcePriceUsd: stored.entrySourcePriceUsd ?? entrySource,
+      entryAtMs: stored.entryAtMs ?? entryAtMs,
+      peakSourcePriceUsd: stored.peakSourcePriceUsd ?? numberOf(row.peakSourcePriceUsd) ?? entrySource,
+      legsFilled: stored.legsFilled,
+      remainingPct: stored.remainingPct,
+    };
+  }
+  return {
+    ...initialPaperExitState(entrySource, entryAtMs),
+    peakSourcePriceUsd: numberOf(row.peakSourcePriceUsd) ?? entrySource,
+  };
+}
+
+/** Что показывать человеку: действующий стоп и ближайшая цель. */
+function exitStateForStorage(plan: PaperExitPlan, state: PaperExitState) {
+  const stop = paperStopPrice(plan, state);
+  const nextLeg = plan.legs[state.legsFilled] ?? null;
+  const nextMultiple = nextLeg?.multiple ?? plan.targetMultiple ?? null;
+  return {
+    ...state,
+    stopSourcePriceUsd: stop?.priceUsd ?? null,
+    stopReason: stop?.reason ?? null,
+    nextTargetSourcePriceUsd: nextMultiple == null ? null : state.entrySourcePriceUsd * nextMultiple,
+    legsTotal: plan.legs.length,
+  };
+}
+
+export type PaperExitSettlement =
+  | { outcome: 'HELD' | 'SKIPPED' | 'CONFLICT' }
+  | { outcome: 'PARTIAL' | 'CLOSED'; reason: PaperExitReason; pnlUsd: number };
+
+/**
+ * Одна отметка цены для одной позиции.
+ *
+ * `force` — принудительное закрытие (Panic, предохранитель по
+ * просадке): план не спрашивается, продаётся весь остаток по текущей
+ * цене с теми же расходами, что и обычный выход.
+ */
+export async function settlePaperAllocation(
+  allocation: OpenAllocationRow,
+  sourcePrice: number | null,
+  now: Date,
+  force: PaperExitReason | null = null,
+): Promise<PaperExitSettlement> {
+  const allocatedUsd = numberOf(allocation.allocatedUsd);
+  const entrySource = numberOf(allocation.entrySourcePriceUsd);
+  const entryExecution = numberOf(allocation.entryExecutionPriceUsd);
+  const quantity = numberOf(allocation.entryQuantity);
+  const rawStrategy = allocation.run.strategy.config as unknown as PaperAgentStrategy;
+  if (
+    sourcePrice == null ||
+    allocatedUsd == null ||
+    entrySource == null ||
+    entryExecution == null ||
+    quantity == null
+  ) return { outcome: 'SKIPPED' };
+
+  const plan = allocationExitPlan(allocation);
+  const state = allocationExitState(allocation, entrySource);
+  const remainingFraction = Math.max(0, Math.min(1, state.remainingPct / 100));
+  if (remainingFraction <= 0) return { outcome: 'SKIPPED' };
+
+  /*
+   * Остаток позиции считается как самостоятельная позиция: та же
+   * доля количества, та же доля стоимости входа и его расходов.
+   * Так одна формула ядра обслуживает и целую позицию, и остаток
+   * после ступеней.
+   */
+  const remainingCostUsd = allocatedUsd * remainingFraction;
+  const remainingQuantity = quantity * remainingFraction;
+  const strategy: PaperAgentStrategy = { ...rawStrategy, positionUsd: remainingCostUsd };
+  const entryTradingFeeUsd = remainingCostUsd * Math.max(0, strategy.tradeFeeBps) / 10_000;
+  const entryNetworkFeeUsd = Math.max(0, strategy.networkFeeUsdPerSide) * remainingFraction;
+  const entry = {
+    positionUsd: remainingCostUsd,
+    sourcePriceUsd: entrySource,
+    executionPriceUsd: entryExecution,
+    quantity: remainingQuantity,
+    entryTradingFeeUsd,
+    entryNetworkFeeUsd,
+    entrySlippageUsd: Math.max(0, (entryExecution - entrySource) * remainingQuantity),
+    entryFeeUsd: entryTradingFeeUsd + entryNetworkFeeUsd,
+    targetSourcePriceUsd: entrySource * (plan.targetMultiple ?? rawStrategy.targetMultiple),
+  };
+  const mark = markPaperPosition(strategy, entry, sourcePrice);
+  if (!mark) return { outcome: 'SKIPPED' };
+
+  const decision: PaperExitDecision = force
+    ? { action: 'SELL', reason: force, sellPct: state.remainingPct, fractionOfRemaining: 1, closes: true, legsFilledAfter: state.legsFilled }
+    : evaluatePaperExit(plan, state, sourcePrice, now.getTime());
+  const nextState = advancePaperExitState(state, decision, sourcePrice);
+  const peak = nextState.peakSourcePriceUsd;
+  const currentDrawdown = peak <= 0 ? 0 : Math.max(0, ((peak - sourcePrice) / peak) * 100);
+  const maxDrawdown = Math.max(numberOf(allocation.maxDrawdownPct) ?? 0, currentDrawdown);
+  const maxMultiple = Math.max(numberOf(allocation.maxMultiple) ?? 1, mark.multiple);
+
+  let result: PaperExitSettlement = { outcome: 'CONFLICT' };
+  await prisma.$transaction(async (tx) => {
+    const fresh = await tx.paperAgentAllocation.findUnique({ where: { id: allocation.id } });
+    const session = await tx.paperAgentAccountSession.findUnique({ where: { id: allocation.sessionId } });
+    if (!fresh || fresh.state !== 'OPEN' || !session) { result = { outcome: 'SKIPPED' }; return; }
+    const otherOpen = await tx.paperAgentAllocation.findMany({
+      where: { sessionId: session.id, state: 'OPEN', id: { not: fresh.id } },
+      select: { unrealizedPnlUsd: true },
+    });
+    const otherUnrealized = otherOpen.reduce(
+      (sum, row) => sum.plus(row.unrealizedPnlUsd ?? 0),
+      new P.Decimal(0),
+    );
+
+    if (decision.action === 'HOLD') {
+      const markedUnrealized = otherUnrealized.plus(mark.pnlUsd);
+      const revalued = revaluePaperCapital(ledgerSnapshot(session), markedUnrealized.toString());
+      const claimed = await tx.paperAgentAccountSession.updateMany({
+        where: { id: session.id, ledgerVersion: session.ledgerVersion },
+        data: {
+          unrealizedPnlUsd: decimal(revalued.unrealizedPnlUsd),
+          equityUsd: decimal(revalued.equityUsd),
+          peakEquityUsd: decimal(revalued.peakEquityUsd),
+          drawdownPct: decimal(revalued.drawdownPct),
+          ledgerVersion: { increment: 1 },
+          lastRecalculatedAt: now,
+        },
+      });
+      if (claimed.count !== 1) return;
+      const markData = {
+        currentSourcePriceUsd: priceDecimal(mark.sourcePriceUsd),
+        unrealizedPnlUsd: decimal(mark.pnlUsd),
+        peakSourcePriceUsd: priceDecimal(peak),
+        maxMultiple: multipleDecimal(maxMultiple),
+        maxDrawdownPct: percentDecimal(maxDrawdown),
+        lastMarkedAt: now,
+      };
+      await tx.paperAgentAllocation.update({
+        where: { id: fresh.id },
+        data: { ...markData, exitPlan: json(plan), exitState: json(exitStateForStorage(plan, nextState)) },
+      });
+      if (!fresh.isShadow) {
+        await tx.paperAgentRun.updateMany({
+          where: { id: fresh.runId, state: 'PAPER_OPEN' },
+          data: { ...markData, currentExecutionPriceUsd: priceDecimal(mark.executionExitPriceUsd), totalCostsUsd: decimal(mark.totalCostsUsd) },
+        });
+      }
+      result = { outcome: 'HELD' };
+      return;
+    }
+
+    /*
+     * Продажа — вся или часть. Продаваемая доля считается как
+     * отдельная позиция того же размера: расходы входа и выхода
+     * берутся пропорционально, и после всех ступеней сумма частей
+     * равна тому, что дала бы одна продажа целиком.
+     */
+    const fraction = decision.closes ? 1 : decision.fractionOfRemaining;
+    const soldCostUsd = remainingCostUsd * fraction;
+    const soldEntry = {
+      ...entry,
+      positionUsd: soldCostUsd,
+      quantity: remainingQuantity * fraction,
+      entryTradingFeeUsd: entry.entryTradingFeeUsd * fraction,
+      entryNetworkFeeUsd: entry.entryNetworkFeeUsd * fraction,
+      entrySlippageUsd: entry.entrySlippageUsd * fraction,
+      entryFeeUsd: entry.entryFeeUsd * fraction,
+    };
+    const sold = decision.closes ? mark : markPaperPosition({ ...strategy, positionUsd: soldCostUsd }, soldEntry, sourcePrice);
+    if (!sold) { result = { outcome: 'SKIPPED' }; return; }
+    const keptMark = decision.closes
+      ? null
+      : markPaperPosition(
+          { ...strategy, positionUsd: remainingCostUsd - soldCostUsd },
+          { ...entry, positionUsd: remainingCostUsd - soldCostUsd, quantity: remainingQuantity * (1 - fraction) },
+          sourcePrice,
+        );
+    const keptUnrealized = keptMark?.pnlUsd ?? 0;
+    const costs = {
+      trading: soldEntry.entryTradingFeeUsd + sold.exitTradingFeeUsd,
+      slippage: soldEntry.entrySlippageUsd + sold.exitSlippageUsd,
+      network: soldEntry.entryNetworkFeeUsd + sold.exitNetworkFeeUsd,
+    };
+    const before = { ...ledgerSnapshot(session), unrealizedPnlUsd: otherUnrealized.plus(keptUnrealized).toString() };
+    const ledgerInput = {
+      netExitUsd: sold.netExitUsd.toString(),
+      tradingFeesUsd: costs.trading.toString(),
+      slippageUsd: costs.slippage.toString(),
+      networkCostsUsd: costs.network.toString(),
+    };
+    const after = decision.closes
+      ? closePaperCapitalLedger(before, { ...ledgerInput, allocatedUsd: soldCostUsd.toString() })
+      : partialExitPaperCapitalLedger(before, { ...ledgerInput, releasedCostUsd: soldCostUsd.toString() });
+    const status = decision.closes && session.status === 'DRAINING' && after.openPositions === 0 ? 'CLOSED' : session.status;
+    const claimed = await tx.paperAgentAccountSession.updateMany({
+      where: { id: session.id, ledgerVersion: session.ledgerVersion },
+      data: {
+        freeBalanceUsd: decimal(after.freeBalanceUsd),
+        inPositionsUsd: decimal(after.inPositionsUsd),
+        realizedPnlUsd: decimal(after.realizedPnlUsd),
+        unrealizedPnlUsd: decimal(after.unrealizedPnlUsd),
+        tradingFeesUsd: decimal(after.tradingFeesUsd),
+        slippageUsd: decimal(after.slippageUsd),
+        networkCostsUsd: decimal(after.networkCostsUsd),
+        equityUsd: decimal(after.equityUsd),
+        peakEquityUsd: decimal(after.peakEquityUsd),
+        drawdownPct: decimal(after.drawdownPct),
+        openPositions: after.openPositions,
+        status,
+        closedAt: status === 'CLOSED' ? now : session.closedAt,
+        ledgerVersion: { increment: 1 },
+        lastRecalculatedAt: now,
+      },
+    });
+    if (claimed.count !== 1) return;
+
+    const realizedSoFar = numberOf(fresh.realizedPnlUsd) ?? 0;
+    const realizedAfter = realizedSoFar + sold.pnlUsd;
+    const feesSoFar = {
+      trading: numberOf(fresh.tradingFeesUsd) ?? 0,
+      slippage: numberOf(fresh.slippageUsd) ?? 0,
+      network: numberOf(fresh.networkCostsUsd) ?? 0,
+    };
+    const eventTag = decision.closes ? 'CLOSE' : `LEG:${decision.legsFilledAfter}`;
+    const stateForStorage = exitStateForStorage(plan, nextState);
+    await tx.paperAgentAllocation.update({
+      where: { id: fresh.id },
+      data: {
+        state: decision.closes ? 'CLOSED' : 'OPEN',
+        exitPlan: json(plan),
+        exitState: json(stateForStorage),
+        currentSourcePriceUsd: priceDecimal(sold.sourcePriceUsd),
+        unrealizedPnlUsd: decimal(keptUnrealized),
+        peakSourcePriceUsd: priceDecimal(peak),
+        maxMultiple: multipleDecimal(maxMultiple),
+        maxDrawdownPct: percentDecimal(maxDrawdown),
+        lastMarkedAt: now,
+        realizedPnlUsd: decimal(realizedAfter),
+        tradingFeesUsd: decimal(feesSoFar.trading + costs.trading),
+        slippageUsd: decimal(feesSoFar.slippage + costs.slippage),
+        networkCostsUsd: decimal(feesSoFar.network + costs.network),
+        targetSourcePriceUsd: stateForStorage.nextTargetSourcePriceUsd == null ? undefined : priceDecimal(stateForStorage.nextTargetSourcePriceUsd),
+        ...(decision.closes
+          ? {
+              exitAt: now,
+              exitReason: decision.reason,
+              exitSourcePriceUsd: priceDecimal(sold.sourcePriceUsd),
+              exitExecutionPriceUsd: priceDecimal(sold.executionExitPriceUsd),
+              grossExitUsd: decimal(sold.grossExitUsd),
+              netExitUsd: decimal(sold.netExitUsd),
+              totalCostsUsd: decimal(feesSoFar.trading + feesSoFar.slippage + feesSoFar.network + costs.trading + costs.slippage + costs.network),
+            }
+          : {}),
+      },
+    });
+    await tx.paperAgentCapitalLedger.create({
+      data: {
+        eventKey: `${fresh.id}:${eventTag}`,
+        sessionId: session.id,
+        allocationId: fresh.id,
+        eventType: decision.closes ? 'CLOSE' : 'PARTIAL_EXIT',
+        amountUsd: decimal(sold.netExitUsd),
+        freeBeforeUsd: session.freeBalanceUsd,
+        freeAfterUsd: decimal(after.freeBalanceUsd),
+        reservedBeforeUsd: session.reservedBalanceUsd,
+        reservedAfterUsd: session.reservedBalanceUsd,
+        inPositionsBeforeUsd: session.inPositionsUsd,
+        inPositionsAfterUsd: decimal(after.inPositionsUsd),
+        realizedPnlAfterUsd: decimal(after.realizedPnlUsd),
+        equityAfterUsd: decimal(after.equityUsd),
+        tradingFeesAfterUsd: decimal(after.tradingFeesUsd),
+        slippageAfterUsd: decimal(after.slippageUsd),
+        networkCostsAfterUsd: decimal(after.networkCostsUsd),
+        metadata: json({ paper: true, exitReason: decision.reason, exitMode: plan.mode, sellPct: decision.sellPct, remainingPct: nextState.remainingPct }),
+      },
+    });
+    if (!fresh.isShadow) {
+      await tx.paperAgentRun.updateMany({
+        where: { id: fresh.runId, state: 'PAPER_OPEN' },
+        data: {
+          state: decision.closes ? 'PAPER_CLOSED' : 'PAPER_OPEN',
+          currentSourcePriceUsd: priceDecimal(sold.sourcePriceUsd),
+          currentExecutionPriceUsd: priceDecimal(sold.executionExitPriceUsd),
+          unrealizedPnlUsd: decimal(keptUnrealized),
+          realizedPnlUsd: decimal(realizedAfter),
+          maxMultiple: multipleDecimal(maxMultiple),
+          maxDrawdownPct: percentDecimal(maxDrawdown),
+          peakSourcePriceUsd: priceDecimal(peak),
+          lastMarkedAt: now,
+          ...(decision.closes
+            ? {
+                exitAt: now,
+                exitReason: decision.reason,
+                exitSourcePriceUsd: priceDecimal(sold.sourcePriceUsd),
+                exitExecutionPriceUsd: priceDecimal(sold.executionExitPriceUsd),
+                exitTradingFeeUsd: decimal(sold.exitTradingFeeUsd),
+                exitNetworkFeeUsd: decimal(sold.exitNetworkFeeUsd),
+                exitSlippageUsd: decimal(sold.exitSlippageUsd),
+                exitFeeUsd: decimal(sold.exitFeeUsd),
+                grossExitUsd: decimal(sold.grossExitUsd),
+                netExitUsd: decimal(sold.netExitUsd),
+                totalCostsUsd: decimal(feesSoFar.trading + feesSoFar.slippage + feesSoFar.network + costs.trading + costs.slippage + costs.network),
+              }
+            : {}),
+        },
+      });
+    }
+    const payload = json({
+      paper: true,
+      eventType: 'TRADE_RESULT',
+      runId: fresh.runId,
+      allocationId: fresh.id,
+      allocationSessionId: session.id,
+      shadow: fresh.isShadow,
+      network: 'Solana',
+      symbol: allocation.run.symbol,
+      address: allocation.run.address,
+      strategyKey: allocation.run.strategy.key,
+      strategyLabel: allocation.run.strategy.label,
+      allocationMode: fresh.mode,
+      allocationPolicyKey: fresh.policyKey,
+      allocationPolicyVersion: fresh.policyVersion,
+      riskProfile: fresh.riskProfile,
+      allocationReason: fresh.allocationReason,
+      allocatedUsd,
+      capitalPct: numberOf(fresh.capitalPct),
+      freeAfterUsd: numberOf(after.freeBalanceUsd),
+      reserveAfterUsd: numberOf(after.reservedBalanceUsd),
+      exposureAfterUsd: numberOf(after.inPositionsUsd),
+      exitExecutionPriceUsd: sold.executionExitPriceUsd,
+      exitReason: decision.reason,
+      exitMode: plan.mode,
+      partial: !decision.closes,
+      sellPct: decision.sellPct,
+      remainingPct: nextState.remainingPct,
+      pnlUsd: decision.closes ? realizedAfter : sold.pnlUsd,
+      pnlPct: allocatedUsd > 0 ? (decision.closes ? realizedAfter : sold.pnlUsd) / allocatedUsd * 100 : null,
+      totalCostsUsd: sold.totalCostsUsd,
+      maxMultiple,
+      maxDrawdownPct: maxDrawdown,
+      href: `/agent?run=${encodeURIComponent(fresh.runId)}`,
+    });
+    const eventTypes = decision.closes ? (['PAPER_SELL', 'TRADE_RESULT'] as const) : (['PAPER_SELL'] as const);
+    for (const eventType of eventTypes) {
+      await enqueuePaperAgentOutbox(tx, {
+        eventKey: `${fresh.runId}:${session.id}:${eventType}${decision.closes ? '' : `:${eventTag}`}:v${fresh.policyVersion}`,
+        runId: fresh.runId,
+        eventType,
+        strategyKey: allocation.run.strategy.key,
+        strategyVersion: allocation.run.strategy.version,
+        isBaselineEvent: !fresh.isShadow,
+        telegramEligible: !fresh.isShadow && env.TELEGRAM_AGENT_NOTIFICATIONS_ENABLED,
+        payload: json({ ...(payload as Record<string, unknown>), eventType }),
+      });
+    }
+    result = { outcome: decision.closes ? 'CLOSED' : 'PARTIAL', reason: decision.reason, pnlUsd: decision.closes ? realizedAfter : sold.pnlUsd };
+  });
+  return result;
+}
+
 /** Marks and closes Phase 3 allocations without creating a second price system. */
 export async function processPaperAllocationPositions(now = new Date()): Promise<void> {
   const allocations = await prisma.paperAgentAllocation.findMany({
     where: { state: 'OPEN' },
-    include: {
-      session: true,
-      run: {
-        include: { strategy: { select: { key: true, version: true, label: true, config: true } } },
-      },
-    },
+    include: OPEN_ALLOCATION_INCLUDE,
     orderBy: { updatedAt: 'asc' },
     take: 200,
   });
@@ -928,261 +1375,70 @@ export async function processPaperAllocationPositions(now = new Date()): Promise
 
   for (const allocation of allocations) {
     const sourcePrice = allocation.run.tokenId ? prices.get(allocation.run.tokenId) ?? null : null;
-    const allocatedUsd = numberOf(allocation.allocatedUsd);
-    const entrySource = numberOf(allocation.entrySourcePriceUsd);
-    const entryExecution = numberOf(allocation.entryExecutionPriceUsd);
-    const quantity = numberOf(allocation.entryQuantity);
-    const target = numberOf(allocation.targetSourcePriceUsd);
-    const rawStrategy = allocation.run.strategy.config as unknown as PaperAgentStrategy;
-    if (
-      sourcePrice == null ||
-      allocatedUsd == null ||
-      entrySource == null ||
-      entryExecution == null ||
-      quantity == null ||
-      target == null
-    ) continue;
-    const strategy: PaperAgentStrategy = { ...rawStrategy, positionUsd: allocatedUsd };
-    const entryTradingFeeUsd = allocatedUsd * Math.max(0, strategy.tradeFeeBps) / 10_000;
-    const entryNetworkFeeUsd = Math.max(0, strategy.networkFeeUsdPerSide);
-    const entry = {
-      positionUsd: allocatedUsd,
-      sourcePriceUsd: entrySource,
-      executionPriceUsd: entryExecution,
-      quantity,
-      entryTradingFeeUsd,
-      entryNetworkFeeUsd,
-      entrySlippageUsd: Math.max(0, (entryExecution - entrySource) * quantity),
-      entryFeeUsd: entryTradingFeeUsd + entryNetworkFeeUsd,
-      targetSourcePriceUsd: target,
-    };
-    const mark = markPaperPosition(strategy, entry, sourcePrice);
-    if (!mark) continue;
-    const peak = Math.max(numberOf(allocation.peakSourcePriceUsd) ?? entrySource, sourcePrice);
-    const currentDrawdown = peak <= 0 ? 0 : Math.max(0, ((peak - sourcePrice) / peak) * 100);
-    const maxDrawdown = Math.max(numberOf(allocation.maxDrawdownPct) ?? 0, currentDrawdown);
-    const maxMultiple = Math.max(numberOf(allocation.maxMultiple) ?? 1, mark.multiple);
-
-    let didClose = false;
-    await prisma.$transaction(async (tx) => {
-      const fresh = await tx.paperAgentAllocation.findUnique({ where: { id: allocation.id } });
-      const session = await tx.paperAgentAccountSession.findUnique({ where: { id: allocation.sessionId } });
-      if (!fresh || fresh.state !== 'OPEN' || !session) return;
-      const otherOpen = await tx.paperAgentAllocation.findMany({
-        where: { sessionId: session.id, state: 'OPEN', id: { not: fresh.id } },
-        select: { unrealizedPnlUsd: true },
-      });
-      const otherUnrealized = otherOpen.reduce(
-        (sum, row) => sum.plus(row.unrealizedPnlUsd ?? 0),
-        new P.Decimal(0),
-      );
-      const markedUnrealized = otherUnrealized.plus(mark.pnlUsd);
-
-      if (!mark.shouldClose) {
-        /*
-         * Та же формула, что и при открытии, — из ядра.
-         *
-         * Раньше она стояла здесь отдельной копией, а при открытии
-         * не применялась вовсе. Две записи одного правила разошлись
-         * не «когда-нибудь», а сразу: счёт после открытия показывал
-         * начальный капитал, и первая же отметка цены его исправляла.
-         */
-        const revalued = revaluePaperCapital(ledgerSnapshot(session), markedUnrealized.toString());
-        const claimed = await tx.paperAgentAccountSession.updateMany({
-          where: { id: session.id, ledgerVersion: session.ledgerVersion },
-          data: {
-            unrealizedPnlUsd: decimal(revalued.unrealizedPnlUsd),
-            equityUsd: decimal(revalued.equityUsd),
-            peakEquityUsd: decimal(revalued.peakEquityUsd),
-            drawdownPct: decimal(revalued.drawdownPct),
-            ledgerVersion: { increment: 1 },
-            lastRecalculatedAt: now,
-          },
-        });
-        if (claimed.count !== 1) return;
-        await tx.paperAgentAllocation.update({
-          where: { id: fresh.id },
-          data: {
-            currentSourcePriceUsd: priceDecimal(mark.sourcePriceUsd),
-            unrealizedPnlUsd: decimal(mark.pnlUsd),
-            peakSourcePriceUsd: priceDecimal(peak),
-            maxMultiple: multipleDecimal(maxMultiple),
-            maxDrawdownPct: percentDecimal(maxDrawdown),
-            lastMarkedAt: now,
-          },
-        });
-        if (!fresh.isShadow) {
-          await tx.paperAgentRun.updateMany({
-            where: { id: fresh.runId, state: 'PAPER_OPEN' },
-            data: {
-              currentSourcePriceUsd: priceDecimal(mark.sourcePriceUsd),
-              currentExecutionPriceUsd: priceDecimal(mark.executionExitPriceUsd),
-              unrealizedPnlUsd: decimal(mark.pnlUsd),
-              totalCostsUsd: decimal(mark.totalCostsUsd),
-              peakSourcePriceUsd: priceDecimal(peak),
-              maxMultiple: multipleDecimal(maxMultiple),
-              maxDrawdownPct: percentDecimal(maxDrawdown),
-              lastMarkedAt: now,
-            },
-          });
-        }
-        return;
-      }
-
-      const before = ledgerSnapshot(session);
-      const after = closePaperCapitalLedger(
-        { ...before, unrealizedPnlUsd: otherUnrealized.toString() },
-        {
-          allocatedUsd: allocatedUsd.toString(),
-          netExitUsd: mark.netExitUsd.toString(),
-          tradingFeesUsd: (entry.entryTradingFeeUsd + mark.exitTradingFeeUsd).toString(),
-          slippageUsd: (entry.entrySlippageUsd + mark.exitSlippageUsd).toString(),
-          networkCostsUsd: (entry.entryNetworkFeeUsd + mark.exitNetworkFeeUsd).toString(),
-        },
-      );
-      const status = session.status === 'DRAINING' && after.openPositions === 0 ? 'CLOSED' : session.status;
-      const claimed = await tx.paperAgentAccountSession.updateMany({
-        where: { id: session.id, ledgerVersion: session.ledgerVersion },
-        data: {
-          freeBalanceUsd: decimal(after.freeBalanceUsd),
-          inPositionsUsd: decimal(after.inPositionsUsd),
-          realizedPnlUsd: decimal(after.realizedPnlUsd),
-          unrealizedPnlUsd: decimal(after.unrealizedPnlUsd),
-          tradingFeesUsd: decimal(after.tradingFeesUsd),
-          slippageUsd: decimal(after.slippageUsd),
-          networkCostsUsd: decimal(after.networkCostsUsd),
-          equityUsd: decimal(after.equityUsd),
-          peakEquityUsd: decimal(after.peakEquityUsd),
-          drawdownPct: decimal(after.drawdownPct),
-          openPositions: after.openPositions,
-          status,
-          closedAt: status === 'CLOSED' ? now : session.closedAt,
-          ledgerVersion: { increment: 1 },
-          lastRecalculatedAt: now,
-        },
-      });
-      if (claimed.count !== 1) return;
-      const costs = {
-        trading: entry.entryTradingFeeUsd + mark.exitTradingFeeUsd,
-        slippage: entry.entrySlippageUsd + mark.exitSlippageUsd,
-        network: entry.entryNetworkFeeUsd + mark.exitNetworkFeeUsd,
-      };
-      await tx.paperAgentAllocation.update({
-        where: { id: fresh.id },
-        data: {
-          state: 'CLOSED',
-          currentSourcePriceUsd: priceDecimal(mark.sourcePriceUsd),
-          unrealizedPnlUsd: decimal(0),
-          peakSourcePriceUsd: priceDecimal(peak),
-          maxMultiple: multipleDecimal(maxMultiple),
-          maxDrawdownPct: percentDecimal(maxDrawdown),
-          lastMarkedAt: now,
-          exitAt: now,
-          exitReason: 'TARGET_REACHED',
-          exitSourcePriceUsd: priceDecimal(mark.sourcePriceUsd),
-          exitExecutionPriceUsd: priceDecimal(mark.executionExitPriceUsd),
-          grossExitUsd: decimal(mark.grossExitUsd),
-          netExitUsd: decimal(mark.netExitUsd),
-          realizedPnlUsd: decimal(mark.pnlUsd),
-          tradingFeesUsd: decimal(costs.trading),
-          slippageUsd: decimal(costs.slippage),
-          networkCostsUsd: decimal(costs.network),
-          totalCostsUsd: decimal(mark.totalCostsUsd),
-        },
-      });
-      await tx.paperAgentCapitalLedger.create({
-        data: {
-          eventKey: `${fresh.id}:CLOSE`,
-          sessionId: session.id,
-          allocationId: fresh.id,
-          eventType: 'CLOSE',
-          amountUsd: decimal(mark.netExitUsd),
-          freeBeforeUsd: session.freeBalanceUsd,
-          freeAfterUsd: decimal(after.freeBalanceUsd),
-          reservedBeforeUsd: session.reservedBalanceUsd,
-          reservedAfterUsd: session.reservedBalanceUsd,
-          inPositionsBeforeUsd: session.inPositionsUsd,
-          inPositionsAfterUsd: decimal(after.inPositionsUsd),
-          realizedPnlAfterUsd: decimal(after.realizedPnlUsd),
-          equityAfterUsd: decimal(after.equityUsd),
-          tradingFeesAfterUsd: decimal(after.tradingFeesUsd),
-          slippageAfterUsd: decimal(after.slippageUsd),
-          networkCostsAfterUsd: decimal(after.networkCostsUsd),
-          metadata: json({ paper: true, exitReason: 'TARGET_REACHED' }),
-        },
-      });
-      if (!fresh.isShadow) {
-        await tx.paperAgentRun.updateMany({
-          where: { id: fresh.runId, state: 'PAPER_OPEN' },
-          data: {
-            state: 'PAPER_CLOSED',
-            currentSourcePriceUsd: priceDecimal(mark.sourcePriceUsd),
-            currentExecutionPriceUsd: priceDecimal(mark.executionExitPriceUsd),
-            unrealizedPnlUsd: decimal(0),
-            exitAt: now,
-            exitReason: 'TARGET_REACHED',
-            exitSourcePriceUsd: priceDecimal(mark.sourcePriceUsd),
-            exitExecutionPriceUsd: priceDecimal(mark.executionExitPriceUsd),
-            exitTradingFeeUsd: decimal(mark.exitTradingFeeUsd),
-            exitNetworkFeeUsd: decimal(mark.exitNetworkFeeUsd),
-            exitSlippageUsd: decimal(mark.exitSlippageUsd),
-            exitFeeUsd: decimal(mark.exitFeeUsd),
-            grossExitUsd: decimal(mark.grossExitUsd),
-            netExitUsd: decimal(mark.netExitUsd),
-            realizedPnlUsd: decimal(mark.pnlUsd),
-            totalCostsUsd: decimal(mark.totalCostsUsd),
-            maxMultiple: multipleDecimal(maxMultiple),
-            maxDrawdownPct: percentDecimal(maxDrawdown),
-            lastMarkedAt: now,
-          },
-        });
-      }
-      const payload = json({
-        paper: true,
-        eventType: 'TRADE_RESULT',
-        runId: fresh.runId,
-        allocationId: fresh.id,
-        allocationSessionId: session.id,
-        shadow: fresh.isShadow,
-        network: 'Solana',
-        symbol: allocation.run.symbol,
-        address: allocation.run.address,
-        strategyKey: allocation.run.strategy.key,
-        strategyLabel: allocation.run.strategy.label,
-        allocationMode: fresh.mode,
-        allocationPolicyKey: fresh.policyKey,
-        allocationPolicyVersion: fresh.policyVersion,
-        riskProfile: fresh.riskProfile,
-        allocationReason: fresh.allocationReason,
-        allocatedUsd,
-        capitalPct: numberOf(fresh.capitalPct),
-        freeAfterUsd: numberOf(after.freeBalanceUsd),
-        reserveAfterUsd: numberOf(after.reservedBalanceUsd),
-        exposureAfterUsd: numberOf(after.inPositionsUsd),
-        exitExecutionPriceUsd: mark.executionExitPriceUsd,
-        pnlUsd: mark.pnlUsd,
-        pnlPct: allocatedUsd > 0 ? mark.pnlUsd / allocatedUsd * 100 : null,
-        totalCostsUsd: mark.totalCostsUsd,
-        maxMultiple,
-        maxDrawdownPct: maxDrawdown,
-        href: `/agent?run=${encodeURIComponent(fresh.runId)}`,
-      });
-      for (const eventType of ['PAPER_SELL', 'TRADE_RESULT'] as const) {
-        await enqueuePaperAgentOutbox(tx, {
-          eventKey: `${fresh.runId}:${session.id}:${eventType}:v${fresh.policyVersion}`,
-          runId: fresh.runId,
-          eventType,
-          strategyKey: allocation.run.strategy.key,
-          strategyVersion: allocation.run.strategy.version,
-          isBaselineEvent: !fresh.isShadow,
-          telegramEligible: !fresh.isShadow && env.TELEGRAM_AGENT_NOTIFICATIONS_ENABLED,
-          payload: json({ ...(payload as Record<string, unknown>), eventType }),
-        });
-      }
-      didClose = true;
-    });
-    if (didClose) {
+    const settled = await settlePaperAllocation(allocation as unknown as OpenAllocationRow, sourcePrice, now);
+    if (settled.outcome === 'CLOSED') {
       await proposePaperAllocationHypothesisIfReady(allocation.sessionId, now).catch(() => false);
     }
   }
+}
+
+/**
+ * Принудительное закрытие всех открытых PAPER-позиций.
+ *
+ * Кнопка Stop запрещает новые входы и не трогает открытое; Panic —
+ * наоборот: закрывает всё по текущей цене и ничего не запрещает.
+ * Две кнопки, потому что это два разных решения, и путать их нельзя:
+ * человек, который хотел «перестать входить», не должен получить
+ * распроданный портфель.
+ *
+ * Позиция без актуальной цены не закрывается «по нулю» — она
+ * остаётся открытой и названа в ответе: закрыть по выдуманной цене
+ * значит записать в журнал результат, которого не было.
+ */
+export async function closeAllPaperPositions(
+  reason: Extract<PaperExitReason, 'MANUAL_PANIC' | 'DRAWDOWN_BREAKER'>,
+  audit: AuditContext | null,
+  now = new Date(),
+): Promise<{ closed: number; skipped: Array<{ allocationId: string; symbol: string }>; realizedPnlUsd: number }> {
+  if (env.EXECUTION_MODE !== 'paper') {
+    throw Object.assign(new Error('Закрытие позиций доступно только в PAPER'), {
+      statusCode: 409,
+      code: 'PAPER_AGENT_REQUIRES_EXECUTION_MODE_PAPER',
+    });
+  }
+  const allocations = await prisma.paperAgentAllocation.findMany({
+    where: { state: 'OPEN' },
+    include: OPEN_ALLOCATION_INCLUDE,
+    orderBy: { updatedAt: 'asc' },
+  });
+  const tokenIds = [...new Set(allocations.map((row) => row.run.tokenId).filter(Boolean))] as string[];
+  const tokens = await prisma.token.findMany({ where: { id: { in: tokenIds } }, select: { id: true, priceUsd: true } });
+  const prices = new Map(tokens.map((token) => [token.id, numberOf(token.priceUsd)]));
+
+  let closed = 0;
+  let realizedPnlUsd = 0;
+  const skipped: Array<{ allocationId: string; symbol: string }> = [];
+  for (const allocation of allocations) {
+    const sourcePrice = allocation.run.tokenId ? prices.get(allocation.run.tokenId) ?? null : null;
+    const settled = await settlePaperAllocation(allocation as unknown as OpenAllocationRow, sourcePrice, now, reason);
+    if (settled.outcome === 'CLOSED') {
+      closed += 1;
+      realizedPnlUsd += settled.pnlUsd;
+    } else {
+      skipped.push({ allocationId: allocation.id, symbol: allocation.run.symbol });
+    }
+  }
+  if (audit) {
+    await prisma.auditLog.create({
+      data: {
+        actorId: audit.actorId,
+        action: reason === 'MANUAL_PANIC' ? 'paper_agent.panic_close' : 'paper_agent.drawdown_breaker',
+        entity: 'PaperAgentControl',
+        entityId: CONTROL_ID,
+        after: json({ paper: true, reason, closed, skipped: skipped.length, realizedPnlUsd }),
+        ip: audit.ip ?? undefined,
+      },
+    });
+  }
+  return { closed, skipped, realizedPnlUsd };
 }

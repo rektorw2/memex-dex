@@ -31,6 +31,7 @@ describe('Calls выведен из продукта', () => {
       'access/page.tsx',
       'admin/page.tsx',
       'agent/page.tsx',
+      'agent/settings/page.tsx',
       'checkout/page.tsx',
       'copy/page.tsx',
       'login/page.tsx',
@@ -65,8 +66,27 @@ describe('визуальный контракт PAPER-агента', () => {
     expect(existsSync(`${web}public/brand/okx-mark.svg`)).toBe(true);
   });
 
-  it('отключает появление и пульсацию при prefers-reduced-motion', () => {
+  it('отключает все анимации агента при prefers-reduced-motion', () => {
+    /*
+     * Проверяется не один селектор, а инвариант: каждый класс
+     * `.agent-*`, у которого объявлена анимация, упомянут внутри
+     * блока `prefers-reduced-motion: reduce`. Новая анимация без
+     * отключения — ошибка, которую этот тест и должен ловить.
+     */
     const css = readFileSync(`${web}app/globals.css`, 'utf8');
-    expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*\.agent-enter, \.agent-status-dot \{ animation: none; \}/);
+    const reduced = [...css.matchAll(/@media \(prefers-reduced-motion: reduce\)\s*\{([\s\S]*?)\n\}/g)].map((m) => m[1]).join('\n');
+    expect(reduced).toContain('animation: none');
+
+    const animated = new Set<string>();
+    // Разбор «селектор { тело }» без вложенных квантификаторов: на
+    // длинных селекторах с атрибутами обратный перебор регулярного
+    // выражения уходил в минуты.
+    for (const rule of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      const [, selector, body] = rule;
+      if (!/\banimation(?:-name)?:\s*agent-/.test(body!)) continue;
+      for (const cls of selector!.matchAll(/\.agent-[\w-]+/g)) animated.add(cls[0]);
+    }
+    expect(animated.size).toBeGreaterThan(3);
+    for (const cls of animated) expect(reduced, `${cls} не отключён при reduced-motion`).toContain(cls);
   });
 });

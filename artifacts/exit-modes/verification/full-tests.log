@@ -1,0 +1,442 @@
+
+> memex-dex@0.1.0 test
+> npm run test -w @memex/core && npm run test -w @memex/api && npm run test -w @memex/web
+
+
+> @memex/core@0.1.0 test
+> vitest run
+
+
+ RUN  v3.2.7 /Users/myrotec/Desktop/memex-dex/packages/core
+
+ ✓ src/live-readiness-stages.test.ts (14 tests) 7ms
+ ✓ src/paper-agent.test.ts (38 tests) 8ms
+ ✓ src/paper-signal-origins.test.ts (8 tests) 3ms
+ ✓ src/pool-health.test.ts (12 tests) 35ms
+ ✓ src/pnl-display.test.ts (35 tests) 33ms
+ ✓ src/risk-scale.test.ts (24 tests) 33ms
+ ✓ src/wallet-score.test.ts (19 tests) 35ms
+ ✓ src/okx-wallet-model.test.ts (26 tests) 6ms
+ ✓ src/plans-presentation.test.ts (37 tests) 34ms
+ ✓ src/deposit.test.ts (17 tests) 9ms
+ ✓ src/candle-history.test.ts (29 tests) 6ms
+ ✓ src/paper-test-source.test.ts (14 tests) 3ms
+ ✓ src/api-base.test.ts (30 tests) 3ms
+ ✓ src/intent-lifecycle.test.ts (34 tests) 5ms
+ ✓ src/market-listing.test.ts (34 tests) 6ms
+ ✓ src/economic-identity.test.ts (40 tests) 9ms
+ ✓ src/paper-allocation.test.ts (35 tests) 18ms
+ ✓ src/route-access.test.ts (103 tests) 32ms
+ ✓ src/wallet-confidence.test.ts (16 tests) 10ms
+ ✓ src/access-indicator.test.ts (40 tests) 9ms
+ ✓ src/wallet-performance.test.ts (54 tests) 7ms
+ ✓ src/devnet-proof.test.ts (52 tests) 6ms
+ ✓ src/transaction-intent.test.ts (48 tests) 18ms
+ ✓ src/risk-completeness.test.ts (23 tests) 61ms
+ ✓ src/orders.test.ts (12 tests) 4ms
+ ✓ src/risk-gate-decision.test.ts (58 tests) 7ms
+ ✓ src/live-event-id.test.ts (7 tests) 56ms
+ ✓ src/paper-revaluation.test.ts (13 tests) 9ms
+ ✓ src/entitlements.test.ts (39 tests) 13ms
+ ✓ src/wallet-analytics.test.ts (32 tests) 8ms
+ ✓ src/okx-ws-model.test.ts (29 tests) 26ms
+ ✓ src/auto-exit.test.ts (18 tests) 7ms
+ ✓ src/okx-model.test.ts (35 tests) 5ms
+ ✓ src/api-scopes.test.ts (14 tests) 10ms
+ ✓ src/subscription-catalog.test.ts (19 tests) 48ms
+ ✓ src/okx-budget.test.ts (25 tests) 14ms
+ ✓ src/okx-signal.test.ts (15 tests) 5ms
+ ✓ src/solana-reconciliation.test.ts (39 tests) 5ms
+ ✓ src/copy-pending.test.ts (18 tests) 4ms
+ ✓ src/risk-weights.test.ts (21 tests) 4ms
+ ✓ src/withdrawal.test.ts (16 tests) 4ms
+ ✓ src/paper-ledger-events.test.ts (5 tests) 3ms
+ ✓ src/fees.test.ts (14 tests) 6ms
+ ✓ src/okx-tiers.test.ts (35 tests) 5ms
+ ✓ src/okx-dex-history.test.ts (17 tests) 5ms
+ ✓ src/auth-rules.test.ts (30 tests) 4ms
+ ✓ src/ledger-completeness.test.ts (19 tests) 5ms
+ ✓ src/okx-dex-history-fills.test.ts (17 tests) 5ms
+ ✓ src/token-ref.test.ts (18 tests) 5ms
+ ✓ src/risk-signal-adapter.test.ts (21 tests) 6ms
+ ✓ src/payment-state.test.ts (22 tests) 4ms
+ ✓ src/token-registry.test.ts (24 tests) 5ms
+ ✓ src/paper-exit.test.ts (23 tests) 5ms
+ ✓ src/agent-sections.test.ts (9 tests) 4ms
+ ✓ src/copy.test.ts (17 tests) 4ms
+ ✓ src/scam-gate.test.ts (24 tests) 4ms
+ ✓ src/check-queue.test.ts (22 tests) 4ms
+ ✓ src/solana-scan-budget.test.ts (21 tests) 4ms
+ ✓ src/okx-wallet-type.test.ts (33 tests) 9ms
+ ✓ src/check-status.test.ts (23 tests) 5ms
+ ✓ src/risk-gate.test.ts (37 tests) 12ms
+ ✓ src/favorite-key.test.ts (18 tests) 4ms
+ ✓ src/exit-presets.test.ts (15 tests) 28ms
+ ✓ src/chart-live.test.ts (6 tests) 4ms
+ ✓ src/phase4.test.ts (13 tests) 5ms
+ ✓ src/discovery-filters.test.ts (37 tests) 5ms
+ ✓ src/risk.test.ts (4 tests) 2ms
+ ✓ src/paper-agent-completeness.test.ts (17 tests) 8ms
+ ✓ src/provider-cycle.test.ts (24 tests) 5ms
+ ✓ src/cross-source.test.ts (19 tests) 6ms
+ ✓ src/transaction-signing-state.test.ts (24 tests) 5ms
+ ✓ src/risk-model.test.ts (17 tests) 5ms
+ ✓ src/favorites-sync.test.ts (17 tests) 3ms
+ ✓ src/wallet-pnl.test.ts (9 tests) 4ms
+ ✓ src/cross-source-outcome.test.ts (17 tests) 6ms
+ ✓ src/agent-failure.test.ts (11 tests) 4ms
+ ✓ src/position.test.ts (10 tests) 4ms
+ ✓ src/risk-required-count.test.ts (8 tests) 4ms
+ ✓ src/decimal-fit.test.ts (28 tests) 16ms
+ ✓ src/downsample.test.ts (8 tests) 4ms
+ ✓ src/rwa.test.ts (22 tests) 8ms
+ ✓ src/app-relative-path.test.ts (19 tests) 7ms
+ ✓ src/payment-provider.test.ts (8 tests) 4ms
+ ✓ src/email-verification.test.ts (18 tests) 4ms
+ ✓ src/round-trip.test.ts (11 tests) 3ms
+ ✓ src/email-message.test.ts (14 tests) 3ms
+ ✓ src/chart-state.test.ts (12 tests) 3ms
+ ✓ src/impersonation.test.ts (8 tests) 3ms
+
+ Test Files  88 passed (88)
+      Tests  2037 passed (2037)
+   Start at  05:33:42
+   Duration  3.43s (transform 2.68s, setup 0ms, collect 6.30s, tests 885ms, environment 11ms, prepare 5.77s)
+
+
+> @memex/api@0.1.0 test
+> vitest run
+
+
+ RUN  v3.2.7 /Users/myrotec/Desktop/memex-dex/apps/api
+
+ ✓ src/lib/env-paper-agent-telegram.test.ts (4 tests) 1851ms
+   ✓ Telegram paper-агента при старте > по умолчанию выключен и не требует секретов  896ms
+   ✓ Telegram paper-агента при старте > не стартует без TELEGRAM_AGENT_CHAT_ID  500ms
+ ✓ src/lib/env-paper-test-source.test.ts (9 tests) 2356ms
+   ✓ управляемый источник в конфигурации > по умолчанию выключен  913ms
+   ✓ управляемый источник в конфигурации > боевой режим исполнения останавливает запуск  520ms
+ ✓ src/modules/register.test.ts (20 tests) 1546ms
+{"level":20,"time":1788838429511,"pid":19608,"hostname":"myrotecs-MacBook-Pro.local","attempt":1,"delay":1.3722927580728759,"msg":"повтор запроса"}
+{"level":20,"time":1788838429514,"pid":19608,"hostname":"myrotecs-MacBook-Pro.local","attempt":2,"delay":2.11681222436633,"msg":"повтор запроса"}
+{"level":20,"time":1788838429516,"pid":19608,"hostname":"myrotecs-MacBook-Pro.local","attempt":1,"delay":1.1415809199774363,"msg":"повтор запроса"}
+ ✓ src/lib/cache.test.ts (17 tests) 316ms
+ ✓ src/lib/env-email.test.ts (10 tests) 3429ms
+   ✓ SMTP при старте > принимает полную конфигурацию Gmail  923ms
+   ✓ SMTP при старте > не стартует без EMAIL_FROM  365ms
+   ✓ SMTP при старте > не стартует без SMTP_HOST  349ms
+   ✓ остальные почтовые транспорты > Resend по-прежнему требует ключ и отправителя  383ms
+   ✓ остальные почтовые транспорты > console запрещён только в production  377ms
+ ✓ src/services/paper-agent-allocation.pglite.test.ts (7 tests) 3397ms
+ ✓ src/modules/api-prefix.contract.test.ts (18 tests) 511ms
+ ✓ src/modules/access.test.ts (69 tests) 334ms
+ ✓ src/lib/env-signing-flags.test.ts (21 tests) 3725ms
+   ✓ старый и новый флаг: все сочетания > оба false — запуск проходит, подпись выключена  910ms
+   ✓ старый и новый флаг: все сочетания > legacy true — старт останавливается с объяснением  486ms
+ ✓ src/lib/env-payments.test.ts (18 tests) 4223ms
+   ✓ настройки Coinbase при старте > поднимаются при полной настройке  909ms
+   ✓ настройки Coinbase при старте > не поднимаются без COINBASE_CDP_API_KEY_ID  429ms
+   ✓ настройки Coinbase при старте > не поднимаются без COINBASE_CDP_API_KEY_SECRET  332ms
+ ✓ src/modules/market-listing.test.ts (16 tests) 124ms
+ ✓ src/modules/paper-agent-routes.test.ts (16 tests) 176ms
+ ✓ src/modules/discovery.test.ts (23 tests) 152ms
+ ✓ src/modules/live-intents.test.ts (40 tests) 259ms
+ ✓ src/modules/dexscreener-public.test.ts (8 tests) 239ms
+ ✓ src/modules/public-access.test.ts (23 tests) 237ms
+ ✓ src/lib/no-secrets.test.ts (17 tests) 126ms
+ ✓ src/services/payments/bridge-webhook.test.ts (19 tests) 201ms
+ ✓ src/modules/wallet-summary-serialization.test.ts (17 tests) 216ms
+ ✓ src/modules/funding-latch.test.ts (18 tests) 135ms
+ ✓ src/lib/env-phase4.test.ts (25 tests) 5438ms
+   ✓ Phase 4 startup guards > keeps every money-moving flag disabled by default  903ms
+   ✓ Phase 4 startup guards > cannot enable LIVE from paper mode  386ms
+   ✓ Phase 4 startup guards > cannot enable LIVE with local KMS  442ms
+   ✓ Phase 4 startup guards > refuses the devnet test mint outside devnet  359ms
+ ✓ src/lib/prisma-lazy.test.ts (9 tests) 159ms
+ ✓ src/modules/admin-diagnostics.test.ts (21 tests) 326ms
+ ✓ src/modules/devnet-check-access.test.ts (10 tests) 251ms
+ ✓ src/modules/onboarding-e2e.test.ts (18 tests) 503ms
+ ✓ src/modules/paper-agent-resilience.test.ts (12 tests) 158ms
+ ✓ src/lib/auth-plugin-admin.test.ts (3 tests) 88ms
+ ✓ src/services/service-access.test.ts (8 tests) 127ms
+ ✓ src/modules/okx-gems-public.test.ts (3 tests) 119ms
+ ✓ src/services/kms-aws-transport.test.ts (64 tests) 53ms
+ ✓ src/services/payments/checkout.test.ts (31 tests) 36ms
+ ✓ src/services/transaction-intent-signing.test.ts (51 tests) 32ms
+ ✓ src/services/payments/coinbase-checkout.test.ts (39 tests) 17ms
+{"level":20,"time":1788838433036,"pid":19685,"hostname":"myrotecs-MacBook-Pro.local","connection":"batch","reason":"closed","delay":1000,"msg":"OKX сокет: переподключение"}
+{"level":20,"time":1788838433039,"pid":19685,"hostname":"myrotecs-MacBook-Pro.local","connection":"batch","reason":"closed","delay":1000,"msg":"OKX сокет: переподключение"}
+{"level":20,"time":1788838433040,"pid":19685,"hostname":"myrotecs-MacBook-Pro.local","connection":"batch","reason":"closed","delay":1000,"msg":"OKX сокет: переподключение"}
+ ✓ src/services/okx-ws-batch.test.ts (28 tests) 26ms
+ ✓ src/workers/wallet-ledger-sync.test.ts (32 tests) 14ms
+{"level":40,"time":1788838443274,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"login_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838443274,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"login_timeout","delay":1000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838448275,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"subscribe_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838448275,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"subscribe_timeout","delay":1000,"msg":"OKX сокет: переподключение"}
+{"level":20,"time":1788838433276,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"closed","delay":1000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838444276,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"connect_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838444276,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"connect_timeout","delay":2000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838456276,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"connect_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838456276,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"connect_timeout","delay":4000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838470276,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"connect_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838470276,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"connect_timeout","delay":8000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838488276,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"connect_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838488276,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"connect_timeout","delay":16000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838514276,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"connect_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838514276,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"connect_timeout","delay":32000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838433277,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"socket_error","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838433277,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"socket_error","delay":1000,"msg":"OKX сокет: переподключение"}
+{"level":20,"time":1788838433277,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"closed","delay":1000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838444277,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"connect_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838444277,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"connect_timeout","delay":2000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838456277,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"connect_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838456277,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"connect_timeout","delay":4000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838470277,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"connect_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838470277,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"connect_timeout","delay":8000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838488277,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"connect_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838488277,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"connect_timeout","delay":16000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838514277,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"connect_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838514277,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"connect_timeout","delay":32000,"msg":"OKX сокет: переподключение"}
+{"level":20,"time":1788838433277,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"closed","delay":1000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838444277,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"connect_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838444277,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"connect_timeout","delay":2000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838456277,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"connect_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838456277,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"connect_timeout","delay":4000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838470277,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"connect_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838470277,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"connect_timeout","delay":8000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838488277,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"connect_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838488277,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"connect_timeout","delay":16000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838514277,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"connect_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838514277,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"connect_timeout","delay":32000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838433278,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"auth_rejected","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838433278,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"auth_rejected","delay":32000,"msg":"OKX сокет: переподключение"}
+{"level":20,"time":1788838433278,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"closed","delay":1000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838444278,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"connect_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838444278,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"connect_timeout","delay":2000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838456278,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"connect_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838456278,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"connect_timeout","delay":4000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838470278,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"connect_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838470278,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"connect_timeout","delay":8000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838475278,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"connect_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838475278,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"connect_timeout","delay":2000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838487278,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"connect_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838487278,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"connect_timeout","delay":4000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838488278,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"connect_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838488278,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"connect_timeout","delay":16000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838501278,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"connect_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838501278,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"connect_timeout","delay":8000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838514278,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"connect_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838514278,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"connect_timeout","delay":32000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838519278,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"connect_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838519278,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"connect_timeout","delay":16000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838545278,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"connect_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838545278,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"connect_timeout","delay":32000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838556278,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"connect_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838556278,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"connect_timeout","delay":60000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838533279,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"stale_connection","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838533279,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"stale_connection","delay":1000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838544279,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"connect_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838544279,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"connect_timeout","delay":2000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838556279,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"connect_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838556279,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"connect_timeout","delay":4000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838570279,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"connect_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838570279,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"connect_timeout","delay":8000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838588279,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"connect_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838588279,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"connect_timeout","delay":16000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838614279,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"connect_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838614279,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"connect_timeout","delay":32000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838433283,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","providerCode":"60029","msg":"OKX Signal WebSocket недоступен: канал требует whitelist; включён REST_ONLY"}
+{"level":40,"time":1788838433284,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","providerCode":"60029","msg":"OKX Signal WebSocket недоступен: канал требует whitelist; включён REST_ONLY"}
+{"level":40,"time":1788838433284,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","providerCode":"69999","msg":"OKX Signal WebSocket недоступен: канал требует whitelist; включён REST_ONLY"}
+{"level":40,"time":1788838433285,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"subscribe_error_60012","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838433285,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"subscribe_error_60012","delay":1000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838444285,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"connect_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838444285,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"connect_timeout","delay":2000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838456285,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"connect_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838456285,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"connect_timeout","delay":4000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838470285,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"connect_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838470285,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"connect_timeout","delay":8000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838488285,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"connect_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838488285,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"connect_timeout","delay":16000,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838514285,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","errorCode":"connect_timeout","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838514285,"pid":19694,"hostname":"myrotecs-MacBook-Pro.local","connection":"test","reason":"connect_timeout","delay":32000,"msg":"OKX сокет: переподключение"}
+ ✓ src/lib/production-schema-repair.test.ts (61 tests) 16ms
+ ✓ src/services/okx-ws-client.test.ts (28 tests) 28ms
+ ✓ src/services/paper-agent-exit.test.ts (9 tests) 33ms
+ ✓ src/services/access-policy.test.ts (20 tests) 22ms
+ ✓ src/services/solana-devnet-validation.test.ts (45 tests) 21ms
+ ✓ src/server.test.ts (1 test) 108ms
+ ✓ src/services/paper-agent-learning.test.ts (2 tests) 4ms
+ ✓ src/services/devnet-preflight-command.test.ts (15 tests) 29ms
+ ✓ src/services/okx-v6.test.ts (6 tests) 5ms
+ ✓ src/smoke/ledger-smoke.test.ts (23 tests) 24ms
+ ✓ src/services/solana-rpc-deposit-source.test.ts (9 tests) 23ms
+ ✓ src/services/devnet-network-proof.test.ts (27 tests) 33ms
+ ✓ src/services/solana-deposit-safety.test.ts (24 tests) 26ms
+{"level":40,"time":1788838433920,"pid":19715,"hostname":"myrotecs-MacBook-Pro.local","connection":"smoke","errorCode":"auth_rejected","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838433920,"pid":19715,"hostname":"myrotecs-MacBook-Pro.local","connection":"smoke","reason":"auth_rejected","delay":38443,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838433921,"pid":19715,"hostname":"myrotecs-MacBook-Pro.local","connection":"smoke","errorCode":"socket_error","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838433921,"pid":19715,"hostname":"myrotecs-MacBook-Pro.local","connection":"smoke","reason":"socket_error","delay":1198,"msg":"OKX сокет: переподключение"}
+{"level":20,"time":1788838433924,"pid":19715,"hostname":"myrotecs-MacBook-Pro.local","connection":"smoke","reason":"closed","delay":882,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838433924,"pid":19715,"hostname":"myrotecs-MacBook-Pro.local","connection":"smoke","errorCode":"auth_rejected","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838433924,"pid":19715,"hostname":"myrotecs-MacBook-Pro.local","connection":"smoke","reason":"auth_rejected","delay":26327,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838433925,"pid":19715,"hostname":"myrotecs-MacBook-Pro.local","connection":"smoke","errorCode":"auth_rejected","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838433925,"pid":19715,"hostname":"myrotecs-MacBook-Pro.local","connection":"smoke","reason":"auth_rejected","delay":35477,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838433925,"pid":19715,"hostname":"myrotecs-MacBook-Pro.local","connection":"smoke","errorCode":"auth_rejected","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838433925,"pid":19715,"hostname":"myrotecs-MacBook-Pro.local","connection":"smoke","reason":"auth_rejected","delay":38222,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838433925,"pid":19715,"hostname":"myrotecs-MacBook-Pro.local","connection":"smoke","errorCode":"auth_rejected","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838433925,"pid":19715,"hostname":"myrotecs-MacBook-Pro.local","connection":"smoke","reason":"auth_rejected","delay":33884,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838433925,"pid":19715,"hostname":"myrotecs-MacBook-Pro.local","connection":"smoke","errorCode":"auth_rejected","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838433925,"pid":19715,"hostname":"myrotecs-MacBook-Pro.local","connection":"smoke","reason":"auth_rejected","delay":26110,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838433925,"pid":19715,"hostname":"myrotecs-MacBook-Pro.local","connection":"smoke","errorCode":"auth_rejected","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838433925,"pid":19715,"hostname":"myrotecs-MacBook-Pro.local","connection":"smoke","reason":"auth_rejected","delay":30250,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838433925,"pid":19715,"hostname":"myrotecs-MacBook-Pro.local","connection":"smoke","errorCode":"login_failed","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838433925,"pid":19715,"hostname":"myrotecs-MacBook-Pro.local","connection":"smoke","reason":"login_failed","delay":1154,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838433929,"pid":19715,"hostname":"myrotecs-MacBook-Pro.local","connection":"smoke","errorCode":"subscribe_error_60029","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838433929,"pid":19715,"hostname":"myrotecs-MacBook-Pro.local","connection":"smoke","reason":"subscribe_error_60029","delay":1020,"msg":"OKX сокет: переподключение"}
+{"level":40,"time":1788838433930,"pid":19715,"hostname":"myrotecs-MacBook-Pro.local","connection":"smoke","errorCode":"subscribe_error_60012","msg":"OKX сокет: сбой"}
+{"level":20,"time":1788838433930,"pid":19715,"hostname":"myrotecs-MacBook-Pro.local","connection":"smoke","reason":"subscribe_error_60012","delay":1104,"msg":"OKX сокет: переподключение"}
+ ✓ src/smoke/ws-smoke.test.ts (26 tests) 16ms
+ ✓ src/services/mailer.test.ts (15 tests) 12ms
+ ✓ src/workers/rescore-contract.test.ts (9 tests) 10ms
+ ✓ src/workers/paper-agent.test.ts (10 tests) 10ms
+ ✓ src/workers/price-updater.test.ts (21 tests) 12ms
+ ✓ src/workers/scam-checker-queue.test.ts (13 tests) 9ms
+ ✓ src/services/email-verify.test.ts (41 tests) 17ms
+ ✓ src/services/security-providers.test.ts (24 tests) 5ms
+ ✓ src/services/phase4-boundary.contract.test.ts (24 tests) 7ms
+ ✓ src/services/payments/coinbase-auth.test.ts (7 tests) 9ms
+ ✓ src/services/signing-identity-registry.test.ts (19 tests) 13ms
+ ✓ src/services/market-data-rate-limit.test.ts (2 tests) 6ms
+ ✓ src/services/solana-reconciliation-pipeline.test.ts (30 tests) 7ms
+ ✓ src/services/okx-usage.test.ts (17 tests) 10ms
+ ✓ src/workers/paper-agent-isolation.test.ts (6 tests) 3ms
+ ✓ src/workers/okx-signal-ingest.test.ts (8 tests) 5ms
+ ✓ src/lib/preflight-contract.test.ts (21 tests) 4ms
+ ✓ src/lib/e2e-no-manual-migrations.contract.test.ts (3 tests) 5ms
+ ✓ src/services/trade-backfill.test.ts (19 tests) 10ms
+ ✓ src/lib/core-build-freshness.test.ts (2 tests) 11ms
+ ✓ src/services/solana-preflight.test.ts (21 tests) 10ms
+ ✓ src/services/paper-agent-notification-transport.test.ts (7 tests) 8ms
+ ✓ src/workers/paper-agent-notifications.test.ts (6 tests) 5ms
+ ✓ src/services/okx-signal-ath.test.ts (3 tests) 4ms
+ ✓ src/services/paper-live-invariants.test.ts (11 tests) 7ms
+ ✓ src/workers/hot-tokens.test.ts (21 tests) 5ms
+ ✓ src/services/solana-deposit-pipeline.test.ts (17 tests) 6ms
+ ✓ src/workers/trade-overflow.test.ts (10 tests) 6ms
+ ✓ src/lib/schema-guard.test.ts (18 tests) 5ms
+ ✓ src/services/legacy-grant.test.ts (19 tests) 5ms
+ ✓ src/services/wallet-pnl.test.ts (3 tests) 6ms
+ ✓ src/services/okx-market-contract.test.ts (11 tests) 5ms
+ ✓ src/services/live-readiness-observed.test.ts (7 tests) 6ms
+ ✓ src/services/paper-test-source.test.ts (12 tests) 6ms
+ ✓ src/modules/paper-agent-public.test.ts (4 tests) 3ms
+ ✓ src/workers/wallet-ledger-repo-ingest.test.ts (3 tests) 4ms
+ ✓ src/services/payments/coinbase-webhook.test.ts (15 tests) 4ms
+ ✓ src/services/entitlement-verification.test.ts (5 tests) 3ms
+ ✓ src/services/solana-transaction-orchestrator.test.ts (5 tests) 4ms
+ ✓ src/services/subscriptions.test.ts (8 tests) 5ms
+ ✓ src/services/kms-contract.test.ts (5 tests) 6ms
+ ✓ src/modules/radar-risk-state.test.ts (15 tests) 6ms
+ ✓ src/services/withdrawal-orchestrator.test.ts (6 tests) 4ms
+ ✓ src/services/verify-and-trial.test.ts (12 tests) 4ms
+ ✓ src/lib/okx-config.test.ts (7 tests) 4ms
+ ✓ src/services/solana-deposit-reconciliation.test.ts (4 tests) 2ms
+ ✓ src/retired-calls.contract.test.ts (4 tests) 4ms
+ ✓ src/services/payments/coinbase-settlement.test.ts (17 tests) 3ms
+ ✓ src/services/okx-client.test.ts (12 tests) 10ms
+ ✓ src/chains/solana-live-block.test.ts (1 test) 2ms
+ ✓ src/workers/candle-builder-scheduling.test.ts (5 tests) 2ms
+ ✓ src/services/prisma-solana-deposit-repository.test.ts (3 tests) 2ms
+ ✓ src/services/compliance-provider.test.ts (2 tests) 2ms
+ ✓ src/workers/solana-deposit.test.ts (1 test) 2ms
+ ✓ src/lib/production-schema-repair.pglite.test.ts (46 tests) 42132ms
+   ✓ загрузчик на настоящей схеме > проводит базу через все миграции по очереди  4999ms
+   ✓ загрузчик на настоящей схеме > видит незнакомую миграцию в каталоге  1497ms
+   ✓ загрузчик на настоящей схеме > замечает оборванную миграцию возраста рынка  1255ms
+   ✓ загрузчик на настоящей схеме > не верит истории, если колонок нет  1312ms
+   ✓ загрузчик на настоящей схеме > видит колонки, которых нет в истории  1139ms
+   ✓ загрузчик на настоящей схеме > нечитаемый каталог миграций останавливает даже готовую базу  842ms
+   ✓ загрузчик на настоящей схеме > отказывается работать с пустой базой  656ms
+   ✓ поздняя миграция '20260904100000_add_phase4_reconciliat…' на настоящем Postgres > полностью отсутствующая попадает в pending  819ms
+   ✓ поздняя миграция '20260904100000_add_phase4_reconciliat…' на настоящем Postgres > полностью применённая даёт ready  810ms
+   ✓ поздняя миграция '20260904100000_add_phase4_reconciliat…' на настоящем Postgres > история без схемы останавливает запуск  762ms
+   ✓ поздняя миграция '20260904100000_add_phase4_reconciliat…' на настоящем Postgres > схема без истории останавливает запуск  827ms
+   ✓ поздняя миграция '20260904100000_add_phase4_reconciliat…' на настоящем Postgres > оборванное применение останавливает запуск  797ms
+   ✓ поздняя миграция '20260904100000_add_phase4_reconciliat…' на настоящем Postgres > незнакомая миграция важнее готовности  787ms
+   ✓ поздняя миграция '20260904200000_add_transaction_intent' на настоящем Postgres > полностью отсутствующая попадает в pending  875ms
+   ✓ поздняя миграция '20260904200000_add_transaction_intent' на настоящем Postgres > полностью применённая даёт ready  880ms
+   ✓ поздняя миграция '20260904200000_add_transaction_intent' на настоящем Postgres > история без схемы останавливает запуск  757ms
+   ✓ поздняя миграция '20260904200000_add_transaction_intent' на настоящем Postgres > схема без истории останавливает запуск  764ms
+   ✓ поздняя миграция '20260904200000_add_transaction_intent' на настоящем Postgres > оборванное применение останавливает запуск  768ms
+   ✓ поздняя миграция '20260904200000_add_transaction_intent' на настоящем Postgres > незнакомая миграция важнее готовности  756ms
+   ✓ поздняя миграция '20260904210000_add_intent_lifecycle' на настоящем Postgres > полностью отсутствующая попадает в pending  844ms
+   ✓ поздняя миграция '20260904210000_add_intent_lifecycle' на настоящем Postgres > полностью применённая даёт ready  846ms
+   ✓ поздняя миграция '20260904210000_add_intent_lifecycle' на настоящем Postgres > история без схемы останавливает запуск  822ms
+   ✓ поздняя миграция '20260904210000_add_intent_lifecycle' на настоящем Postgres > схема без истории останавливает запуск  788ms
+   ✓ поздняя миграция '20260904210000_add_intent_lifecycle' на настоящем Postgres > оборванное применение останавливает запуск  1029ms
+   ✓ поздняя миграция '20260904210000_add_intent_lifecycle' на настоящем Postgres > незнакомая миграция важнее готовности  837ms
+   ✓ поздняя миграция '20260904220000_add_signing_identity' на настоящем Postgres > полностью отсутствующая попадает в pending  837ms
+   ✓ поздняя миграция '20260904220000_add_signing_identity' на настоящем Postgres > полностью применённая даёт ready  827ms
+   ✓ поздняя миграция '20260904220000_add_signing_identity' на настоящем Postgres > история без схемы останавливает запуск  793ms
+   ✓ поздняя миграция '20260904220000_add_signing_identity' на настоящем Postgres > схема без истории останавливает запуск  776ms
+   ✓ поздняя миграция '20260904220000_add_signing_identity' на настоящем Postgres > оборванное применение останавливает запуск  772ms
+   ✓ поздняя миграция '20260904220000_add_signing_identity' на настоящем Postgres > незнакомая миграция важнее готовности  926ms
+   ✓ поздняя миграция '20260905100000_add_solana_network_pro…' на настоящем Postgres > полностью отсутствующая попадает в pending  921ms
+   ✓ поздняя миграция '20260905100000_add_solana_network_pro…' на настоящем Postgres > полностью применённая даёт ready  900ms
+   ✓ поздняя миграция '20260905100000_add_solana_network_pro…' на настоящем Postgres > история без схемы останавливает запуск  999ms
+   ✓ поздняя миграция '20260905100000_add_solana_network_pro…' на настоящем Postgres > схема без истории останавливает запуск  892ms
+   ✓ поздняя миграция '20260905100000_add_solana_network_pro…' на настоящем Postgres > оборванное применение останавливает запуск  905ms
+   ✓ поздняя миграция '20260905100000_add_solana_network_pro…' на настоящем Postgres > незнакомая миграция важнее готовности  786ms
+   ✓ поздняя миграция '20260908100000_add_paper_exit_plan' на настоящем Postgres > полностью отсутствующая попадает в pending  775ms
+   ✓ поздняя миграция '20260908100000_add_paper_exit_plan' на настоящем Postgres > полностью применённая даёт ready  785ms
+   ✓ поздняя миграция '20260908100000_add_paper_exit_plan' на настоящем Postgres > история без схемы останавливает запуск  774ms
+   ✓ поздняя миграция '20260908100000_add_paper_exit_plan' на настоящем Postgres > схема без истории останавливает запуск  735ms
+   ✓ поздняя миграция '20260908100000_add_paper_exit_plan' на настоящем Postgres > оборванное применение останавливает запуск  742ms
+   ✓ поздняя миграция '20260908100000_add_paper_exit_plan' на настоящем Postgres > незнакомая миграция важнее готовности  751ms
+   ✓ имена, которых ждёт загрузчик > колонки возраста рынка действительно создаются миграцией  755ms
+
+ Test Files  103 passed (103)
+      Tests  1677 passed (1677)
+   Start at  05:33:45
+   Duration  42.55s (transform 3.65s, setup 0ms, collect 28.18s, tests 73.75s, environment 16ms, prepare 6.55s)
+
+
+> @memex/web@0.1.0 test
+> vitest run
+
+
+ RUN  v3.2.7 /Users/myrotec/Desktop/memex-dex/apps/web
+
+ ✓ components/terminal/controls.test.tsx (33 tests) 186ms
+ ✓ components/AuthShell.responsive.test.tsx (86 tests) 393ms
+ ✓ components/terminal/terminal-panel.contract.test.tsx (7 tests) 52ms
+ ✓ components/StorageResilience.test.tsx (12 tests) 117ms
+stderr | components/AccessStatusControl.test.tsx
+Error: Not implemented: navigation (except hash changes)
+    at module.exports (/Users/myrotec/Desktop/memex-dex/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at navigateFetch (/Users/myrotec/Desktop/memex-dex/node_modules/jsdom/lib/jsdom/living/window/navigation.js:77:3)
+    at exports.navigate (/Users/myrotec/Desktop/memex-dex/node_modules/jsdom/lib/jsdom/living/window/navigation.js:55:3)
+    at Timeout._onTimeout (/Users/myrotec/Desktop/memex-dex/node_modules/jsdom/lib/jsdom/living/nodes/HTMLHyperlinkElementUtils-impl.js:80:7)
+    at listOnTimeout (node:internal/timers:685:17)
+    at processTimers (node:internal/timers:618:7) undefined
+
+ ✓ components/AccessStatusControl.test.tsx (34 tests) 214ms
+ ✓ components/AccessStatusResponsive.test.tsx (31 tests) 353ms
+ ✓ components/semi-auto.contract.test.ts (18 tests) 5ms
+ ✓ app/retired-calls.contract.test.ts (7 tests) 11ms
+ ✓ components/AuthShell.test.tsx (12 tests) 258ms
+ ✓ components/AppShell.contract.test.ts (7 tests) 9ms
+ ✓ app/login/wakeup-copy.contract.test.ts (8 tests) 4ms
+ ✓ components/terminal/ChartHistory.test.tsx (23 tests) 530ms
+ ✓ components/terminal/terminal-sources.contract.test.ts (5 tests) 2ms
+ ✓ components/RouteGuard.contract.test.ts (3 tests) 1ms
+ ✓ lib/server-wakeup.test.ts (17 tests) 204ms
+ ✓ app/login/login-form.test.tsx (42 tests) 888ms
+ ✓ app/agent/deposit-status.contract.test.ts (22 tests) 6ms
+ ✓ app/agent/agent-page.test.tsx (67 tests) 1561ms
+
+ Test Files  18 passed (18)
+      Tests  434 passed (434)
+   Start at  05:34:29
+   Duration  3.04s (transform 1.70s, setup 121ms, collect 6.89s, tests 4.79s, environment 4.64s, prepare 1.08s)

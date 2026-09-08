@@ -1,4 +1,5 @@
 import { D, Decimal, type Numeric } from './money.js';
+import { PAPER_EXIT_PRESETS, type PaperExitPlan } from './paper-exit.js';
 
 /** Phase 3 меняет только распределение PAPER-капитала. */
 export type PaperAllocationMode = 'FIXED' | 'AUTOPILOT';
@@ -31,6 +32,19 @@ export interface AllocationPolicySnapshot {
   limits: PaperAllocationLimits;
   scorePolicyKey: string;
   scorePolicyVersion: number;
+  /**
+   * Правило выхода для позиций этого счёта.
+   *
+   * Необязательное ради старых снимков в базе: счёт, созданный до
+   * появления режимов выхода, читается как TARGET — ровно то, как
+   * он и работал.
+   */
+  exitPlan?: PaperExitPlan;
+}
+
+/** План выхода из снимка политики; у старых снимков поля нет — это TARGET. */
+export function policyExitPlan(policy: Pick<AllocationPolicySnapshot, 'exitPlan'>): PaperExitPlan {
+  return policy.exitPlan ?? PAPER_EXIT_PRESETS.TARGET;
 }
 
 export interface PaperSignalAllocationFacts {
@@ -165,6 +179,7 @@ export function fixedAllocationPolicy(input: {
   maxOpenPositions: number;
   reservePct?: number;
   minimumPositionUsd?: Numeric;
+  exitPlan?: PaperExitPlan;
 }): AllocationPolicySnapshot {
   const capital = D(input.capitalUsd);
   const reservePct = input.reservePct ?? 30;
@@ -196,12 +211,14 @@ export function fixedAllocationPolicy(input: {
     limits,
     scorePolicyKey: PAPER_ALLOCATION_SCORE_POLICY.key,
     scorePolicyVersion: PAPER_ALLOCATION_SCORE_POLICY.version,
+    exitPlan: input.exitPlan ?? PAPER_EXIT_PRESETS.TARGET,
   };
 }
 
 export function autopilotAllocationPolicy(
   riskProfile: PaperRiskProfile,
   overrides: Partial<PaperAllocationLimits> = {},
+  exitPlan: PaperExitPlan = PAPER_EXIT_PRESETS.TARGET,
 ): AllocationPolicySnapshot {
   const limits = { ...PROFILE_LIMITS[riskProfile], ...overrides };
   const invalid = validatePaperAllocationLimits(limits);
@@ -214,6 +231,7 @@ export function autopilotAllocationPolicy(
     limits,
     scorePolicyKey: PAPER_ALLOCATION_SCORE_POLICY.key,
     scorePolicyVersion: PAPER_ALLOCATION_SCORE_POLICY.version,
+    exitPlan,
   };
 }
 
@@ -470,6 +488,22 @@ export function revaluePaperCapital(
     peakEquityUsd: peak.toFixed(),
     drawdownPct: decimalText(drawdown),
   };
+}
+
+/**
+ * Частичный выход: продана доля позиции, позиция остаётся открытой.
+ *
+ * Из «вложено» уходит освобождённая часть стоимости входа, в
+ * «свободно» приходит чистая выручка, разница — реализованный
+ * результат. Счётчик открытых позиций не меняется: остаток всё ещё
+ * занимает слот и всё ещё под риском. Формула та же, что у полного
+ * закрытия, — иначе две записи одного правила разошлись бы.
+ */
+export function partialExitPaperCapitalLedger(snapshot: PaperCapitalLedgerSnapshot, input: {
+  releasedCostUsd: Numeric; netExitUsd: Numeric; tradingFeesUsd: Numeric; slippageUsd: Numeric; networkCostsUsd: Numeric;
+}): PaperCapitalLedgerSnapshot {
+  const closed = closePaperCapitalLedger(snapshot, { ...input, allocatedUsd: input.releasedCostUsd });
+  return { ...closed, openPositions: snapshot.openPositions };
 }
 
 export function closePaperCapitalLedger(snapshot: PaperCapitalLedgerSnapshot, input: {

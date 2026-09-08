@@ -671,3 +671,20 @@ describe('карточка лидера роста', () => {
     }
   });
 });
+
+describe('настройки PAPER-агента только для администратора', () => {
+  it('закрывает прямой маршрут и вложенные пути для Pro', () => {
+    for (const path of ['/agent/settings', '/agent/settings/', '/agent/settings?step=3', '/agent/settings/advanced']) {
+      expect(guard(path, full)).toMatchObject({ kind: 'redirect', reason: 'not-admin' });
+    }
+  });
+  it('пускает администратора', () => {
+    expect(guard('/agent/settings', admin)).toEqual({ kind: 'allow' });
+  });
+  it('гостю сохраняет адрес настроек после входа', () => {
+    expect(guard('/agent/settings?step=2', guest)).toMatchObject({ kind: 'redirect', to: '/login', next: '/agent/settings?step=2' });
+  });
+  it('обычный обзор по-прежнему открыт вошедшему', () => {
+    expect(guard('/agent', full)).toEqual({ kind: 'allow' });
+  });
+});

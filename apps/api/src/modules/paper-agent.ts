@@ -13,6 +13,11 @@ import {
   phase4SectionsVerdict,
   SOLANA_DEPOSIT_ASSETS,
   depositNetworkStatus,
+  PAPER_EXIT_MODE_LABELS,
+  PAPER_EXIT_PRESETS,
+  describePaperExitPlan,
+  paperExitPlan,
+  type PaperExitPlan,
 } from '@memex/core';
 import { env } from '../lib/env.js';
 import { prisma } from '../lib/prisma.js';
@@ -30,6 +35,7 @@ import {
   getPaperAgentNotificationRuntime,
 } from '../workers/paper-agent-notifications.js';
 import {
+  closeAllPaperPositions,
   configurePaperAllocationAccounts,
   resetPaperAllocationAccount,
 } from '../services/paper-agent-allocation.js';
@@ -243,9 +249,54 @@ function serializeRun(run: any) {
           signalBand: activeAllocation.signalBand,
           reason: activeAllocation.allocationReason,
           state: activeAllocation.state,
+          exit: allocationExitView(activeAllocation),
         }
       : { legacy: true, label: 'Legacy Phase 1/2' },
   };
+}
+
+/**
+ * Правило выхода — словами, для интерфейса.
+ *
+ * У счетов, созданных до появления режимов, плана в снимке нет:
+ * это TARGET, и он назван явно, а не показан пустым полем.
+ */
+function exitPlanView(plan: PaperExitPlan | undefined | null) {
+  const effective = plan ?? PAPER_EXIT_PRESETS.TARGET;
+  return {
+    mode: effective.mode,
+    label: PAPER_EXIT_MODE_LABELS[effective.mode]?.label ?? effective.mode,
+    description: describePaperExitPlan(effective),
+    plan: effective,
+  };
+}
+
+/** Ход исполнения плана на одной позиции: остаток, ступени, действующий стоп. */
+function allocationExitView(allocation: any) {
+  const plan = allocationExitPlanOf(allocation);
+  const state = (allocation.exitState ?? null) as {
+    remainingPct?: number; legsFilled?: number; legsTotal?: number;
+    stopSourcePriceUsd?: number | null; stopReason?: string | null; nextTargetSourcePriceUsd?: number | null;
+  } | null;
+  return {
+    mode: plan.mode,
+    label: PAPER_EXIT_MODE_LABELS[plan.mode]?.label ?? plan.mode,
+    description: describePaperExitPlan(plan),
+    remainingPct: state?.remainingPct ?? 100,
+    legsFilled: state?.legsFilled ?? 0,
+    legsTotal: state?.legsTotal ?? plan.legs.length,
+    stopPriceUsd: state?.stopSourcePriceUsd ?? null,
+    stopReason: state?.stopReason ?? null,
+    nextTargetPriceUsd: state?.nextTargetSourcePriceUsd ?? numberOf(allocation.targetSourcePriceUsd),
+    exitReason: allocation.exitReason ?? null,
+  };
+}
+
+function allocationExitPlanOf(allocation: any): PaperExitPlan {
+  const stored = allocation.exitPlan as PaperExitPlan | null | undefined;
+  if (stored && typeof stored === 'object' && typeof stored.mode === 'string') return stored;
+  const fromPolicy = (allocation.policySnapshot as { exitPlan?: PaperExitPlan } | null)?.exitPlan;
+  return fromPolicy ?? PAPER_EXIT_PRESETS.TARGET;
 }
 
 function serializeAccount(row: any) {
@@ -266,6 +317,7 @@ function serializeAccount(row: any) {
     policyVersion: row.policyVersion,
     riskProfile: row.riskProfile,
     policySnapshot: row.policySnapshot,
+    exitPlan: exitPlanView((row.policySnapshot as { exitPlan?: PaperExitPlan } | null)?.exitPlan),
     capital: {
       initialUsd: numberOf(row.initialCapitalUsd),
       freeUsd: numberOf(row.freeBalanceUsd),
@@ -610,6 +662,11 @@ export const paperAgentRoutes: FastifyPluginAsync = async (app) => {
                 signalBand: true,
                 allocationReason: true,
                 state: true,
+                exitPlan: true,
+                exitState: true,
+                exitReason: true,
+                targetSourcePriceUsd: true,
+                policySnapshot: true,
               },
             },
           },
@@ -1136,6 +1193,20 @@ export const paperAgentRoutes: FastifyPluginAsync = async (app) => {
   app.get('/admin/paper-agent', { preHandler: [app.requireAdmin] }, (req) => readSnapshot(req));
 
   app.put('/admin/paper-agent/allocation', { preHandler: [app.requireAdmin] }, async (req) => {
+    const exitOverrides = z
+      .object({
+        targetMultiple: z.number().gt(1).max(1000).nullable().optional(),
+        stopLossPct: z.number().gt(0).lt(100).nullable().optional(),
+        trailingPct: z.number().gt(0).lt(100).nullable().optional(),
+        timeStopMinutes: z.number().int().min(1).max(10_080).nullable().optional(),
+        timeStopMinMultiple: z.number().min(1).max(1000).nullable().optional(),
+        maxHoldHours: z.number().gt(0).max(720).nullable().optional(),
+        legs: z
+          .array(z.object({ multiple: z.number().gt(1).max(1000), sellPct: z.number().gt(0).max(100) }).strict())
+          .max(8)
+          .optional(),
+      })
+      .strict();
     const limitOverrides = z
       .object({
         reservePct: z.number().min(0).max(95).optional(),
@@ -1157,11 +1228,27 @@ export const paperAgentRoutes: FastifyPluginAsync = async (app) => {
         minimumPositionUsd: z.string().min(1).max(64).optional(),
         riskProfile: z.enum(['CONSERVATIVE', 'BALANCED', 'AGGRESSIVE']).optional(),
         overrides: limitOverrides.optional(),
+        exitMode: z.enum(['TARGET', 'PROTECTED', 'LADDER', 'TRAILING', 'TRAILING_PURE']).optional(),
+        exitOverrides: exitOverrides.optional(),
         confirm: z.literal(true),
       })
       .strict()
       .parse(req.body);
     await ensurePaperAgentConfig();
+    /*
+     * План проверяется ядром до того, как что-то запишется: план,
+     * который никогда не закрывается или продаёт больше позиции,
+     * отклоняется как 400, а не живёт в базе до первой сделки.
+     */
+    let exitPlan: PaperExitPlan;
+    try {
+      exitPlan = paperExitPlan(body.exitMode ?? 'TARGET', body.exitOverrides ?? {});
+    } catch (cause) {
+      throw Object.assign(new Error('Некорректный план выхода'), {
+        statusCode: 400,
+        code: cause instanceof Error ? cause.message : 'INVALID_EXIT_PLAN',
+      });
+    }
     if (body.mode === 'FIXED' && body.maxOpenPositions == null) {
       throw Object.assign(new Error('Для Fixed укажите число одновременных позиций'), {
         statusCode: 400,
@@ -1184,6 +1271,7 @@ export const paperAgentRoutes: FastifyPluginAsync = async (app) => {
           body.mode === 'AUTOPILOT'
             ? { riskProfile: body.riskProfile ?? 'BALANCED', overrides: body.overrides }
             : undefined,
+        exitPlan,
       },
       { actorId: req.user.sub, ip: req.ip },
     );
@@ -1206,6 +1294,18 @@ export const paperAgentRoutes: FastifyPluginAsync = async (app) => {
       { actorId: req.user.sub, ip: req.ip },
     );
     return { paper: true, account: serializeAccount(replacement) };
+  });
+
+  /*
+   * Panic — закрыть всё сейчас. Отдельно от Stop намеренно: Stop
+   * запрещает новые входы и не трогает открытое, Panic — наоборот.
+   * Новые входы после Panic не запрещаются: кто хочет и того, и
+   * другого, нажимает обе кнопки, и каждая делает ровно одно.
+   */
+  app.post('/admin/paper-agent/panic', { preHandler: [app.requireAdmin] }, async (req) => {
+    z.object({ confirm: z.literal(true) }).strict().parse(req.body);
+    const result = await closeAllPaperPositions('MANUAL_PANIC', { actorId: req.user.sub, ip: req.ip });
+    return { paper: true, ...result };
   });
 
   app.put('/admin/paper-agent/learning', { preHandler: [app.requireAdmin] }, async (req) => {

@@ -56,6 +56,7 @@ export * from './okx-signal.js';
 // Никакого транспорта или боевого исполнения этот модуль не импортирует.
 export * from './paper-agent.js';
 export * from './paper-allocation.js';
+export * from './paper-exit.js';
 // История DEX — единственный источник точных количеств.
 export * from './okx-dex-history.js';
 

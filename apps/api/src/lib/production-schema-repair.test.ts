@@ -58,6 +58,8 @@ import {
   SOLANA_NETWORK_PROOF_MIGRATION,
   SOLANA_NETWORK_PROOF_TABLES,
   SOLANA_NETWORK_PROOF_INDEXES,
+  PAPER_EXIT_PLAN_MIGRATION,
+  PAPER_EXIT_PLAN_COLUMNS,
   planProductionSchemaRepair,
   type ProductionSchemaSnapshot,
 } from './production-schema-repair.js';
@@ -145,7 +147,7 @@ function readySnapshot(): ProductionSchemaSnapshot {
   s.paperAgentControlColumns.push(...PAPER_AGENT_PHASE3_CONTROL_COLUMNS);
   s.paperAgentAllocationPolicyColumns = [...PAPER_AGENT_ALLOCATION_POLICY_COLUMNS];
   s.paperAgentAccountSessionColumns = [...PAPER_AGENT_ACCOUNT_SESSION_COLUMNS];
-  s.paperAgentAllocationColumns = [...PAPER_AGENT_ALLOCATION_COLUMNS];
+  s.paperAgentAllocationColumns = [...PAPER_AGENT_ALLOCATION_COLUMNS, ...PAPER_EXIT_PLAN_COLUMNS];
   s.paperAgentCapitalLedgerColumns = [...PAPER_AGENT_CAPITAL_LEDGER_COLUMNS];
   s.okxSignalColumns.push(...PAPER_AGENT_SIGNAL_PIPELINE_OKX_COLUMNS);
   s.paperAgentRunColumns.push(...PAPER_AGENT_SIGNAL_PIPELINE_RUN_COLUMNS);
@@ -220,6 +222,11 @@ function dropSchemaOf(s: ProductionSchemaSnapshot, migration: string): void {
       withoutTables(SOLANA_NETWORK_PROOF_TABLES);
       withoutIndexes(SOLANA_NETWORK_PROOF_INDEXES);
       return;
+    case PAPER_EXIT_PLAN_MIGRATION:
+      s.paperAgentAllocationColumns = s.paperAgentAllocationColumns.filter(
+        (c) => !PAPER_EXIT_PLAN_COLUMNS.includes(c as never),
+      );
+      return;
     default:
       throw new Error(`нет правила очистки для ${migration}`);
   }
@@ -288,8 +295,9 @@ describe('переход с прежней схемы', () => {
 
     if (plan.action !== 'apply-migrations') throw new Error('ожидался apply-migrations');
     expect(plan.pending).toContain(SOLANA_NETWORK_PROOF_MIGRATION);
-    expect(plan.pending.at(-1), 'доказательство сети применяется последним').toBe(
-      SOLANA_NETWORK_PROOF_MIGRATION,
+    expect(plan.pending).toContain(PAPER_EXIT_PLAN_MIGRATION);
+    expect(plan.pending.at(-1), 'план выхода применяется последним').toBe(
+      PAPER_EXIT_PLAN_MIGRATION,
     );
   });
 
@@ -605,6 +613,7 @@ const LATE_PHASE4 = [
   INTENT_LIFECYCLE_MIGRATION,
   SIGNING_IDENTITY_MIGRATION,
   SOLANA_NETWORK_PROOF_MIGRATION,
+  PAPER_EXIT_PLAN_MIGRATION,
 ] as const;
 
 /**
@@ -632,6 +641,9 @@ function beforeLatePhase4(): ProductionSchemaSnapshot {
   );
   s.solanaDepositEventColumns = [];
   s.transactionIntentColumns = [];
+  s.paperAgentAllocationColumns = s.paperAgentAllocationColumns.filter(
+    (c) => !PAPER_EXIT_PLAN_COLUMNS.includes(c as never),
+  );
   s.indexes = [];
   return s;
 }
@@ -767,7 +779,8 @@ describe('матрица покрывает и новую миграцию', () 
      * `describe.each` по пустому списку не выполняет ни одного теста.
      */
     expect([...LATE_PHASE4]).toContain(SOLANA_NETWORK_PROOF_MIGRATION);
-    expect(LATE_PHASE4.length, 'поздних миграций Phase 4').toBe(5);
+    expect([...LATE_PHASE4]).toContain(PAPER_EXIT_PLAN_MIGRATION);
+    expect(LATE_PHASE4.length, 'поздних миграций Phase 4').toBe(6);
   });
 
   it('частично применённая миграция доказательства останавливает запуск', () => {
@@ -784,6 +797,18 @@ describe('матрица покрывает и новую миграцию', () 
     expect(planProductionSchemaRepair(s)).toEqual({
       action: 'refuse',
       reason: 'PARTIAL_SOLANA_NETWORK_PROOF_MIGRATION',
+    });
+  });
+
+  it('частично применённый план выхода останавливает запуск', () => {
+    // Есть план, нет состояния: позиция с правилом, но без хода
+    // его исполнения. Достраивать колонку вслепую нельзя.
+    const s = readySnapshot();
+    s.paperAgentAllocationColumns = s.paperAgentAllocationColumns.filter((c) => c !== 'exitState');
+
+    expect(planProductionSchemaRepair(s)).toEqual({
+      action: 'refuse',
+      reason: 'PARTIAL_PAPER_EXIT_PLAN_MIGRATION',
     });
   });
 });

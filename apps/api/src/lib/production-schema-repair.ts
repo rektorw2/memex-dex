@@ -43,6 +43,7 @@ export const SIGNING_IDENTITY_MIGRATION =
   '20260904220000_add_signing_identity';
 export const SOLANA_NETWORK_PROOF_MIGRATION =
   '20260905100000_add_solana_network_proof';
+export const PAPER_EXIT_PLAN_MIGRATION = '20260908100000_add_paper_exit_plan';
 
 /**
  * Миграции, которые загрузчику разрешено применять.
@@ -71,6 +72,7 @@ export const KNOWN_MIGRATIONS = [
   INTENT_LIFECYCLE_MIGRATION,
   SIGNING_IDENTITY_MIGRATION,
   SOLANA_NETWORK_PROOF_MIGRATION,
+  PAPER_EXIT_PLAN_MIGRATION,
 ] as const;
 
 export const BASE_USER_COLUMNS = ['id', 'email', 'passwordHash'] as const;
@@ -366,6 +368,9 @@ export const TRANSACTION_INTENT_INDEXES = [
 
 /** Происхождение намерения и связь с предложением. */
 export const INTENT_LIFECYCLE_COLUMNS = ['origin', 'proposalId', 'shownFingerprint'] as const;
+
+/** Колонки плана выхода PAPER-позиции: правило и ход его исполнения. */
+export const PAPER_EXIT_PLAN_COLUMNS = ['exitPlan', 'exitState'] as const;
 
 export const INTENT_LIFECYCLE_INDEXES = [
   'TransactionIntent_proposalId_idx',
@@ -822,6 +827,15 @@ export function planProductionSchemaRepair(
         partial: 'PARTIAL_SOLANA_NETWORK_PROOF_MIGRATION',
         historyAhead: 'SOLANA_NETWORK_PROOF_HISTORY_CONTRADICTS_SCHEMA',
         schemaAhead: 'SOLANA_NETWORK_PROOF_SCHEMA_AHEAD_OF_HISTORY',
+      },
+    },
+    {
+      name: PAPER_EXIT_PLAN_MIGRATION,
+      presence: presenceOf(PAPER_EXIT_PLAN_COLUMNS.map((c) => paperAgentAllocation.has(c))),
+      reasons: {
+        partial: 'PARTIAL_PAPER_EXIT_PLAN_MIGRATION',
+        historyAhead: 'PAPER_EXIT_PLAN_HISTORY_CONTRADICTS_SCHEMA',
+        schemaAhead: 'PAPER_EXIT_PLAN_SCHEMA_AHEAD_OF_HISTORY',
       },
     },
   ];

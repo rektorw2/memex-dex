@@ -261,3 +261,25 @@ describe('paper capital ledger', () => {
     })).toThrow('INVALID_CLOSE');
   });
 });
+
+describe('частичный выход', () => {
+  it('освобождает часть стоимости входа, не закрывая позицию', async () => {
+    const { initialPaperCapitalLedger, openPaperCapitalLedger, partialExitPaperCapitalLedger, closePaperCapitalLedger } = await import('./paper-allocation.js');
+    const opened = openPaperCapitalLedger(initialPaperCapitalLedger('1000', 30), '200');
+    const half = partialExitPaperCapitalLedger(opened, {
+      releasedCostUsd: '100', netExitUsd: '190', tradingFeesUsd: '0.6', slippageUsd: '2', networkCostsUsd: '0.02',
+    });
+    expect(half.openPositions).toBe(1);
+    expect(half.inPositionsUsd).toBe('100');
+    expect(half.freeBalanceUsd).toBe('690');
+    expect(half.realizedPnlUsd).toBe('90');
+    expect(half.equityUsd).toBe('1090');
+    const done = closePaperCapitalLedger(half, {
+      allocatedUsd: '100', netExitUsd: '50', tradingFeesUsd: '0.2', slippageUsd: '1', networkCostsUsd: '0.02',
+    });
+    expect(done.openPositions).toBe(0);
+    expect(done.inPositionsUsd).toBe('0');
+    expect(done.realizedPnlUsd).toBe('40');
+    expect(done.equityUsd).toBe('1040');
+  });
+});

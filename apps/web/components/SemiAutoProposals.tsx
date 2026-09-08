@@ -127,7 +127,7 @@ export function SemiAutoProposals() {
         </div>
         {data?.liveBlocked && (
           <span className="rounded-full border border-warn/30 bg-warn/10 px-2.5 py-1 text-xs text-warn">
-            тестовый контур
+            тестовый режим
           </span>
         )}
       </div>
@@ -214,7 +214,7 @@ export function SemiAutoProposals() {
 
               {liveBlocked && (
                 <p className="mt-2 text-[11px] text-muted">
-                  LIVE-контур ещё не подключён. Это подготовка, а не сделка.
+                  LIVE ещё не подключён. Сделка не отправлена.
                 </p>
               )}
             </li>

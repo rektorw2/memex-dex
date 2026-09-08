@@ -74,9 +74,11 @@ const configureAllocation = vi.fn(async () => ({
   active: accountFixture('ACTIVE'), shadow: accountFixture('SHADOW'),
 }));
 const resetAllocation = vi.fn(async () => accountFixture('ACTIVE'));
+const closeAll = vi.fn(async () => ({ closed: 2, skipped: [], realizedPnlUsd: -3.5 }));
 vi.mock('../services/paper-agent-allocation.js', () => ({
   configurePaperAllocationAccounts: configureAllocation,
   resetPaperAllocationAccount: resetAllocation,
+  closeAllPaperPositions: closeAll,
 }));
 const { paperAgentRoutes } = await import('./paper-agent.js');
 
@@ -201,6 +203,63 @@ describe('ручное управление paper-agent', () => {
     expect(configureAllocation).toHaveBeenLastCalledWith(expect.objectContaining({
       mode: 'AUTOPILOT', autopilot: expect.objectContaining({ riskProfile: 'CONSERVATIVE' }),
     }), expect.anything());
+    await server.close();
+  });
+
+  it('режим выхода уходит в сервис готовым планом, а не строкой', async () => {
+    const server = await app();
+    const response = await server.inject({
+      method: 'PUT', url: '/admin/paper-agent/allocation',
+      payload: { mode: 'AUTOPILOT', capitalUsd: '100', exitMode: 'TRAILING', exitOverrides: { trailingPct: 40 }, confirm: true },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(configureAllocation).toHaveBeenLastCalledWith(expect.objectContaining({
+      exitPlan: expect.objectContaining({ mode: 'TRAILING', trailingPct: 40, legs: [{ multiple: 2, sellPct: 50 }] }),
+    }), expect.anything());
+    await server.close();
+  });
+
+  it('без режима выхода счёт получает TARGET — прежнее поведение', async () => {
+    const server = await app();
+    await server.inject({
+      method: 'PUT', url: '/admin/paper-agent/allocation',
+      payload: { mode: 'FIXED', capitalUsd: '100', maxOpenPositions: 4, confirm: true },
+    });
+    expect(configureAllocation).toHaveBeenLastCalledWith(expect.objectContaining({
+      exitPlan: expect.objectContaining({ mode: 'TARGET', stopLossPct: null, targetMultiple: 2 }),
+    }), expect.anything());
+    await server.close();
+  });
+
+  it('план, который никогда не закроется, отклоняется до записи', async () => {
+    const server = await app();
+    const response = await server.inject({
+      method: 'PUT', url: '/admin/paper-agent/allocation',
+      payload: { mode: 'FIXED', capitalUsd: '100', maxOpenPositions: 4, exitMode: 'TARGET', exitOverrides: { targetMultiple: null }, confirm: true },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ code: 'PLAN_NEVER_CLOSES' });
+    expect(configureAllocation).not.toHaveBeenCalled();
+    await server.close();
+  });
+
+  it('Panic требует confirm, закрывает всё и не трогает флаг Stop', async () => {
+    const server = await app();
+    const invalid = await server.inject({ method: 'POST', url: '/admin/paper-agent/panic', payload: {} });
+    expect(invalid.statusCode).toBeGreaterThanOrEqual(400);
+    expect(closeAll).not.toHaveBeenCalled();
+    const response = await server.inject({ method: 'POST', url: '/admin/paper-agent/panic', payload: { confirm: true } });
+    expect(response.json()).toMatchObject({ paper: true, closed: 2, realizedPnlUsd: -3.5 });
+    expect(closeAll).toHaveBeenCalledWith('MANUAL_PANIC', expect.objectContaining({ actorId: 'admin-1' }));
+    expect(control.isEnabled).toBe(false);
+    await server.close();
+  });
+
+  it('обычный пользователь не может нажать Panic', async () => {
+    const server = await nonAdminApp();
+    const response = await server.inject({ method: 'POST', url: '/admin/paper-agent/panic', payload: { confirm: true } });
+    expect(response.statusCode).toBe(403);
+    expect(closeAll).not.toHaveBeenCalled();
     await server.close();
   });
 

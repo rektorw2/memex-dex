@@ -13,7 +13,7 @@ import { depositNetworkStatus, type FundingSafetyState } from '@memex/core';
  * устройства, и ложное ощущение поломки там, где идёт проверка.
  */
 
-const page = readFileSync(fileURLToPath(new URL('./page.tsx', import.meta.url)), 'utf8');
+const page = readFileSync(fileURLToPath(new URL('./agent-screen.tsx', import.meta.url)), 'utf8');
 
 /** Исходник без комментариев: объяснение — не код. */
 const code = page.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');

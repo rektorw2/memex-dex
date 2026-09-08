@@ -743,6 +743,12 @@ model PaperAgentAllocation {
   entryQuantity          Decimal?  @db.Decimal(38, 18)
   targetSourcePriceUsd   Decimal?  @db.Decimal(38, 18)
 
+  /// Правило выхода, снятое при входе. Дальнейшая смена режима на счёте
+  /// эту позицию не трогает: она ведётся по тому плану, с которым открыта.
+  exitPlan  Json?
+  /// Ход исполнения плана: заполненные ступени, остаток, действующий стоп.
+  exitState Json?
+
   currentSourcePriceUsd Decimal?  @db.Decimal(38, 18)
   unrealizedPnlUsd      Decimal?  @db.Decimal(24, 8)
   peakSourcePriceUsd    Decimal?  @db.Decimal(38, 18)

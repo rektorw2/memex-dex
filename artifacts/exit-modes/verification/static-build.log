@@ -1,0 +1,46 @@
+
+> @memex/web@0.1.0 build
+> next build
+
+   ▲ Next.js 15.5.23
+
+   Creating an optimized production build ...
+ ✓ Compiled successfully in 2.0s
+   Linting and checking validity of types ...
+   Collecting page data ...
+   Generating static pages (0/20) ...
+   Generating static pages (5/20)
+   Generating static pages (10/20)
+   Generating static pages (15/20)
+ ✓ Generating static pages (20/20)
+   Finalizing page optimization ...
+   Collecting build traces ...
+   Exporting (0/2) ...
+ ✓ Exporting (2/2)
+
+Route (app)                                 Size  First Load JS
+┌ ○ /                                    1.34 kB         138 kB
+├ ○ /_not-found                            992 B         104 kB
+├ ○ /access                              2.32 kB         136 kB
+├ ○ /admin                               2.44 kB         141 kB
+├ ○ /agent                                 220 B         162 kB
+├ ○ /agent/settings                        218 B         162 kB
+├ ○ /checkout                            5.29 kB         139 kB
+├ ○ /copy                                3.13 kB         139 kB
+├ ○ /login                               3.66 kB         140 kB
+├ ○ /onboarding                          3.56 kB         140 kB
+├ ○ /plans                               6.49 kB         145 kB
+├ ○ /portfolio                           3.14 kB         139 kB
+├ ○ /radar                               15.4 kB         154 kB
+├ ○ /radar/alerts                         2.7 kB         141 kB
+├ ○ /terminal                            17.9 kB         211 kB
+├ ○ /token                               7.93 kB         201 kB
+├ ○ /wallet                              6.01 kB         141 kB
+└ ○ /wallets                             16.7 kB         158 kB
++ First Load JS shared by all             103 kB
+  ├ chunks/18-13699d828ad5deb6.js        46.5 kB
+  ├ chunks/87c73c54-24122e7b92478d00.js  54.2 kB
+  └ other shared chunks (total)          1.92 kB
+
+
+○  (Static)  prerendered as static content

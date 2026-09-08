@@ -78,6 +78,7 @@ export const ROUTE_RULES: readonly RouteRule[] = [
 
   // Продуктовый экран PAPER-агента доступен каждому вошедшему. Для
   // прямой ссылки сохраняем полный next и ведём сразу на форму входа.
+  { prefix: '/agent/settings', audience: 'authenticated', adminOnly: true, anonymousTo: '/login' },
   { prefix: '/agent', audience: 'authenticated', anonymousTo: '/login' },
 
   // ─── Нужна возможность ───────────────────────────────────────────
