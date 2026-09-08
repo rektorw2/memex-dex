@@ -144,16 +144,16 @@ const MINUTE = 60_000;
  * Версионированный набор Phase 1.
  *
  * Ключ содержит смысл эксперимента: изменение настройки создаёт новую
- * стратегию, а не переписывает историю старой. Shadow-набор меняет ровно
- * одну переменную за раз, поэтому сравнение с baseline можно объяснить.
+ * стратегию, а не переписывает историю старой. Baseline v3 снижает порог
+ * до $600; контрольный shadow-набор v2 сохраняет прежние условия экспериментов.
  */
 export const PAPER_AGENT_STRATEGIES: readonly PaperAgentStrategy[] = [
   {
-    key: 'okx-signal-v2-baseline',
-    version: 2,
-    label: 'Baseline v2 · $5k · 15m · 2x',
+    key: 'okx-signal-v3-baseline',
+    version: 3,
+    label: 'Baseline v3 · $600 · 15m · 2x',
     kind: 'BASELINE',
-    minAmountUsd: 5_000,
+    minAmountUsd: 600,
     maxTokenAgeMs: 15 * MINUTE,
     maxDecisionLatencyMs: 30_000,
     entryDelayMs: 0,

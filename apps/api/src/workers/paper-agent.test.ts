@@ -200,7 +200,7 @@ describe('paper-agent — идемпотентное исполнение', () =
     expect(storedRun.agentDecisionLatencyMs).toBeGreaterThanOrEqual(0);
     expect(storedRun.endToEndLatencyMs).toBeGreaterThanOrEqual(5_000);
     expect(notifications).toHaveLength(1);
-    expect(notifications[0]).toMatchObject({ eventType: 'PAPER_BUY', eventKey: 'run-1:PAPER_BUY:v2' });
+    expect(notifications[0]).toMatchObject({ eventType: 'PAPER_BUY', eventKey: 'run-1:PAPER_BUY:v3' });
   });
 
   it('два параллельных обработчика не создают две позиции', async () => {

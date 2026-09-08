@@ -185,9 +185,9 @@ describe('paper agent — решение', () => {
     },
   );
 
-  it('принимает ровно $5k и отклоняет сумму ниже порога', () => {
-    expect(evaluatePaperSignal(baseline, signal({ amountUsd: 5_000 }), NOW).code).toBe('ELIGIBLE');
-    expect(evaluatePaperSignal(baseline, signal({ amountUsd: 4_999.99 }), NOW).code).toBe(
+  it('принимает ровно $600 и отклоняет сумму ниже порога', () => {
+    expect(evaluatePaperSignal(baseline, signal({ amountUsd: 600 }), NOW).code).toBe('ELIGIBLE');
+    expect(evaluatePaperSignal(baseline, signal({ amountUsd: 599.99 }), NOW).code).toBe(
       'AMOUNT_BELOW_THRESHOLD',
     );
   });

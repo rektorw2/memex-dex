@@ -149,37 +149,61 @@ function strategyConfig(raw: unknown): PaperAgentStrategy | null {
 
 /** Создаёт версии один раз; новая сборка не переписывает старый эксперимент. */
 export async function ensurePaperAgentConfig(): Promise<void> {
-  await prisma.paperAgentControl.upsert({
-    where: { id: CONTROL_ID },
-    create: {
-      id: CONTROL_ID,
-      isEnabled: false,
-      baselineStrategyKey: PAPER_AGENT_STRATEGIES[0]!.key,
-    },
-    update: {},
-  });
-
-  // Старые v1-конфигурации остаются в истории, но новые решения считает v2.
-  await prisma.paperAgentStrategy.updateMany({
-    where: { key: { startsWith: 'okx-signal-v1-' } },
-    data: { isEnabled: false },
-  });
-
-  for (const strategy of PAPER_AGENT_STRATEGIES) {
-    await prisma.paperAgentStrategy.upsert({
-      where: { key: strategy.key },
+  await prisma.$transaction(async (tx) => {
+    await tx.paperAgentControl.upsert({
+      where: { id: CONTROL_ID },
       create: {
-        key: strategy.key,
-        version: strategy.version,
-        label: strategy.label,
-        kind: strategy.kind,
-        isEnabled: true,
-        config: strategy as unknown as P.InputJsonValue,
+        id: CONTROL_ID,
+        isEnabled: false,
+        baselineStrategyKey: PAPER_AGENT_STRATEGIES[0]!.key,
       },
-      // Конфигурация версии неизменяема: изменение создаёт новый key.
       update: {},
     });
-  }
+
+    // Старые v1-конфигурации остаются в истории, но новые решения считает текущий набор.
+    await tx.paperAgentStrategy.updateMany({
+      where: { key: { startsWith: 'okx-signal-v1-' } },
+      data: { isEnabled: false },
+    });
+
+    for (const strategy of PAPER_AGENT_STRATEGIES) {
+      await tx.paperAgentStrategy.upsert({
+        where: { key: strategy.key },
+        create: {
+          key: strategy.key,
+          version: strategy.version,
+          label: strategy.label,
+          kind: strategy.kind,
+          isEnabled: true,
+          config: strategy as unknown as P.InputJsonValue,
+        },
+        // Конфигурация версии неизменяема: изменение создаёт новый key.
+        update: {},
+      });
+    }
+
+    // Снижение порога — новая версия, прежние config и run неизменны.
+    // Условное обновление сохраняет выбор администратора, если он продвинул shadow.
+    const changed = await tx.paperAgentControl.updateMany({
+      where: { id: CONTROL_ID, baselineStrategyKey: 'okx-signal-v2-baseline' },
+      data: { baselineStrategyKey: PAPER_AGENT_STRATEGIES[0]!.key },
+    });
+    await tx.paperAgentStrategy.updateMany({
+      where: { key: 'okx-signal-v2-baseline', isEnabled: true },
+      data: { isEnabled: false },
+    });
+    if (changed.count === 1) {
+      await tx.auditLog.create({
+        data: {
+          action: 'paper_agent.baseline_upgrade',
+          entity: 'PaperAgentControl',
+          entityId: CONTROL_ID,
+          before: { baselineStrategyKey: 'okx-signal-v2-baseline', minAmountUsd: 5_000 },
+          after: { baselineStrategyKey: PAPER_AGENT_STRATEGIES[0]!.key, minAmountUsd: 600 },
+        },
+      });
+    }
+  });
 }
 
 async function createRunIfMissing(
