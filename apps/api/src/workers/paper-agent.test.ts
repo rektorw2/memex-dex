@@ -82,12 +82,29 @@ const prismaMock = {
     }),
   },
   paperAgentRun: {
-    create: vi.fn(async ({ data }: any) => {
-      if (storedRun) throw Object.assign(new Error('duplicate'), { code: 'P2002' });
+    /*
+     * Вставка через `ON CONFLICT DO NOTHING`, как в production.
+     *
+     * Раньше мок предоставлял `create`, который на повторе бросал
+     * `P2002`. Production перешёл на `createMany({ skipDuplicates })`,
+     * и конфликт теперь разрешает сама база одним оператором: второй
+     * вызов не бросает ничего, а возвращает `count: 0`.
+     *
+     * Мок обязан вести себя так же. Оставить прежнее поведение
+     * значило бы проверять контракт, которого больше нет.
+     */
+    createMany: vi.fn(async ({ data, skipDuplicates }: any) => {
+      const rows = Array.isArray(data) ? data : [data];
+      expect(skipDuplicates, 'вставка обязана пропускать дубликаты').toBe(true);
+      expect(rows, 'вставляется ровно одна строка').toHaveLength(1);
+
+      // Повтор той же пары: строка уже есть, вставки не происходит.
+      if (storedRun) return { count: 0 };
+
       successfulCreates++;
       storedRun = {
         id: 'run-1',
-        ...data,
+        ...rows[0],
         strategy: {
           key: baseline.key,
           version: baseline.version,
@@ -96,7 +113,7 @@ const prismaMock = {
         },
         updatedAt: new Date(),
       };
-      return { id: storedRun.id };
+      return { count: 1 };
     }),
     findUnique: vi.fn(async () => (storedRun ? { id: storedRun.id } : null)),
     updateMany: vi.fn(async ({ where, data }: any) => {
@@ -160,6 +177,24 @@ describe('paper-agent — идемпотентное исполнение', () =
       note: 'diagnostic_only',
     });
     expect(successfulCreates).toBe(1);
+
+    /*
+     * Контракт обращения к базе, а не только его последствия.
+     * `skipDuplicates` — это `ON CONFLICT DO NOTHING`: конфликт
+     * разрешает база одним оператором, исключения не возникает
+     * вовсе. Потерять этот флаг значит вернуть в журнал штатной
+     * работы лавину пойманных `P2002`.
+     *
+     * Отсутствие прежнего `create` отдельно не проверяется: его нет
+     * в моке, и обращение к нему упало бы с «is not a function» —
+     * ровно так этот разрыв и обнаружился. Здесь это гарантирует
+     * ещё и компилятор.
+     */
+    expect(prismaMock.paperAgentRun.createMany).toHaveBeenCalledTimes(1);
+    expect(prismaMock.paperAgentRun.createMany).toHaveBeenCalledWith(
+      expect.objectContaining({ skipDuplicates: true }),
+    );
+
     expect(storedRun.signalOrigin).toBe('WEBSOCKET_LIVE');
     expect(storedRun.providerDeliveryLatencyMs).toBe(100);
     expect(storedRun.agentDecisionLatencyMs).toBeGreaterThanOrEqual(0);
@@ -172,8 +207,23 @@ describe('paper-agent — идемпотентное исполнение', () =
     await Promise.all([processPaperAgentSignal(signal.id), processPaperAgentSignal(signal.id)]);
 
     expect(storedRun.state).toBe('PAPER_OPEN');
-    expect(successfulCreates).toBe(1);
     expect(storedRun.entryQuantity.toNumber()).toBeGreaterThan(0);
+
+    /*
+     * Успешная вставка ровно одна, и run ровно один. Второй вызов
+     * доходит до базы и получает `count: 0` — то есть проигрывает
+     * гонку, а не падает с ошибкой.
+     */
+    expect(successfulCreates, 'вставка удалась один раз').toBe(1);
+    expect(storedRun.id, 'run один').toBe('run-1');
+
+    const results = await Promise.all(
+      prismaMock.paperAgentRun.createMany.mock.results.map((result: any) => result.value),
+    );
+    expect(
+      results.filter((row: any) => row.count === 1),
+      'ровно одна вставка вернула count: 1',
+    ).toHaveLength(1);
   });
 
   it('повтор после рестарта продолжает существующий run без второго входа', async () => {

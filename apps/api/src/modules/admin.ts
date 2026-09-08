@@ -31,6 +31,12 @@ import { getIntentSigningStatus } from '../workers/intent-signing.js';
 import { blockhashProvider, createBlockhashSource } from '../services/signer-factory.js';
 import { readRegisteredIdentity } from '../services/signing-identity-registry.js';
 import { readSigningState } from '../services/signing-state.js';
+import {
+  readDevnetProof,
+  verifyDevnetNetwork,
+  type DevnetProofSnapshot,
+} from '../services/devnet-network-proof.js';
+import { readSchemaReadiness } from '../services/schema-readiness.js';
 
 export const adminRoutes: FastifyPluginAsync = async (app) => {
 
@@ -615,6 +621,76 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
   });
 
   /**
+   * Состояние проверки узла devnet. Только чтение, без сети.
+   *
+   * Наружу идут состояние, коды и время. Ни адреса узла, ни
+   * query-строки, ни отпечатка настройки: отпечаток односторонний,
+   * но по нему видна история смен endpoint, а этого не нужно даже
+   * администратору — ему нужно знать, что настройка сменилась, и это
+   * говорит код `ENDPOINT_CHANGED`.
+   */
+  app.get('/admin/live/devnet-network', { preHandler: [app.requireAdmin] }, async () => {
+    const [proof, schema] = await Promise.all([readDevnetProof(), readSchemaReadiness()]);
+
+    return {
+      network: env.SOLANA_NETWORK,
+      // Задан ли адрес узла — да или нет. Сам адрес не выходит.
+      endpointConfigured: Boolean(env.SOLANA_PREFLIGHT_RPC_URL),
+      rpc: {
+        state: proof.state,
+        code: proof.code,
+        verified: proof.verified,
+        stale: proof.stale,
+        checkInProgress: proof.checkInProgress,
+        verifiedAt: proof.verifiedAt,
+        expiresAt: proof.expiresAt,
+        checkedAt: proof.checkedAt,
+        failureCode: proof.failureCode,
+        methods: proof.methods,
+        maxLatencyMs: proof.maxLatencyMs,
+        formatVersion: proof.formatVersion,
+      },
+      // Готовность схемы — по живой базе, а не по LIVE_MIGRATIONS_READY.
+      schema: { ready: schema.ready, code: schema.code, detail: schema.detail },
+    };
+  });
+
+  /**
+   * Запуск проверки узла devnet.
+   *
+   * Тело запроса не принимается вовсе. Адрес узла берётся с сервера:
+   * позволить клиенту прислать URL значило бы разрешить проверить
+   * чужой узел и записать её как проверку своего — то есть поднять
+   * ступень готовности запросом.
+   *
+   * Операция только читает сеть. Ничего не подписывается и не
+   * отправляется: под капотом тот же `runSolanaPreflight`, что и
+   * перед приёмом депозитов, и другого транспорта у него нет.
+   *
+   * Каждый запуск попадает в журнал. Параллельные запуски
+   * дедуплицируются арендой: второй получает 409 и не идёт к узлу.
+   */
+  app.post('/admin/live/devnet-network/check', { preHandler: [app.requireAdmin] }, async (req, reply) => {
+    const outcome = await verifyDevnetNetwork({ actorId: req.user.sub, ip: req.ip });
+
+    if (outcome.ok) return { ok: true, rpc: publicProof(outcome.snapshot) };
+
+    /*
+     * Разные отказы — разные коды ответа.
+     *
+     * 409 говорит «сейчас нельзя», 422 — «проверка выполнена и не
+     * прошла». Один общий код заставлял бы гадать, повторять запрос
+     * или чинить узел.
+     */
+    const status = outcome.reason === 'CHECK_FAILED' ? 422 : 409;
+    return reply.code(status).send({
+      ok: false,
+      code: outcome.reason,
+      rpc: publicProof(outcome.snapshot),
+    });
+  });
+
+  /**
    * Снятие защёлки контура пополнений.
    *
    * Единственный путь опустить её. `requireAdmin` читает роль из
@@ -642,3 +718,26 @@ export const adminRoutes: FastifyPluginAsync = async (app) => {
     return { ok: true, state: 'HEALTHY' };
   });
 };
+
+/**
+ * Что из доказательства выходит наружу.
+ *
+ * Список полей перечислен явно, а не собран расширением объекта.
+ * Разница в том, что произойдёт, когда в снимок добавят поле: при
+ * `...snapshot` оно уедет клиенту само, и первым таким полем однажды
+ * окажется отпечаток настройки endpoint.
+ */
+function publicProof(snapshot: DevnetProofSnapshot) {
+  return {
+    state: snapshot.state,
+    code: snapshot.code,
+    verified: snapshot.verified,
+    stale: snapshot.stale,
+    verifiedAt: snapshot.verifiedAt,
+    expiresAt: snapshot.expiresAt,
+    checkedAt: snapshot.checkedAt,
+    failureCode: snapshot.failureCode,
+    methods: snapshot.methods,
+    maxLatencyMs: snapshot.maxLatencyMs,
+  };
+}

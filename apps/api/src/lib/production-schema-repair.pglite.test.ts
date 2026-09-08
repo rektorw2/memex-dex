@@ -5,18 +5,13 @@ import { PGlite } from '@electric-sql/pglite';
 import {
   KNOWN_MIGRATIONS,
   ACCESS_MIGRATION,
-  CHECK_QUEUE_MIGRATION,
   MARKET_AGE_MIGRATION,
-  OKX_SIGNAL_MIGRATION,
-  OKX_SIGNAL_ATH_MIGRATION,
-  TRADE_PROVENANCE_MIGRATION,
-  WALLET_SUMMARY_MIGRATION,
-  WALLET_ACTIVITY_PNL_MIGRATION,
-  PAPER_AGENT_MIGRATION,
-  PAPER_AGENT_PHASE2_MIGRATION,
-  PAPER_AGENT_PHASE3_MIGRATION,
-  PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION,
-  PHASE4_LIVE_FOUNDATION_MIGRATION,
+  PHASE4_RECONCILIATION_MIGRATION,
+  TRANSACTION_INTENT_MIGRATION,
+  INTENT_LIFECYCLE_MIGRATION,
+  SIGNING_IDENTITY_MIGRATION,
+  SOLANA_NETWORK_PROOF_MIGRATION,
+  BASELINE_MIGRATION,
   planProductionSchemaRepair,
 } from './production-schema-repair.js';
 import { readProductionSchemaSnapshot, type RawQuery } from './production-schema-snapshot.js';
@@ -85,207 +80,112 @@ async function markApplied(db: PGlite, name: string): Promise<void> {
 const planOf = (db: PGlite, migrations: string[] | null = onDisk()) =>
   readProductionSchemaSnapshot(queryVia(db), migrations).then(planProductionSchemaRepair);
 
+/**
+ * Что планировщик обязан потребовать после перечисленных миграций.
+ *
+ * Ожидание строится из каталога, а не переписывается руками. Прежде
+ * после каждого шага стоял свой список, и при добавлении миграции их
+ * приходилось править все: правился первый, остальные оставались
+ * вчерашними — и молчали, потому что первый же `expect` останавливал
+ * сценарий и до них дело не доходило.
+ *
+ * Сравнением источника с самим собой это не является. Production
+ * `pending` собирается из **шагов планировщика**, а они ведутся
+ * отдельным списком; ожидание здесь идёт от `KNOWN_MIGRATIONS`.
+ * Расхождение между «миграция известна» и «у миграции есть шаг
+ * проверки» — ровно тот разрыв, из-за которого база без
+ * `FundingSafetyLatch` однажды объявила себя готовой. Матрица ниже
+ * дополнительно проверяет каждую позднюю миграцию поимённо и во всех
+ * пяти состояниях.
+ */
+function pendingAfter(...applied: readonly string[]): string[] {
+  const done = new Set<string>([BASELINE_MIGRATION, ...applied]);
+  return KNOWN_MIGRATIONS.filter((name) => !done.has(name));
+}
+
+/** Порядок применения: каталог без baseline. */
+const IN_ORDER = KNOWN_MIGRATIONS.filter((name) => name !== BASELINE_MIGRATION);
+
 describe('загрузчик на настоящей схеме', () => {
   it('проводит базу через все миграции по очереди', async () => {
     const db = await PGlite.create();
 
     // Шаг 0. Прежняя боевая база: `db push` создал таблицы,
     // истории миграций нет вовсе.
-    await db.exec(sqlOf('0_baseline'));
+    await db.exec(sqlOf(BASELINE_MIGRATION));
 
     expect(await planOf(db), 'на прежней схеме нужны все миграции').toEqual({
       action: 'apply-migrations',
       resolveBaseline: true,
-      pending: [
-        ACCESS_MIGRATION,
-        MARKET_AGE_MIGRATION,
-        CHECK_QUEUE_MIGRATION,
-        OKX_SIGNAL_MIGRATION,
-        OKX_SIGNAL_ATH_MIGRATION,
-        TRADE_PROVENANCE_MIGRATION,
-        WALLET_SUMMARY_MIGRATION,
-        WALLET_ACTIVITY_PNL_MIGRATION,
-        PAPER_AGENT_MIGRATION,
-        PAPER_AGENT_PHASE2_MIGRATION,
-        PAPER_AGENT_PHASE3_MIGRATION,
-        PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION,
-        PHASE4_LIVE_FOUNDATION_MIGRATION,
-      ],
+      pending: pendingAfter(),
     });
 
     // Шаг 1. `migrate resolve --applied 0_baseline`.
-    await markApplied(db, '0_baseline');
+    await markApplied(db, BASELINE_MIGRATION);
 
     expect(await planOf(db)).toMatchObject({ resolveBaseline: false });
 
-    // Шаг 2. Миграция доступа.
-    await db.exec(sqlOf(ACCESS_MIGRATION));
-    await markApplied(db, ACCESS_MIGRATION);
+    /*
+     * Дальше — по одной миграции за шаг, в порядке каталога.
+     *
+     * Каждая применяется настоящим SQL и отмечается в истории так же,
+     * как это делает `migrate deploy`. После каждого шага ожидание
+     * пересчитывается: остаться должно ровно то, что ещё не
+     * применено, и в том же порядке.
+     */
+    const applied: string[] = [];
 
-    expect(await planOf(db), 'остаётся возраст рынка и очередь').toEqual({
-      action: 'apply-migrations',
-      resolveBaseline: false,
-      pending: [
-        MARKET_AGE_MIGRATION,
-        CHECK_QUEUE_MIGRATION,
-        OKX_SIGNAL_MIGRATION,
-        OKX_SIGNAL_ATH_MIGRATION,
-        TRADE_PROVENANCE_MIGRATION,
-        WALLET_SUMMARY_MIGRATION,
-        WALLET_ACTIVITY_PNL_MIGRATION,
-        PAPER_AGENT_MIGRATION,
-        PAPER_AGENT_PHASE2_MIGRATION,
-        PAPER_AGENT_PHASE3_MIGRATION,
-        PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION,
-        PHASE4_LIVE_FOUNDATION_MIGRATION,
-      ],
-    });
+    for (const migration of IN_ORDER) {
+      await db.exec(sqlOf(migration));
+      await markApplied(db, migration);
+      applied.push(migration);
 
-    // Шаг 3. Возраст рынка — та миграция, которую прежний
-    // загрузчик не замечал вовсе.
-    await db.exec(sqlOf(MARKET_AGE_MIGRATION));
-    await markApplied(db, MARKET_AGE_MIGRATION);
+      const rest = pendingAfter(...applied);
+      const plan = await planOf(db);
 
-    expect(await planOf(db), 'остаётся очередь проверки и Signal').toEqual({
-      action: 'apply-migrations',
-      resolveBaseline: false,
-      pending: [
-        CHECK_QUEUE_MIGRATION,
-        OKX_SIGNAL_MIGRATION,
-        OKX_SIGNAL_ATH_MIGRATION,
-        TRADE_PROVENANCE_MIGRATION,
-        WALLET_SUMMARY_MIGRATION,
-        WALLET_ACTIVITY_PNL_MIGRATION,
-        PAPER_AGENT_MIGRATION,
-        PAPER_AGENT_PHASE2_MIGRATION,
-        PAPER_AGENT_PHASE3_MIGRATION,
-        PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION,
-        PHASE4_LIVE_FOUNDATION_MIGRATION,
-      ],
-    });
+      if (rest.length === 0) {
+        expect(plan, `после ${migration} схема должна сойтись`).toEqual({ action: 'ready' });
+      } else {
+        expect(plan, `после ${migration} остаётся ${rest.length}`).toEqual({
+          action: 'apply-migrations',
+          resolveBaseline: false,
+          pending: rest,
+        });
+      }
+    }
 
-    // Шаг 4. Очередь проверки и возраст цены.
-    await db.exec(sqlOf(CHECK_QUEUE_MIGRATION));
-    await markApplied(db, CHECK_QUEUE_MIGRATION);
+    /*
+     * Страховки к производному ожиданию.
+     *
+     * Цикл по пустому или устаревшему каталогу не падает — он просто
+     * не выполняет шагов, и прогон остаётся зелёным. Поэтому здесь
+     * названо поимённо то, что цикл обязан был сделать.
+     */
+    expect([...KNOWN_MIGRATIONS], 'каталог знает о доказательстве сети').toContain(
+      SOLANA_NETWORK_PROOF_MIGRATION,
+    );
+    expect(KNOWN_MIGRATIONS.at(-1), 'оно последнее в каталоге').toBe(
+      SOLANA_NETWORK_PROOF_MIGRATION,
+    );
+    expect(applied, 'сценарий применил доказательство проверки сети').toContain(
+      SOLANA_NETWORK_PROOF_MIGRATION,
+    );
+    expect(applied.at(-1), 'и применил его последним — перед ready').toBe(
+      SOLANA_NETWORK_PROOF_MIGRATION,
+    );
+    expect(applied, 'применено ровно то и в том порядке, что в каталоге').toEqual(IN_ORDER);
 
-    expect(await planOf(db), 'остаётся Signal').toEqual({
-      action: 'apply-migrations',
-      resolveBaseline: false,
-      pending: [
-        OKX_SIGNAL_MIGRATION,
-        OKX_SIGNAL_ATH_MIGRATION,
-        TRADE_PROVENANCE_MIGRATION,
-        WALLET_SUMMARY_MIGRATION,
-        WALLET_ACTIVITY_PNL_MIGRATION,
-        PAPER_AGENT_MIGRATION,
-        PAPER_AGENT_PHASE2_MIGRATION,
-        PAPER_AGENT_PHASE3_MIGRATION,
-        PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION,
-        PHASE4_LIVE_FOUNDATION_MIGRATION,
-      ],
-    });
+    // Сам helper тоже проверен: без этих двух строк он мог бы
+    // возвращать пустой список и делать зелёным любой шаг.
+    expect(pendingAfter(), 'baseline из ожидания исключён').not.toContain(BASELINE_MIGRATION);
+    expect(pendingAfter(), 'до первого шага ждать есть чего').not.toEqual([]);
+    expect(pendingAfter(...IN_ORDER), 'применено всё — ждать нечего').toEqual([]);
 
-    // Шаг 5. История официального OKX Signal.
-    await db.exec(sqlOf(OKX_SIGNAL_MIGRATION));
-    await markApplied(db, OKX_SIGNAL_MIGRATION);
-
-    expect(await planOf(db), 'остаётся накопление ATH').toEqual({
-      action: 'apply-migrations',
-      resolveBaseline: false,
-      pending: [OKX_SIGNAL_ATH_MIGRATION, TRADE_PROVENANCE_MIGRATION, WALLET_SUMMARY_MIGRATION, WALLET_ACTIVITY_PNL_MIGRATION, PAPER_AGENT_MIGRATION, PAPER_AGENT_PHASE2_MIGRATION, PAPER_AGENT_PHASE3_MIGRATION, PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION, PHASE4_LIVE_FOUNDATION_MIGRATION],
-    });
-
-    // Шаг 6. Пик после каждого события Signal.
-    await db.exec(sqlOf(OKX_SIGNAL_ATH_MIGRATION));
-    await markApplied(db, OKX_SIGNAL_ATH_MIGRATION);
-
-    expect(await planOf(db), 'остаётся происхождение сделки').toEqual({
-      action: 'apply-migrations',
-      resolveBaseline: false,
-      pending: [TRADE_PROVENANCE_MIGRATION, WALLET_SUMMARY_MIGRATION, WALLET_ACTIVITY_PNL_MIGRATION, PAPER_AGENT_MIGRATION, PAPER_AGENT_PHASE2_MIGRATION, PAPER_AGENT_PHASE3_MIGRATION, PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION, PHASE4_LIVE_FOUNDATION_MIGRATION],
-    });
-
-    // Шаг 7. Происхождение и идентичность экономической сделки.
-    await db.exec(sqlOf(TRADE_PROVENANCE_MIGRATION));
-    await markApplied(db, TRADE_PROVENANCE_MIGRATION);
-
-    expect(await planOf(db), 'остаётся контракт сводки').toEqual({
-      action: 'apply-migrations',
-      resolveBaseline: false,
-      pending: [WALLET_SUMMARY_MIGRATION, WALLET_ACTIVITY_PNL_MIGRATION, PAPER_AGENT_MIGRATION, PAPER_AGENT_PHASE2_MIGRATION, PAPER_AGENT_PHASE3_MIGRATION, PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION, PHASE4_LIVE_FOUNDATION_MIGRATION],
-    });
-
-    // Шаг 8. Контракт сводки результативности кошелька.
-    await db.exec(sqlOf(WALLET_SUMMARY_MIGRATION));
-    await markApplied(db, WALLET_SUMMARY_MIGRATION);
-
-    expect(await planOf(db), 'остаётся локальный PnL ленты').toEqual({
-      action: 'apply-migrations',
-      resolveBaseline: false,
-      pending: [WALLET_ACTIVITY_PNL_MIGRATION, PAPER_AGENT_MIGRATION, PAPER_AGENT_PHASE2_MIGRATION, PAPER_AGENT_PHASE3_MIGRATION, PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION, PHASE4_LIVE_FOUNDATION_MIGRATION],
-    });
-
-    // Шаг 9. Локальный PnL события ленты.
-    await db.exec(sqlOf(WALLET_ACTIVITY_PNL_MIGRATION));
-    await markApplied(db, WALLET_ACTIVITY_PNL_MIGRATION);
-
-    expect(await planOf(db), 'остаётся paper-агент').toEqual({
-      action: 'apply-migrations',
-      resolveBaseline: false,
-      pending: [PAPER_AGENT_MIGRATION, PAPER_AGENT_PHASE2_MIGRATION, PAPER_AGENT_PHASE3_MIGRATION, PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION, PHASE4_LIVE_FOUNDATION_MIGRATION],
-    });
-
-    // Шаг 10. Автономный paper-агент.
-    await db.exec(sqlOf(PAPER_AGENT_MIGRATION));
-    await markApplied(db, PAPER_AGENT_MIGRATION);
-
-    expect(await planOf(db), 'остаётся Phase 2 paper-агента').toEqual({
-      action: 'apply-migrations',
-      resolveBaseline: false,
-      pending: [PAPER_AGENT_PHASE2_MIGRATION, PAPER_AGENT_PHASE3_MIGRATION, PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION, PHASE4_LIVE_FOUNDATION_MIGRATION],
-    });
-
-    // Шаг 11. Ручное управление, стоимость и outbox.
-    await db.exec(sqlOf(PAPER_AGENT_PHASE2_MIGRATION));
-    await markApplied(db, PAPER_AGENT_PHASE2_MIGRATION);
-
-    expect(await planOf(db), 'остаётся Phase 3 распределения капитала').toEqual({
-      action: 'apply-migrations',
-      resolveBaseline: false,
-      pending: [PAPER_AGENT_PHASE3_MIGRATION, PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION, PHASE4_LIVE_FOUNDATION_MIGRATION],
-    });
-
-    // Шаг 12. Изолированные ACTIVE/SHADOW счета и неизменяемый ledger.
-    await db.exec(sqlOf(PAPER_AGENT_PHASE3_MIGRATION));
-    await markApplied(db, PAPER_AGENT_PHASE3_MIGRATION);
-
-    expect(await planOf(db), 'остаётся исправление signal pipeline').toEqual({
-      action: 'apply-migrations',
-      resolveBaseline: false,
-      pending: [PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION, PHASE4_LIVE_FOUNDATION_MIGRATION],
-    });
-
-    // Шаг 13. Происхождение ingest и три именованные задержки.
-    await db.exec(sqlOf(PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION));
-    await markApplied(db, PAPER_AGENT_SIGNAL_PIPELINE_MIGRATION);
-
-    expect(await planOf(db), 'остаётся Phase 4 foundation').toEqual({
-      action: 'apply-migrations',
-      resolveBaseline: false,
-      pending: [PHASE4_LIVE_FOUNDATION_MIGRATION],
-    });
-
-    // Шаг 14. Безопасный фундамент LIVE без включения сетевых воркеров.
-    await db.exec(sqlOf(PHASE4_LIVE_FOUNDATION_MIGRATION));
-    await markApplied(db, PHASE4_LIVE_FOUNDATION_MIGRATION);
-
-    expect(await planOf(db), 'схема сошлась').toEqual({ action: 'ready' });
-
-    // Шаг 15. Следующий деплой ничего не делает.
-    expect(await planOf(db)).toEqual({ action: 'ready' });
+    // Следующий деплой ничего не делает.
+    expect(await planOf(db), 'повтор идемпотентен').toEqual({ action: 'ready' });
 
     await db.close();
-  }, 15_000);
+  }, 30_000);
 
   it('видит незнакомую миграцию в каталоге', async () => {
     const db = await PGlite.create();
@@ -384,6 +284,173 @@ describe('загрузчик на настоящей схеме', () => {
 
     await db.close();
   });
+});
+
+/**
+ * Шесть состояний каждой поздней миграции Phase 4 — на настоящем
+ * Postgres.
+ *
+ * Юнит-тесты рядом строят снимок руками, и это их предел: если
+ * `readProductionSchemaSnapshot` спрашивает не ту системную таблицу
+ * или пишет имя индекса с другим регистром, рукописный снимок этого
+ * не покажет. Здесь состояние базы создают сами миграции, а снимок
+ * читается теми же запросами, что и в production.
+ */
+
+/**
+ * Разбор миграции на отдельные операторы.
+ *
+ * Нужен для состояния «применение оборвалось посередине»: половина
+ * объектов создана, половины нет. Ни в одной миграции репозитория
+ * нет `$$`-блоков, поэтому деления по `;` достаточно; если это
+ * когда-нибудь перестанет быть правдой, `db.exec` упадёт на
+ * искалеченном операторе — молча тест не пройдёт.
+ */
+function statementsOf(sql: string): string[] {
+  return sql
+    .split(/;\s*$/m)
+    .map((s) => s.trim())
+    .filter((s) => s.replace(/--[^\n]*/g, '').trim().length > 0);
+}
+
+/** Применить всё, что идёт в каталоге до указанной миграции. */
+async function applyBefore(db: PGlite, migration: string): Promise<void> {
+  for (const name of KNOWN_MIGRATIONS) {
+    if (name === migration) return;
+    await db.exec(sqlOf(name));
+    await markApplied(db, name);
+  }
+  throw new Error(`${migration} нет в KNOWN_MIGRATIONS`);
+}
+
+const LATE_PHASE4 = [
+  { migration: PHASE4_RECONCILIATION_MIGRATION, prefix: 'PHASE4_RECONCILIATION' },
+  { migration: TRANSACTION_INTENT_MIGRATION, prefix: 'TRANSACTION_INTENT' },
+  { migration: INTENT_LIFECYCLE_MIGRATION, prefix: 'INTENT_LIFECYCLE' },
+  { migration: SIGNING_IDENTITY_MIGRATION, prefix: 'SIGNING_IDENTITY' },
+  { migration: SOLANA_NETWORK_PROOF_MIGRATION, prefix: 'SOLANA_NETWORK_PROOF' },
+] as const;
+
+describe('матрица поздних миграций не отстала от каталога', () => {
+  it('доказательство сети в ней названо поимённо', () => {
+    /*
+     * Явное утверждение рядом с `describe.each`. Матрица по
+     * устаревшему списку не падает — она просто не выполняет
+     * тестов для забытой миграции, и прогон остаётся зелёным.
+     */
+    const covered = LATE_PHASE4.map((row) => row.migration);
+
+    expect(covered).toContain(SOLANA_NETWORK_PROOF_MIGRATION);
+    expect(covered, 'поздних миграций Phase 4').toHaveLength(5);
+    expect(covered, 'дубликатов нет').toEqual([...new Set(covered)]);
+
+    // Опечатка в имени превратила бы `applyBefore` в применение
+    // всего каталога, и матрица проверяла бы уже готовую схему.
+    for (const migration of covered) {
+      expect([...KNOWN_MIGRATIONS], migration).toContain(migration);
+    }
+  });
+});
+
+describe.each(LATE_PHASE4)('поздняя миграция $migration на настоящем Postgres', ({
+  migration,
+  prefix,
+}) => {
+  it('полностью отсутствующая попадает в pending', async () => {
+    const db = await PGlite.create();
+    await applyBefore(db, migration);
+
+    const plan = await planOf(db);
+
+    expect(plan).toMatchObject({ action: 'apply-migrations' });
+    if (plan.action !== 'apply-migrations') throw new Error('недостижимо');
+    expect(plan.pending).toContain(migration);
+
+    await db.close();
+  }, 20_000);
+
+  it('полностью применённая даёт ready', async () => {
+    const db = await PGlite.create();
+    for (const name of KNOWN_MIGRATIONS) {
+      await db.exec(sqlOf(name));
+      await markApplied(db, name);
+    }
+
+    expect(await planOf(db)).toEqual({ action: 'ready' });
+
+    await db.close();
+  }, 20_000);
+
+  it('история без схемы останавливает запуск', async () => {
+    /*
+     * Запись в `_prisma_migrations` есть, объектов нет. Prisma
+     * такую миграцию больше не накатит, а приложение обратится
+     * к несуществующей таблице на первом же запросе.
+     */
+    const db = await PGlite.create();
+    await applyBefore(db, migration);
+    await markApplied(db, migration);
+
+    expect(await planOf(db)).toEqual({
+      action: 'refuse',
+      reason: `${prefix}_HISTORY_CONTRADICTS_SCHEMA`,
+    });
+
+    await db.close();
+  }, 20_000);
+
+  it('схема без истории останавливает запуск', async () => {
+    // След `db push`: объекты созданы мимо истории. Молчание здесь
+    // означает упавший деплой при следующей миграции в репозитории.
+    const db = await PGlite.create();
+    await applyBefore(db, migration);
+    await db.exec(sqlOf(migration));
+
+    expect(await planOf(db)).toEqual({
+      action: 'refuse',
+      reason: `${prefix}_SCHEMA_AHEAD_OF_HISTORY`,
+    });
+
+    await db.close();
+  }, 20_000);
+
+  it('оборванное применение останавливает запуск', async () => {
+    /*
+     * Ровно то состояние, что было в production: колонки и часть
+     * таблиц есть, последнего объекта нет. Досыпать недостающее
+     * вслепую нельзя — решение принимает человек.
+     */
+    const db = await PGlite.create();
+    await applyBefore(db, migration);
+
+    const parts = statementsOf(sqlOf(migration));
+    expect(parts.length, 'миграция из одного оператора не может быть частичной').toBeGreaterThan(1);
+    for (const part of parts.slice(0, -1)) await db.exec(`${part};`);
+
+    expect(await planOf(db)).toEqual({
+      action: 'refuse',
+      reason: `PARTIAL_${prefix}_MIGRATION`,
+    });
+
+    await db.close();
+  }, 20_000);
+
+  it('незнакомая миграция важнее готовности', async () => {
+    // Полная схема не отменяет проверку каталога: неизвестный
+    // файл рядом означает, что репозиторий и контейнер разошлись.
+    const db = await PGlite.create();
+    for (const name of KNOWN_MIGRATIONS) {
+      await db.exec(sqlOf(name));
+      await markApplied(db, name);
+    }
+
+    expect(await planOf(db, [...onDisk(), '20270101000000_unreviewed'])).toEqual({
+      action: 'refuse',
+      reason: 'UNKNOWN_MIGRATION_PRESENT',
+    });
+
+    await db.close();
+  }, 20_000);
 });
 
 describe('имена, которых ждёт загрузчик', () => {

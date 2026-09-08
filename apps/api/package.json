@@ -12,7 +12,9 @@
     "okx:smoke": "tsx scripts/okx-smoke.ts",
     "okx:ws-smoke": "tsx scripts/okx-ws-smoke.ts",
     "okx:ledger-smoke": "tsx scripts/okx-ledger-smoke.ts",
-    "db:preflight": "tsx scripts/db-preflight.ts"
+    "db:preflight": "tsx scripts/db-preflight.ts",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "pretest:e2e": "tsc -p ../../packages/core/tsconfig.json"
   },
   "dependencies": {
     "@aws-sdk/client-kms": "^3.1126.0",

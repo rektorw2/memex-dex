@@ -39,6 +39,23 @@ const ENUMS = `
   WHERE n.nspname = current_schema() AND t.typtype = 'e'
 `;
 
+/**
+ * Имена индексов текущей схемы.
+ *
+ * Отдельный запрос, а не вывод из таблиц. Уникальный индекс несёт
+ * правило — «одна успешная подпись на намерение», «одно живое
+ * намерение на предложение», — и таблица без него выглядит
+ * применённой, хотя правило не действует.
+ *
+ * `pg_indexes` вместо `pg_class`: он уже отфильтрован по схеме и
+ * не требует соединения с `pg_namespace`.
+ */
+const INDEXES = `
+  SELECT indexname AS name
+  FROM pg_indexes
+  WHERE schemaname = current_schema()
+`;
+
 const HISTORY_TABLE = `
   SELECT table_name AS name
   FROM information_schema.tables
@@ -78,8 +95,11 @@ export async function readProductionSchemaSnapshot(
     economicTradeColumns,
     traderWalletColumns,
     walletActivityColumns,
+    solanaDepositEventColumns,
+    transactionIntentColumns,
     tables,
     enums,
+    indexes,
   ] = await Promise.all([
     query(COLUMNS_OF, ['User']),
     query(COLUMNS_OF, ['Token']),
@@ -95,8 +115,11 @@ export async function readProductionSchemaSnapshot(
     query(COLUMNS_OF, ['WalletEconomicTrade']),
     query(COLUMNS_OF, ['TraderWallet']),
     query(COLUMNS_OF, ['WalletActivity']),
+    query(COLUMNS_OF, ['SolanaDepositEvent']),
+    query(COLUMNS_OF, ['TransactionIntent']),
     query(TABLES, []),
     query(ENUMS, []),
+    query(INDEXES, []),
   ]);
 
   /*
@@ -123,6 +146,9 @@ export async function readProductionSchemaSnapshot(
     economicTradeColumns: names(economicTradeColumns),
     traderWalletColumns: names(traderWalletColumns),
     walletActivityColumns: names(walletActivityColumns),
+    solanaDepositEventColumns: names(solanaDepositEventColumns),
+    transactionIntentColumns: names(transactionIntentColumns),
+    indexes: names(indexes),
     tables: names(tables),
     enums: names(enums),
     appliedMigrations: hasHistory ? names(await query(APPLIED, [])) : null,

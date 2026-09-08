@@ -117,6 +117,13 @@ export * from './okx-budget.js';
 export * from './plans-presentation.js';
 export * from './deposit.js';
 export * from './phase4.js';
+export * from './agent-sections.js';
+export * from './paper-test-source.js';
+export * from './paper-signal-origins.js';
+export * from './paper-ledger-events.js';
+export * from './live-readiness-stages.js';
+export * from './devnet-proof.js';
+export * from './agent-failure.js';
 
 // Сверка зачислений с цепочкой: что считать расхождением, когда
 // исчезновение транзакции перестаёт быть сбоем сети и что при этом

@@ -36,6 +36,22 @@ const feature = fs.readFileSync(
 );
 
 let failures = 0;
+/**
+ * Текст миграции без комментариев.
+ *
+ * Проверки «миграция только добавляет» ищут `DROP` и родню в тексте
+ * файла. Пока комментарии оставались в тексте, миграция, честно
+ * написавшая «здесь нет DROP», проваливала проверку собственным
+ * объяснением — проверка обвиняла свою же документацию.
+ *
+ * Комментарии не выполняются, поэтому вырезать их безопасно: то, что
+ * действительно делает миграция, остаётся на месте.
+ */
+const sqlOnly = (text) =>
+  text
+    .replace(/--[^\n]*/g, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+
 const check = (name, cond, extra = '') => {
   console.log(`${cond ? '  ок  ' : ' СБОЙ '} ${name}${extra ? ' — ' + extra : ''}`);
   if (!cond) failures++;
@@ -130,6 +146,11 @@ const signingIdentity = fs.readFileSync(
   'utf8',
 );
 
+const networkProof = fs.readFileSync(
+  `${R}/prisma/migrations/20260905100000_add_solana_network_proof/migration.sql`,
+  'utf8',
+);
+
 const intentLifecycle = fs.readFileSync(
   `${R}/prisma/migrations/20260904210000_add_intent_lifecycle/migration.sql`,
   'utf8',
@@ -170,6 +191,7 @@ const KNOWN = [
   '20260904200000_add_transaction_intent',
   '20260904210000_add_intent_lifecycle',
   '20260904220000_add_signing_identity',
+  '20260905100000_add_solana_network_proof',
 ];
 
 const onDisk = fs
@@ -1292,7 +1314,7 @@ check('повтор капиталовой проводки блокируетс
 
 console.log('\n=== Paper-agent signal pipeline ===');
 check('миграция pipeline не содержит destructive SQL',
-  !/\b(?:DROP|TRUNCATE|DELETE\s+FROM)\b/i.test(paperAgentSignalPipeline));
+  !/\b(?:DROP|TRUNCATE|DELETE\s+FROM)\b/i.test(sqlOnly(paperAgentSignalPipeline)));
 await clean.exec(paperAgentSignalPipeline);
 
 const signalPipelineColumns = (await clean.query(`
@@ -1325,7 +1347,7 @@ check('исторические строки сохранены и новые п
 
 console.log('\n=== Phase 4 LIVE foundation ===');
 check('Phase 4 migration is additive only',
-  !/\b(?:DROP|TRUNCATE|DELETE\s+FROM)\b/i.test(phase4LiveFoundation));
+  !/\b(?:DROP|TRUNCATE|DELETE\s+FROM)\b/i.test(sqlOnly(phase4LiveFoundation)));
 await clean.exec(phase4LiveFoundation);
 
 const phase4Tables = (await clean.query(`
@@ -1368,7 +1390,7 @@ check('same signature and instruction index cannot be credited twice',
 
 console.log('\n=== Phase 4 сверка ===');
 check('миграция сверки только добавляет',
-  !/\b(?:DROP|TRUNCATE|DELETE\s+FROM|ALTER\s+COLUMN|RENAME)\b/i.test(phase4Reconciliation));
+  !/\b(?:DROP|TRUNCATE|DELETE\s+FROM|ALTER\s+COLUMN|RENAME)\b/i.test(sqlOnly(phase4Reconciliation)));
 
 // Строка, существовавшая до миграции: боевая база не пуста.
 await clean.exec(phase4Reconciliation);
@@ -1416,7 +1438,7 @@ check('повторное применение не падает', reapplyError 
 
 console.log('\n=== Phase 4D подпись ===');
 check('миграция намерений только добавляет',
-  !/\b(?:DROP|TRUNCATE|DELETE\s+FROM|ALTER\s+COLUMN|RENAME)\b/i.test(transactionIntent));
+  !/\b(?:DROP|TRUNCATE|DELETE\s+FROM|ALTER\s+COLUMN|RENAME)\b/i.test(sqlOnly(transactionIntent)));
 
 /*
  * Отправки в модели нет.
@@ -1541,7 +1563,7 @@ check('подпись не ставится в обход захвата', signF
 // ── Жизненный цикл: происхождение и связь с предложением ──────────
 
 check('миграция жизненного цикла только добавляет',
-  !/\b(?:DROP|TRUNCATE|DELETE\s+FROM|RENAME)\b/i.test(intentLifecycle));
+  !/\b(?:DROP|TRUNCATE|DELETE\s+FROM|RENAME)\b/i.test(sqlOnly(intentLifecycle)));
 
 await clean.exec(intentLifecycle);
 
@@ -1609,7 +1631,7 @@ check('закрытое намерение освобождает предлож
 // ── Кто подписывает ───────────────────────────────────────────────
 
 check('миграция signing identity только добавляет',
-  !/\b(?:DROP|TRUNCATE|DELETE\s+FROM|ALTER\s+COLUMN|RENAME)\b/i.test(signingIdentity));
+  !/\b(?:DROP|TRUNCATE|DELETE\s+FROM|ALTER\s+COLUMN|RENAME)\b/i.test(sqlOnly(signingIdentity)));
 
 await clean.exec(signingIdentity);
 
@@ -1633,6 +1655,61 @@ const identityDefault = (await clean.query(`
 // человек не знает, подписывать не должен.
 check('новая identity не зарегистрирована по умолчанию',
   identityDefault === 'UNREGISTERED', String(identityDefault));
+
+// ── Чем доказывается, что сеть проверена ──────────────────────────
+/*
+ * Раньше готовность сети выводилась из наличия переменной с адресом
+ * узла. Таблица заводится ради обратного: доказательство должно
+ * храниться, стареть и терять силу при смене настройки.
+ *
+ * Проверяется здесь не бизнес-правило, а то, что миграция не даёт
+ * записать секрет: адрес узла содержит query-строку с API-ключом,
+ * и колонки под него быть не должно.
+ */
+check('миграция доказательства сети только добавляет',
+  !/\b(?:DROP|TRUNCATE|DELETE\s+FROM|ALTER\s+COLUMN|RENAME)\b/i.test(sqlOnly(networkProof)));
+
+await clean.exec(networkProof);
+
+const proofColumns = (await clean.query(`
+  SELECT column_name FROM information_schema.columns
+  WHERE table_name='SolanaNetworkProof'
+`)).rows.map((row) => row.column_name);
+check('в таблице нет колонки под адрес узла или ключ',
+  !proofColumns.some((name) => /url|endpoint$|uri|token|secret|apiKey|credential/i.test(name)),
+  proofColumns.join(', '));
+check('endpoint хранится только отпечатком',
+  proofColumns.includes('endpointFingerprint'));
+
+/*
+ * Срок годности и время проверки — обязательные поля успеха, но не
+ * колонки NOT NULL: у неудачной проверки их нет. Проверяется, что
+ * запись без срока вообще возможна, — иначе отказ пришлось бы
+ * записывать с выдуманным сроком, то есть выдавать за доказательство.
+ */
+const failedProof = (await clean.query(`
+  INSERT INTO "SolanaNetworkProof"
+    ("id","network","outcome","endpointFingerprint","failureCode","checkedAt","updatedAt")
+  VALUES ('solana-signing','devnet','FAILED','ffff','SOLANA_RPC_TIMEOUT',NOW(),NOW())
+  RETURNING "formatVersion","verifiedAt","expiresAt","methods"
+`)).rows[0];
+check('неудачная проверка пишется без срока годности',
+  failedProof?.verifiedAt === null && failedProof?.expiresAt === null,
+  `${failedProof?.verifiedAt} / ${failedProof?.expiresAt}`);
+check('версия формата проставляется по умолчанию',
+  failedProof?.formatVersion === 1, String(failedProof?.formatVersion));
+check('список методов по умолчанию пуст, а не NULL',
+  Array.isArray(failedProof?.methods) && failedProof.methods.length === 0,
+  JSON.stringify(failedProof?.methods));
+
+let proofReapply = null;
+try {
+  await clean.exec(networkProof);
+} catch (error) {
+  proofReapply = error;
+}
+check('повторное применение миграции доказательства не падает',
+  proofReapply == null, proofReapply?.message ?? 'ok');
 
 let intentReapply = null;
 try {

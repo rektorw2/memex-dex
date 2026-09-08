@@ -41,6 +41,8 @@ export const INTENT_LIFECYCLE_MIGRATION =
   '20260904210000_add_intent_lifecycle';
 export const SIGNING_IDENTITY_MIGRATION =
   '20260904220000_add_signing_identity';
+export const SOLANA_NETWORK_PROOF_MIGRATION =
+  '20260905100000_add_solana_network_proof';
 
 /**
  * Миграции, которые загрузчику разрешено применять.
@@ -68,6 +70,7 @@ export const KNOWN_MIGRATIONS = [
   TRANSACTION_INTENT_MIGRATION,
   INTENT_LIFECYCLE_MIGRATION,
   SIGNING_IDENTITY_MIGRATION,
+  SOLANA_NETWORK_PROOF_MIGRATION,
 ] as const;
 
 export const BASE_USER_COLUMNS = ['id', 'email', 'passwordHash'] as const;
@@ -315,6 +318,78 @@ export const PHASE4_LIVE_ENUMS = [
   'ComplianceState',
 ] as const;
 
+/**
+ * Что приносит каждая из поздних миграций Phase 4.
+ *
+ * Списки существуют не для красоты: планировщик проверяет наличие
+ * именно этих объектов, а не факт записи в истории. История говорит,
+ * что мы намеревались сделать; схема — что получилось. Расхождение
+ * между ними и есть то состояние, ради которого всё это написано.
+ *
+ * Индексы перечислены наравне с таблицами. Уникальный индекс здесь
+ * не оптимизация, а правило: «одна успешная подпись на намерение» и
+ * «одно живое намерение на предложение» держатся на нём, и таблица
+ * без него выглядит целой, но защиты не даёт.
+ */
+
+/** Сверка депозитов: колонки состояния и две новые таблицы. */
+export const PHASE4_RECONCILIATION_EVENT_COLUMNS = [
+  'lastChainSeenAt',
+  'lastReconciledAt',
+  'missingSince',
+  'consecutiveMissingChecks',
+  'reconciliationState',
+  'reconcileAttempts',
+  'reconcileNotBefore',
+] as const;
+
+export const PHASE4_RECONCILIATION_TABLES = [
+  'SolanaDepositAddressCursor',
+  'FundingSafetyLatch',
+] as const;
+
+export const PHASE4_RECONCILIATION_INDEXES = [
+  'SolanaDepositEvent_state_reconcileNotBefore_idx',
+] as const;
+
+/** Денежное намерение и попытки подписи. */
+export const TRANSACTION_INTENT_TABLES = ['TransactionIntent', 'SigningAttempt'] as const;
+
+export const TRANSACTION_INTENT_INDEXES = [
+  'TransactionIntent_userId_state_idx',
+  'TransactionIntent_state_expiresAt_idx',
+  'SigningAttempt_intentId_startedAt_idx',
+  // Частичный уникальный индекс: вторая успешная подпись под тем же
+  // намерением невозможна на уровне базы, а не проверки в памяти.
+  'SigningAttempt_one_success_per_intent',
+] as const;
+
+/** Происхождение намерения и связь с предложением. */
+export const INTENT_LIFECYCLE_COLUMNS = ['origin', 'proposalId', 'shownFingerprint'] as const;
+
+export const INTENT_LIFECYCLE_INDEXES = [
+  'TransactionIntent_proposalId_idx',
+  // Одно живое намерение на предложение. Без него подтверждение,
+  // нажатое дважды, порождает два денежных намерения.
+  'TransactionIntent_one_live_per_proposal',
+] as const;
+
+/** Реестр ключа подписи. */
+export const SIGNING_IDENTITY_TABLES = ['SigningIdentity'] as const;
+export const SIGNING_IDENTITY_INDEXES = ['SigningIdentity_state_idx'] as const;
+
+/**
+ * Доказательство проверки узла сети.
+ *
+ * Без этой таблицы `networkVerified` некуда записать, и готовность
+ * сети снова пришлось бы выводить из наличия переменной окружения —
+ * ровно из того, ради отказа от чего таблица и заведена.
+ */
+export const SOLANA_NETWORK_PROOF_TABLES = ['SolanaNetworkProof'] as const;
+export const SOLANA_NETWORK_PROOF_INDEXES = [
+  'SolanaNetworkProof_network_outcome_idx',
+] as const;
+
 export interface ProductionSchemaSnapshot {
   userColumns: string[];
   /**
@@ -340,8 +415,22 @@ export interface ProductionSchemaSnapshot {
   traderWalletColumns: string[];
   /** Колонки локального PnL живого события. */
   walletActivityColumns: string[];
+  /**
+   * Колонки события депозита. Нужны миграции сверки.
+   */
+  solanaDepositEventColumns: string[];
+  /** Колонки денежного намерения. Нужны миграции жизненного цикла. */
+  transactionIntentColumns: string[];
   tables: string[];
   enums: string[];
+  /**
+   * Имена индексов.
+   *
+   * Читаются отдельно от таблиц: таблица без своего уникального
+   * индекса выглядит применённой, но правило, ради которого индекс
+   * создавали, не действует.
+   */
+  indexes: string[];
   /** null означает, что таблицы истории Prisma ещё нет. */
   appliedMigrations: string[] | null;
   /**
@@ -443,6 +532,17 @@ export function planProductionSchemaRepair(
   const walletActivity = new Set(snapshot.walletActivityColumns ?? []);
   const tables = new Set(snapshot.tables);
   const enums = new Set(snapshot.enums);
+  const solanaDepositEvent = new Set(snapshot.solanaDepositEventColumns ?? []);
+  const transactionIntent = new Set(snapshot.transactionIntentColumns ?? []);
+  /*
+   * Индексы читаются наравне с таблицами.
+   *
+   * Уникальный индекс здесь несёт правило, а не скорость: «одна
+   * успешная подпись на намерение» и «одно живое намерение на
+   * предложение». Таблица без него выглядит применённой, но правило
+   * не действует — и обнаружится это на второй подписи.
+   */
+  const indexes = new Set(snapshot.indexes ?? []);
   const applied = new Set(snapshot.appliedMigrations ?? []);
 
   /*
@@ -649,6 +749,79 @@ export function planProductionSchemaRepair(
         partial: 'PARTIAL_PHASE4_LIVE_FOUNDATION_MIGRATION',
         historyAhead: 'PHASE4_LIVE_FOUNDATION_HISTORY_CONTRADICTS_SCHEMA',
         schemaAhead: 'PHASE4_LIVE_FOUNDATION_SCHEMA_AHEAD_OF_HISTORY',
+      },
+    },
+    /*
+     * Четыре поздние миграции Phase 4.
+     *
+     * Их не было в этом списке, хотя в `KNOWN_MIGRATIONS` они
+     * значились. Сочетание оказалось худшим из возможных: проверка
+     * «неизвестная миграция» их пропускала, а проверки наличия
+     * не существовало — планировщик доходил до конца шагов и
+     * отвечал `ready` на базе, где не было даже `FundingSafetyLatch`.
+     *
+     * Приложение стартовало, первый запрос `/paper-agent` падал, и
+     * человек видел «Агент временно недоступен» без объяснений.
+     */
+    {
+      name: PHASE4_RECONCILIATION_MIGRATION,
+      presence: presenceOf([
+        ...PHASE4_RECONCILIATION_EVENT_COLUMNS.map((c) => solanaDepositEvent.has(c)),
+        ...PHASE4_RECONCILIATION_TABLES.map((t) => tables.has(t)),
+        ...PHASE4_RECONCILIATION_INDEXES.map((i) => indexes.has(i)),
+      ]),
+      reasons: {
+        partial: 'PARTIAL_PHASE4_RECONCILIATION_MIGRATION',
+        historyAhead: 'PHASE4_RECONCILIATION_HISTORY_CONTRADICTS_SCHEMA',
+        schemaAhead: 'PHASE4_RECONCILIATION_SCHEMA_AHEAD_OF_HISTORY',
+      },
+    },
+    {
+      name: TRANSACTION_INTENT_MIGRATION,
+      presence: presenceOf([
+        ...TRANSACTION_INTENT_TABLES.map((t) => tables.has(t)),
+        ...TRANSACTION_INTENT_INDEXES.map((i) => indexes.has(i)),
+      ]),
+      reasons: {
+        partial: 'PARTIAL_TRANSACTION_INTENT_MIGRATION',
+        historyAhead: 'TRANSACTION_INTENT_HISTORY_CONTRADICTS_SCHEMA',
+        schemaAhead: 'TRANSACTION_INTENT_SCHEMA_AHEAD_OF_HISTORY',
+      },
+    },
+    {
+      name: INTENT_LIFECYCLE_MIGRATION,
+      presence: presenceOf([
+        ...INTENT_LIFECYCLE_COLUMNS.map((c) => transactionIntent.has(c)),
+        ...INTENT_LIFECYCLE_INDEXES.map((i) => indexes.has(i)),
+      ]),
+      reasons: {
+        partial: 'PARTIAL_INTENT_LIFECYCLE_MIGRATION',
+        historyAhead: 'INTENT_LIFECYCLE_HISTORY_CONTRADICTS_SCHEMA',
+        schemaAhead: 'INTENT_LIFECYCLE_SCHEMA_AHEAD_OF_HISTORY',
+      },
+    },
+    {
+      name: SIGNING_IDENTITY_MIGRATION,
+      presence: presenceOf([
+        ...SIGNING_IDENTITY_TABLES.map((t) => tables.has(t)),
+        ...SIGNING_IDENTITY_INDEXES.map((i) => indexes.has(i)),
+      ]),
+      reasons: {
+        partial: 'PARTIAL_SIGNING_IDENTITY_MIGRATION',
+        historyAhead: 'SIGNING_IDENTITY_HISTORY_CONTRADICTS_SCHEMA',
+        schemaAhead: 'SIGNING_IDENTITY_SCHEMA_AHEAD_OF_HISTORY',
+      },
+    },
+    {
+      name: SOLANA_NETWORK_PROOF_MIGRATION,
+      presence: presenceOf([
+        ...SOLANA_NETWORK_PROOF_TABLES.map((t) => tables.has(t)),
+        ...SOLANA_NETWORK_PROOF_INDEXES.map((i) => indexes.has(i)),
+      ]),
+      reasons: {
+        partial: 'PARTIAL_SOLANA_NETWORK_PROOF_MIGRATION',
+        historyAhead: 'SOLANA_NETWORK_PROOF_HISTORY_CONTRADICTS_SCHEMA',
+        schemaAhead: 'SOLANA_NETWORK_PROOF_SCHEMA_AHEAD_OF_HISTORY',
       },
     },
   ];

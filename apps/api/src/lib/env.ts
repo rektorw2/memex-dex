@@ -326,6 +326,19 @@ const schema = z.object({
    * и локальным KMS.
    */
   FUNDING_ENABLED: booleanFromEnv.default(false),
+  /**
+   * Управляемый источник сигналов и цен для проверки PAPER-режима.
+   *
+   * Отдельная настройка, а не производная от `NODE_ENV`. Сценарии
+   * вроде «цена не пришла до дедлайна» иначе приходится ждать
+   * неделями и ловить случайно — то есть PAPER-режим оказывается
+   * непроверяемым.
+   *
+   * Опасен ровно тем же, чем полезен: это способ нарисовать агенту
+   * любую картину рынка. Поэтому по умолчанию выключен, а проверка
+   * ниже не даёт включить его вместе с боевым режимом.
+   */
+  PAPER_TEST_SOURCE_ENABLED: booleanFromEnv.default(false),
   /** Future LIVE agent. All three switches are false by default. */
   LIVE_AGENT_ENABLED: booleanFromEnv.default(false),
   LIVE_EXECUTION_ENABLED: booleanFromEnv.default(false),
@@ -804,6 +817,33 @@ if (phase4LiveRequested && env.EXECUTION_MODE !== 'live') {
 
 if (phase4LiveRequested && env.KMS_PROVIDER === 'local') {
   throw new Error('LIVE Agent нельзя включить с KMS_PROVIDER=local.');
+}
+
+/*
+ * Управляемый источник и боевой режим несовместимы.
+ *
+ * Проверка на старте, а не в маршруте: маршрут можно обойти скриптом,
+ * задачей планировщика или следующим обработчиком, который забудут
+ * спросить. Запуск — единственное место, которое проходят все.
+ *
+ * Три отдельных условия, потому что это три разных утверждения.
+ * Достаточно любого: подделанный сигнал при включённом исполнении
+ * или включённых выводах стоит денег.
+ */
+if (env.PAPER_TEST_SOURCE_ENABLED) {
+  const conflict = [
+    env.EXECUTION_MODE === 'live' ? 'EXECUTION_MODE=live' : null,
+    env.LIVE_EXECUTION_ENABLED ? 'LIVE_EXECUTION_ENABLED=true' : null,
+    env.WITHDRAWALS_ENABLED ? 'WITHDRAWALS_ENABLED=true' : null,
+    env.SOLANA_NETWORK === 'mainnet-beta' ? 'SOLANA_NETWORK=mainnet-beta' : null,
+  ].filter(Boolean);
+
+  if (conflict.length > 0) {
+    throw new Error(
+      `PAPER_TEST_SOURCE_ENABLED несовместим с ${conflict.join(', ')}. ` +
+        'Управляемый источник сигналов допустим только в PAPER-режиме вне mainnet.',
+    );
+  }
 }
 
 if (phase4NetworkRequested) {

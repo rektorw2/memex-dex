@@ -10,6 +10,7 @@ import {
 } from '@memex/core';
 import { env } from '../lib/env.js';
 import { prisma } from '../lib/prisma.js';
+import { readDevnetProof, type DevnetProofSnapshot } from './devnet-network-proof.js';
 import { readFundingSafetyState } from './prisma-solana-reconciliation-repository.js';
 import { expectedFingerprint } from './signer-factory.js';
 
@@ -45,12 +46,35 @@ export interface SigningStateSnapshot {
     network: string;
     identityState: string;
     keyFingerprint: string | null;
+    /*
+     * Безопасные признаки для лестницы готовности LIVE.
+     *
+     * Все — булевы. Ни идентификатора ключа, ни региона, ни адреса
+     * узла: лестнице нужно знать «выполнено ли», а не «чем именно».
+     */
+    providerSupported: boolean;
+    keyConfigured: boolean;
+    expectedKeyMatches: boolean | null;
+    hasAmbiguousAttempt: boolean;
     solanaAddress: string | null;
     networkVerified: boolean;
     signatureValidated: boolean;
     withdrawalsEnabled: boolean;
     broadcastAvailable: boolean;
   };
+  /**
+   * Доказательство проверки узла — целиком, а не одним булевым.
+   *
+   * `facts.networkVerified` отвечает на вопрос «годится ли сейчас»,
+   * а экрану нужно ещё и «когда проверяли», «когда протухнет» и
+   * «почему не годится». Собирать это вторым чтением значило бы
+   * завести второй источник истины о том же факте — а расхождение
+   * двух источников уже однажды показало «подпись выключена» там,
+   * где воркер был готов вызвать KMS.
+   *
+   * `null` — снимок собран без базы (startup guards).
+   */
+  devnetProof: DevnetProofSnapshot | null;
 }
 
 /**
@@ -67,8 +91,8 @@ export const BROADCAST_AVAILABLE = false;
 const SUPPORTED_PROVIDERS = new Set(['aws-kms', 'gcp-kms']);
 
 export async function readSigningState(): Promise<SigningStateSnapshot> {
-  const { input, identity } = await collectInput();
-  return snapshotOf(input, identity);
+  const { input, identity, devnetProof } = await collectInput();
+  return snapshotOf(input, identity, devnetProof);
 }
 
 /**
@@ -90,12 +114,22 @@ export function signingStateFromConfig(): SigningStateSnapshot {
      */
     identity: 'NOT_REGISTERED',
     expectedKeyMatches: null,
-    networkVerified: Boolean(env.SOLANA_PREFLIGHT_RPC_URL),
+    /*
+     * Сеть не проверена, и на старте иначе быть не может.
+     *
+     * Раньше здесь стояло `Boolean(env.SOLANA_PREFLIGHT_RPC_URL)`.
+     * Это отвечало на вопрос «задана ли переменная», а читалось как
+     * «сеть проверена»: наличие строки с адресом не доказывает ни
+     * доступности узла, ни того, что это devnet, ни того, что его не
+     * заменили. Доказательство живёт в базе, а базы на этом этапе
+     * ещё нет — значит, честный ответ здесь только `false`.
+     */
+    networkVerified: false,
     signatureValidated: false,
     safetyLatchHealthy: true,
     hasAmbiguousAttempt: false,
   };
-  return snapshotOf(input, null);
+  return snapshotOf(input, null, null);
 }
 
 /** Безопасные приметы зарегистрированного ключа. Ни ARN, ни самого ключа. */
@@ -121,8 +155,20 @@ function configPart() {
 async function collectInput(): Promise<{
   input: TransactionSigningInput;
   identity: IdentityMarks | null;
+  devnetProof: DevnetProofSnapshot;
 }> {
   const config = configPart();
+
+  /*
+   * Доказательство проверки узла читается всегда.
+   *
+   * Даже при выключенной подписи: оператор проверяет devnet до того,
+   * как что-то включить, и экран обязан показать результат этой
+   * проверки. Обращения к базе тут может и не быть вовсе — при
+   * незаданном адресе узла ответ известен заранее, и запрос не
+   * делается.
+   */
+  const devnetProof = await readDevnetProof();
 
   /*
    * Выключенный контур в базу не ходит.
@@ -143,6 +189,7 @@ async function collectInput(): Promise<{
         hasAmbiguousAttempt: false,
       },
       identity: null,
+      devnetProof,
     };
   }
 
@@ -158,7 +205,17 @@ async function collectInput(): Promise<{
       ...config,
       identity: identityVerdictOf(identityRow?.state ?? null),
       expectedKeyMatches: expectedMatch(identityRow?.fingerprint ?? null),
-      networkVerified: Boolean(env.SOLANA_PREFLIGHT_RPC_URL),
+      /*
+       * Наблюдаемый факт вместо настройки.
+       *
+       * Здесь стояло `Boolean(env.SOLANA_PREFLIGHT_RPC_URL)`. Строка
+       * с адресом не доказывает, что endpoint доступен, что это
+       * devnet, что genesis hash правильный, что нужные методы
+       * поддержаны, что проверка свежая и что после неё узел не
+       * подменили. Теперь всё перечисленное проверяет отдельное
+       * доказательство, а сюда приходит его вердикт.
+       */
+      networkVerified: devnetProof.verified,
       signatureValidated: validated > 0,
       safetyLatchHealthy: safety === 'HEALTHY' || safety === 'DEGRADED',
       hasAmbiguousAttempt: ambiguous > 0,
@@ -166,6 +223,7 @@ async function collectInput(): Promise<{
     identity: identityRow
       ? { fingerprint: identityRow.fingerprint, solanaAddress: identityRow.solanaAddress }
       : null,
+    devnetProof,
   };
 }
 
@@ -202,9 +260,11 @@ function expectedMatch(registeredFingerprint: string | null): boolean | null {
 function snapshotOf(
   input: TransactionSigningInput,
   identity: IdentityMarks | null,
+  devnetProof: DevnetProofSnapshot | null,
 ): SigningStateSnapshot {
   const state = transactionSigningState(input);
   return {
+    devnetProof,
     state,
     publicView: signingPublicView(state),
     allowsKmsCall: allowsKmsCall(state),
@@ -215,6 +275,10 @@ function snapshotOf(
       network: input.network,
       identityState: input.identity,
       keyFingerprint: identity?.fingerprint ?? null,
+      providerSupported: input.providerSupported,
+      keyConfigured: input.keyConfigured,
+      expectedKeyMatches: input.expectedKeyMatches,
+      hasAmbiguousAttempt: input.hasAmbiguousAttempt,
       solanaAddress: identity?.solanaAddress ?? null,
       networkVerified: input.networkVerified,
       signatureValidated: input.signatureValidated,

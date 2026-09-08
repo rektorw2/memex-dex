@@ -1,167 +1,324 @@
 # Phase 4 readiness
 
-Дата последнего обновления: 2026-09-04 (Phase 4E). Этот документ описывает состояние кода, а не
-разрешение принимать или отправлять реальные средства.
+Дата последнего обновления: 2026-09-05 (Phase 4G).
 
-## Итог
+Документ описывает **состояние кода**, а не разрешение принимать или отправлять
+реальные средства. Он разделён по тому единственному признаку, который здесь
+важен: чем именно подтверждено каждое утверждение.
 
-| Контур | Статус | Подтверждение |
-| --- | --- | --- |
-| Изоляция PAPER/LIVE | READY | `packages/core/src/phase4.ts`, `apps/api/src/workers/paper-agent-isolation.test.ts`, `apps/api/src/chains/solana-live-block.test.ts` |
-| LIVE state machines и Semi-Auto proposal schema | READY как контракт | `phase4.ts`, `LiveAgentProposal`, `SolanaTransaction`, `phase4.test.ts` |
-| Mock Solana deposit pipeline | READY для тестов | `solana-deposit-pipeline.ts`, `solana-deposit-pipeline.test.ts` |
-| Solana RPC deposit reader | PARTIAL | read-only source, позиционный instruction index и fail-closed разбор готовы; живой devnet-прогон NOT_RUN |
-| Devnet preflight и dry-run | READY как инструмент | genesis-hash, latency, классификация отказов, бюджет просмотра; сетевой запуск за оператором |
-| Safety latch | READY | поднимает сверка, снимает только ADMIN с записью в audit log |
-| KMS signing contracts | IMPLEMENTED_NOT_VALIDATED | протокольные адаптеры AWS/GCP готовы; провайдер не выбран, транспорт не написан, живого вызова не было |
-| Transaction Intent lifecycle | PARTIAL | источник, маршруты, аудит, истечение и подпись готовы; broadcast отсутствует по конструкции |
-| Постоянный checkpoint и атомарное зачисление | PARTIAL | Prisma repository, lease и empty-range checkpoint готовы; funding заблокирован startup guard |
-| On-chain reconciliation | PARTIAL | чистое сравнение и reorg issue готовы; production scheduler отсутствует |
-| Solana confirmation/finality orchestrator | PARTIAL | mock transport, bounded reconciliation и фактический fill готовы; production RPC transport отсутствует |
-| KMS | PARTIAL | production-safe interface, test adapter и audit wrapper готовы; AWS/GCP adapters честно возвращают unavailable |
-| Выводы | PARTIAL | state machine, atomic/idempotent test contract, limits и audit готовы; Prisma/RPC execution не подключены |
-| Compliance | PARTIAL | интерфейсы и `NOT_CONFIGURED` guards готовы; KYC/AML/sanctions providers отсутствуют |
-| `/agent` Phase 4 UX | READY как заблокированный preview | PAPER/LIVE разделены; все LIVE controls disabled; funding adapter назван неподключённым |
-| Реальные пополнения | BLOCKED | RPC source не проходил live-валидацию, reconciliation scheduler и разрешение запуска отсутствуют |
-| Реальные сделки/выводы | BLOCKED | нет production signer/RPC/reconciliation и compliance approval |
-| Mainnet launch | BLOCKED | external providers, legal/custody decision, operational runbooks and production migration remain open |
+Пять разделов, и смешивать их нельзя:
 
-`READY как контракт` не означает `READY для средств`: это означает, что
-переходы и отрицательные сценарии определены и проверяются без сети.
+| Раздел | Что означает |
+| --- | --- |
+| [Проверено локально](#проверено-локально) | Обычный набор тестов и сборка. Без базы и без сети. |
+| [Проверено на настоящем PostgreSQL](#проверено-на-настоящем-postgresql) | Сквозной стенд на PostgreSQL 17: настоящая схема, настоящие миграции, настоящий Prisma. |
+| [Требует настоящего devnet RPC](#требует-настоящего-devnet-rpc) | Написано и покрыто тестами, но живого узла не было. Статус `BLOCKED_EXTERNAL`. |
+| [Требует KMS](#требует-kms) | Написано, но ключа и учётных данных не было. Статус `BLOCKED_EXTERNAL`. |
+| [По-прежнему запрещено](#по-прежнему-запрещено) | Не «пока не сделано», а «сделано так, чтобы было нельзя». |
 
-## Что существовало до Phase 4 foundation
+---
 
-- кастодиальная модель `Wallet`, зашифрованный ключевой материал и локальная
-  envelope-encryption: `prisma/schema.prisma`, `apps/api/src/services/crypto.ts`;
-- `Balance`, `LedgerEntry`, `Deposit`, `Withdrawal` и операции блокировки:
-  `prisma/schema.prisma`, `apps/api/src/services/balances.ts`;
-- whitelist SOL/USDC и точные decimals/minimum:
-  `packages/core/src/deposit.ts`;
-- PAPER Agent Phase 1–3 и отдельный PAPER capital ledger:
-  `apps/api/src/workers/paper-agent.ts`, `docs/paper-agent.md`;
-- Bridge/Coinbase subscription payments — отдельный money flow, не funding.
+## Phase 4G: ложная готовность и что с ней сделано
 
-## Что добавлено
+### Найденные ложные признаки
 
-### Funding
+Два входа лестницы готовности были помечены как **наблюдаемый факт**, а
+вычислялись из переменных окружения.
 
-- identity `signature:instructionIndex`, поэтому два перевода одной транзакции
-  учитываются раздельно;
-- raw provider event не содержит `userId`: владелец определяется только по
-  активному `HOT_DEPOSIT` адресу в нашей БД;
-- checkpoint lease, overlap после restart, finality-only credit, duplicate
-  handling и reorg → manual review;
-- `Deposit`, `LedgerEntry`, `Balance` и `SolanaDepositEvent=CREDITED` создаются
-  в одной serializable transaction;
-- canonical USDC mint, SOL/USDC decimals, minimum и confirmations проверяются
-  до денежной записи;
-- reconciliation обнаруживает missing/orphan/amount/destination/reorg mismatch
-  и ничего не «исправляет» молча.
+**Первый и главный** — в `apps/api/src/services/signing-state.ts`:
 
-### Первый сетевой срез: read-only Solana RPC
+```ts
+networkVerified: Boolean(env.SOLANA_PREFLIGHT_RPC_URL)
+```
 
-- `SolanaRpcDepositEventSource` читает `getSignaturesForAddress`,
-  `getSignatureStatuses` и `getTransaction` через транспорт, который не
-  раскрывает RPC URL, API key или тело ответа в ошибке;
-- сканируются owner-адрес и детерминированный canonical USDC ATA; SPL
-  destination нормализуется обратно к owner, но право собственности всё равно
-  повторно определяется базой перед зачислением;
-- одна подпись, найденная по нескольким адресам, загружается один раз, а
-  несколько transfer-инструкций получают стабильные отдельные индексы;
-- source сообщает полностью просмотренный head slot, поэтому пустой диапазон
-  тоже продвигает checkpoint; превышение окна пагинации завершает цикл ошибкой
-  без продвижения checkpoint;
-- последние 512 слотов перечитываются для защиты от краткой задержки индекса
-  RPC и гонки добавления нового адреса; уникальность события не допускает
-  повторного зачисления;
-- первый запуск требует явно заданный bootstrap slot. Неограниченный backfill
-  от genesis запрещён;
-- worker подключён к общему lifecycle, но при безопасных значениях окружения
-  не запускается. Общий Phase 4 startup blocker всё ещё не позволяет включить
-  `FUNDING_ENABLED=true`.
+Строка отвечала на вопрос «задана ли переменная», а читалась как «сеть
+проверена». Наличие строки с адресом не доказывает ничего из перечисленного:
 
-### Phase 4C: подготовка к devnet
+- что endpoint вообще доступен;
+- что это devnet, а не mainnet — платный узел выглядит одинаково;
+- что genesis hash правильный;
+- что узел поддерживает нужные методы RPC;
+- что проверка свежая;
+- что после проверки endpoint не заменили.
 
-- `npm run solana:deposit-preflight` определяет сеть по genesis hash, измеряет
-  задержку каждого метода и различает TIMEOUT / RATE_LIMITED /
-  HISTORY_UNSUPPORTED / MALFORMED_RESPONSE / UNAUTHORIZED / NETWORK_MISMATCH;
-- endpoint берётся только из `SOLANA_PREFLIGHT_RPC_URL`; без неё команда
-  завершается, не сделав ни одного вызова. Ни URL, ни query, ни ключ не
-  попадают в отчёт и журнал;
-- `--dry-run` читает цепочку и печатает сводку, не имея доступа к базе:
-  Prisma в модуль не импортируется;
-- бюджет просмотра считается явно. `newAddressLookbackSlots = 216000` при
-  `pageSize 100 × maxPages 10` выдерживает адрес не активнее ~41 подписи
-  в час; сверх этого выдаётся `INSUFFICIENT_SCAN_BUDGET` вместо молчаливого
-  сокращения окна;
-- тестовый SPL-токен devnet задаётся отдельной переменной, называется
-  `devnet test token` и запрещён на старте вне devnet и в production.
-  Боевой whitelist не изменялся;
-- защёлку снимает только ADMIN, роль читается из базы, снятие требует
-  причины и попадает в `AuditLog`.
+**Второй** — в `apps/api/src/modules/paper-agent.ts`:
 
-Живой запрос к devnet в этой работе не выполнялся: endpoint не предоставлен.
-Статус сетевой проверки — `NOT_RUN`.
+```ts
+migrationsReady: env.LIVE_MIGRATIONS_READY
+```
 
-### Phase 4D–4E: подпись и жизненный цикл
+Флаг означал «оператор считает схему готовой». Поставить его можно одной
+строкой в панели развёртывания — в том числе на базе, где нужных таблиц нет.
+
+### Новая модель доказательств
+
+Сеть считается проверенной, только если существует **доказательство**:
+запись в `SolanaNetworkProof`, полученная настоящим ответом узла.
+
+Доказательство содержит только безопасные данные — сеть, наблюдённый genesis
+hash, время проверки, срок годности, подтверждённые методы, наибольшую
+задержку, односторонний отпечаток настройки endpoint и версию формата.
+
+Чего в нём нет и не будет: URL, query-строки, заголовков авторизации, учётных
+данных, идентификатора ключа KMS и тел ответов RPC. Endpoint представлен
+отпечатком SHA-256 от строки целиком: по нему видно, что настройку сменили,
+но не видно, на какую. Отпечаток не выходит наружу ни в одном ответе API и не
+пишется в журнал.
+
+Доказательство перестаёт действовать, если:
+
+| Причина | Код |
+| --- | --- |
+| проверки не было | `NOT_RUN` |
+| адрес узла не задан | `NOT_CONFIGURED` |
+| истёк срок годности (30 минут) | `EXPIRED` |
+| сменилась сеть | `NETWORK_CHANGED` |
+| сменился endpoint | `ENDPOINT_CHANGED` |
+| genesis hash не тот | `GENESIS_MISMATCH` |
+| узел оказался mainnet при devnet-конфигурации | `MAINNET_ENDPOINT_REFUSED` |
+| узел не поддерживает нужные методы | `METHODS_UNSUPPORTED` |
+| запись неполна или повреждена | `INCOMPLETE_RECORD` |
+| запись написана другой версией формата | `FORMAT_UNSUPPORTED` |
+| проверка выполнялась и не прошла | `CHECK_FAILED` |
+
+Главное правило: **`NOT_RUN` никогда не даёт `verified`**. Отсутствие проверки
+— это не успех, и никакая настройка не может его поднять.
+
+Срок годности намеренно короткий. Долгий срок превращает доказательство в ту
+же переменную окружения, только записанную в базу: однажды проверили — и с тех
+пор «проверено».
+
+Правила живут в `packages/core/src/devnet-proof.ts` и не зависят ни от базы,
+ни от сети. Адаптер — `apps/api/src/services/devnet-network-proof.ts`.
+
+Готовность схемы теперь тоже наблюдаемая: `apps/api/src/services/schema-readiness.ts`
+спрашивает тот же планировщик, что применяет миграции при выкладке. Он читает
+`information_schema`, `pg_indexes` и историю `_prisma_migrations`. Не удалось
+прочитать — ответ `UNKNOWN`, и это не «готово».
+
+### Операторский сценарий
+
+```
+POST /admin/live/devnet-network/check
+GET  /admin/live/devnet-network
+```
+
+- запуск только для ADMIN, роль читается **из базы**, а не из токена;
+- тело запроса не разбирается вовсе: адрес узла берётся с сервера. Позволить
+  клиенту прислать URL значило бы поднять ступень готовности проверкой чужого
+  узла;
+- операция только читает сеть — под капотом тот же `runSolanaPreflight`, что и
+  перед приёмом депозитов; отправки у него нет как вызова;
+- каждый запуск попадает в `AuditLog` (`live.devnet_network_check`);
+- параллельные запуски дедуплицируются арендой на строке: второй получает 409
+  и до узла не доходит;
+- неудача **стирает** прежний успех: `verifiedAt`, `expiresAt`, `genesisHash`
+  и список методов обнуляются вместе с записью отказа;
+- обычный пользователь видит только очищенный итог и запустить проверку не
+  может.
+
+Из командной строки — тот же путь, но запись включается явным флагом:
+
+```bash
+# отчёт о пригодности узла; модуль записи в процесс не загружается
+SOLANA_NETWORK=devnet SOLANA_PREFLIGHT_RPC_URL=... npm run solana:deposit-preflight
+
+# холостой проход источника депозитов; тоже без записи
+SOLANA_NETWORK=devnet SOLANA_PREFLIGHT_RPC_URL=... \
+  npm run solana:deposit-preflight -- --dry-run --address <адрес> --from-slot <слот>
+
+# проверить и сохранить доказательство
+SOLANA_NETWORK=devnet SOLANA_PREFLIGHT_RPC_URL=... npm run solana:deposit-preflight -- --record
+```
+
+Три режима взаимоисключающие, и это не косметика.
+
+- `--record` **не выполняет своей проверки**: он сразу отдаёт работу службе,
+  которая одна и ходит к узлу. Прежняя версия сначала делала preflight ради
+  вывода на экран, а затем служба делала его заново — два одинаковых обхода
+  узла и вдвое больший расход чужого лимита частоты ради тех же цифр.
+  Подробный отчёт теперь возвращает сама служба, без второго запроса.
+- `--dry-run` вместе с `--record` — **отказ**, а не тихое предпочтение одного
+  другому: молча проигнорировать `--record` значило бы, что человек попросил
+  записать, об этом не узнал и ушёл в уверенности, что доказательство есть.
+- Модуль записи подключается динамическим импортом и только в режиме
+  `--record`. В остальных режимах кода записи в процессе нет вовсе — поэтому
+  «без флага не пишем» держится не на ветвлении, а на отсутствии кода.
+
+Решение о режиме и подключение живут в
+`apps/api/src/services/devnet-preflight-command.ts`: скрипт в `tsconfig` не
+входит и компилятором не проверяется, а модуль — проверяется.
+
+### `/agent`
+
+LIVE-блок показывает лестницу Phase 4 словами, текущую достигнутую ступень и
+состояние узла: не настроен / не проверялся / проверяется / проверен /
+устарел / ошибка. Рядом — время последней успешной проверки и признак
+устаревания. Администратору доступна кнопка «Проверить devnet»; обычному
+пользователю — только чтение. Ни URL, ни ARN, ни идентификаторов ключей на
+экран не выходит.
+
+PAPER остаётся полностью рабочим отдельным контуром. Ни одна формулировка
+LIVE-блока не читается как «скоро включим».
+
+---
+
+## Проверено локально
+
+Обычный набор тестов и сборка. Без базы и без сети.
+
+- изоляция PAPER/LIVE: `packages/core/src/phase4.ts`,
+  `apps/api/src/workers/paper-agent-isolation.test.ts`,
+  `apps/api/src/chains/solana-live-block.test.ts`;
+- машины состояний LIVE и схема Semi-Auto предложения как контракт:
+  `phase4.ts`, `phase4.test.ts`;
+- правила доказательства devnet: `packages/core/src/devnet-proof.test.ts` —
+  двенадцать причин отказа, граница истечения, полнота записи и правило
+  «подтверждает только один код»;
+- служба проверки на подменённом узле:
+  `apps/api/src/services/devnet-network-proof.test.ts` — успех, mainnet,
+  чужой genesis, TIMEOUT / 401 / 403 / 429 / MALFORMED, идемпотентность,
+  дедупликация параллельных запусков, отсутствие сетевого вызова при
+  ненастроенном или боевом контуре;
+- режимы командной строки:
+  `apps/api/src/services/devnet-preflight-command.test.ts` — счётчик обходов
+  узла (`--record` делает ровно один preflight, а не два), модуль записи не
+  загружается ни при обычном запуске, ни при `--dry-run`, несовместимые флаги
+  не идут ни в сеть, ни в базу;
+- запрещённые методы RPC: `packages/core/src/devnet-proof.test.ts` — закрытый
+  список полных имён вместо поиска подстрок. Правило появилось после ложного
+  срабатывания: `/send|sign|simulate/i` объявляла запрещённым
+  `getSignaturesForAddress` — обычное чтение чужой публичной истории, без
+  которого не работает сверка зачислений;
+- регрессия на исходный дефект:
+  `apps/api/src/services/live-readiness-observed.test.ts` — один заданный
+  `SOLANA_PREFLIGHT_RPC_URL` не поднимает `DEVNET_IDENTITY_VERIFIED`, лестница
+  не перепрыгивает ступени, и негативный контроль показывает, что со свежим
+  доказательством она поднимается;
+- права на запуск: `apps/api/src/modules/devnet-check-access.test.ts` — роль
+  из базы, немедленный отзыв прав, присланный клиентом URL в проверку не
+  попадает;
+- интерфейс: `apps/web/app/agent/agent-page.test.tsx` — шесть состояний узла
+  различимы, незнакомое состояние не выдаётся за проверенное, кнопка есть
+  только у администратора;
+- devnet preflight как инструмент: genesis hash, задержки, классификация
+  отказов, бюджет просмотра — `apps/api/src/services/solana-preflight.test.ts`,
+  `solana-devnet-validation.test.ts`;
+- миграции на PGlite: `npm run db:verify`. Для новой таблицы проверяется, что
+  миграция только добавляет, что колонки под URL или ключ нет, что неудачная
+  проверка пишется без срока годности и что повторное применение не падает.
+
+## Проверено на настоящем PostgreSQL
+
+Сквозной стенд `npm run test:e2e` на PostgreSQL 17: настоящая схема, настоящие
+миграции через `prisma migrate deploy`, настоящий Prisma Client. Подменены
+только часы, внешний поставщик данных и сеть — последняя запрещена целиком.
+
+- одиннадцать сценариев PAPER полным путём: сигнал → очередь → воркер →
+  решение → распределение → счёт и журнал → позиция и PnL → снимок `/agent`;
+- идемпотентность: повторная доставка, обрыв между резервом и позицией, обрыв
+  после закрытия, гонка четырёх проходов;
+- переход схемы: база, отставшая на поздние миграции Phase 4, доводится
+  настоящим `migrate deploy`; планировщик после этого отвечает `ready`;
+- хранение доказательства: список методов переживает запись как `TEXT[]`,
+  сроки как `TIMESTAMP(3)`, неудачная проверка пишется без срока, смена
+  endpoint обесценивает запись, mainnet распознаётся отдельной причиной;
+- в таблице `SolanaNetworkProof` нет ни одной колонки под URL, ключ или
+  учётные данные — проверяется по `information_schema`;
+- на выключенном контуре: `readDevnetProof` даёт `NOT_CONFIGURED`, запуск
+  проверки ничего не пишет и никуда не ходит, снимок `/agent` показывает
+  состояние узла без адреса;
+- после каждого сценария: ни одного намерения транзакции, ни одной попытки
+  подписи, ни одного вывода, ни одного исходящего запроса.
+
+## Требует настоящего devnet RPC
+
+Статус — `BLOCKED_EXTERNAL`. Написано и покрыто тестами на подменённом узле,
+но живого devnet-узла не было. Ни одна из этих строк не помечена пройденной.
+
+- health и genesis настоящего узла devnet (нужен `SOLANA_PREFLIGHT_RPC_URL`);
+- запись доказательства по живому ответу: **хранение и старение проверены,
+  сетевой вызов — нет**;
+- измерение настоящих задержек и отставания confirmed от finalized;
+- поведение при настоящем пределе частоты провайдера;
+- симуляция транзакции без отправки;
+- сверка зачислений на настоящих подтверждениях сети;
+- живой прогон read-only источника депозитов и выбор bootstrap slot.
+
+## Требует KMS
+
+Статус — `BLOCKED_EXTERNAL`. Провайдер **не выбран**, credentials не
+заводились, облачные ресурсы не создавались.
 
 - AWS KMS (`ED25519_SHA_512`, `MessageType: RAW`) и Google Cloud KMS
-  (`EC_SIGN_ED25519`, поле `data`) подтверждены официальной документацией
-  как способные подписывать Solana в режиме PureEdDSA;
-- провайдер **не выбран**. Оба адаптера остаются в состоянии
-  `NOT_CONFIGURED`, credentials не заводились, облачные ресурсы не
-  создавались. Итоговый статус контура — `IMPLEMENTED_NOT_VALIDATED`;
+  (`EC_SIGN_ED25519`, поле `data`) подтверждены документацией как способные
+  подписывать Solana в режиме PureEdDSA — но это чтение документации, а не
+  проверка;
 - кодировка подписи EdDSA и предел размера сообщения у Google остаются
   `NOT_VERIFIED`: в документации их нет, и они обрабатываются защитно;
-- намерение рождается только из предложения агента или служебной devnet-
-  фикстуры администратора. Клиент не передаёт ни байтов, ни программ,
-  ни адресов, ни сумм, ни blockhash — список запрещённых полей проверяется;
-- `SIGNED` — конечное состояние. Переходов к отправке в машине нет,
-  транспорт broadcast не импортируется ни одним модулем контура;
-- одно предложение порождает не больше одного живого намерения, одно
-  намерение — не больше одной подписи: оба правила закреплены частичными
-  уникальными индексами, а не проверками в памяти.
+- подпись настоящего намерения через KMS (нужен ключ Ed25519 и права `Sign`);
+- сверка отпечатка ключа с ожидаемым (нужен `AWS_KMS_EXPECTED_PUBLIC_KEY`);
+- ротация ключа, IAM policy и процедура восстановления.
 
-Этот срез не делает пополнения рабочими. Ещё отсутствуют live-проверка
-выбранного RPC, устойчивое обнаружение исчезнувшей pending-транзакции после
-рестарта, reconciliation scheduler и операционная процедура выбора bootstrap
-slot. До их появления hard blocker снимать нельзя.
+Итоговый статус контура подписи — `IMPLEMENTED_NOT_VALIDATED`.
 
-### Execution, KMS, withdrawal, compliance
+## По-прежнему запрещено
 
-- подпись RPC не считается подтверждением; `SUBMITTED`, `CONFIRMED` и
-  `FINALIZED` — разные состояния;
-- broadcast claim сохраняется до RPC; `AMBIGUOUS` только reconciles и никогда
-  не даёт повторный broadcast;
-- KMS interface не возвращает private key при signing и пишет только безопасные
-  metadata audit events;
-- withdrawal contract требует finalized funds, compliance approval, limits,
-  atomic lock, idempotency и ручное approval;
-- отсутствие любого compliance provider никогда не превращается в approval.
+Не «пока не сделано», а сделано так, чтобы было нельзя.
 
-## Что всё ещё невозможно с реальными средствами
-
-1. Запустить автоматическое зачисление реального перевода SOL/USDC: read-only
-   источник уже существует, но worker намеренно заблокирован.
-2. Подписать или отправить swap в Solana mainnet.
-3. Подтвердить Semi-Auto предложение и начать реальное исполнение.
-4. Подписать, отправить или финализировать реальный вывод.
-5. Получить KYC/AML/sanctions/source-of-funds approval.
-6. Включить LIVE через браузер или только комбинацией env-флагов.
+1. `sendTransaction`, `sendRawTransaction`, `simulateTransaction`,
+   `requestAirdrop` и любой broadcast. Список закрытый и лежит в
+   `FORBIDDEN_SOLANA_RPC_METHODS`; сравнение по полному имени метода, чтобы
+   защита не ловила заодно безопасное чтение. Транспорта отправки не
+   существует; `broadcastAvailable` — константа `false`, а не настройка.
+   `SIGNED` — конечное состояние, переходов дальше в машине нет.
+2. Автоматическое зачисление реального перевода SOL/USDC: read-only источник
+   существует, но воркер заблокирован startup guard.
+3. Реальные swap и выводы.
+4. Автоматический переход PAPER → LIVE.
+5. Mainnet. Верхняя ступень лестницы — `MAINNET_BLOCKED`, и это стена, а не
+   достижение: переход в основную сеть этим путём не открывается.
+6. Включение funding одним env-флагом.
+7. Локальные приватные ключи для подписи транзакций.
+8. Подмена живой проверки mock-результатом в production.
+9. Считать `NOT_RUN` успешной проверкой.
 
 `apps/api/src/chains/solana.ts` жёстко возвращает
 `LIVE_SOLANA_EXECUTION_NOT_IMPLEMENTED` для non-paper execution. Startup guard
 останавливает процесс при любом Phase 4 network flag, даже если оператор
 ошибочно выставил readiness-флаги.
 
-## Внешние блокеры
+---
 
-- выбранный Solana RPC/indexer с SLA, archive access и finality semantics;
-- production AWS KMS или GCP KMS account, credentials, IAM policy, rotation и
-  recovery procedure;
-- KYC/AML/sanctions providers и юридическое решение по custody;
-- production deposit address policy, hot/cold limits и incident runbook;
-- dry-run production migration audit и отдельное разрешение владельца системы.
+## Три контура, которые нельзя путать
+
+Слово «KMS» встречалось в именах переменных двух разных подсистем, и это
+склеило их в одну. Из-за склейки интерфейс сообщал одно состояние, а воркер
+подписи находился в другом.
+
+| Контур | Что делает | Переменные |
+|---|---|---|
+| Custody encryption | Шифрует сохранённый key material | `KMS_PROVIDER`, `KMS_LOCAL_MASTER_KEY`, `AWS_KMS_KEY_ID` |
+| Transaction signer | Подписывает транзакции Solana облачным Ed25519 | `SOLANA_SIGNING_ENABLED`, `SOLANA_SIGNER_PROVIDER`, `SOLANA_SIGNER_KEY_ID`, `AWS_REGION` |
+| Broadcast | Отправляет подписанное в сеть | не существует; `broadcastAvailable` — константа `false` |
+
+Единственный переключатель подписи — `SOLANA_SIGNING_ENABLED`. Настоящий
+вызов `Sign` не зависит ни от какого другого boolean.
+
+`KMS_SIGNING_ENABLED` объявлен устаревшим: отсутствие и `false` принимаются,
+`true` останавливает старт с указанием, куда переехала настройка.
+
+Состояние контура считает одна чистая функция, `transactionSigningState` в
+`@memex/core`. Её используют startup guards, фабрика подписанта, воркер, API,
+`/agent` и админская диагностика. Повторного расчёта по частям нет нигде — и
+теперь это касается и `networkVerified`: сервер отдаёт готовый снимок, а
+интерфейс его только показывает.
+
+Проверить конфигурацию, ничего не меняя и никуда не обращаясь:
+
+```bash
+npm run phase4:config-audit
+```
 
 ## Safe defaults
 
@@ -181,45 +338,37 @@ SOLANA_DEPOSIT_SOURCE=disabled
 SOLANA_SIGNING_ENABLED=false
 SOLANA_SIGNER_PROVIDER=unavailable
 KMS_PREFLIGHT_ALLOW_SIGN=false
+
+# Адрес узла для проверки сети. Значения по умолчанию нет намеренно:
+# оно однажды отправило бы проверку в mainnet.
+SOLANA_PREFLIGHT_RPC_URL=
 ```
 
-## Три контура, которые нельзя путать
+Обратите внимание: `SOLANA_PREFLIGHT_RPC_URL` больше **не** является признаком
+готовности сети. Заполнить её недостаточно — нужна выполненная и не истёкшая
+проверка.
 
-Слово «KMS» встречалось в именах переменных двух разных подсистем, и
-это склеило их в одну. Из-за склейки интерфейс сообщал одно
-состояние, а воркер подписи находился в другом.
+## Внешние блокеры
 
-| Контур | Что делает | Переменные |
-|---|---|---|
-| Custody encryption | Шифрует сохранённый key material | `KMS_PROVIDER`, `KMS_LOCAL_MASTER_KEY`, `AWS_KMS_KEY_ID` |
-| Transaction signer | Подписывает транзакции Solana облачным Ed25519 | `SOLANA_SIGNING_ENABLED`, `SOLANA_SIGNER_PROVIDER`, `SOLANA_SIGNER_KEY_ID`, `AWS_REGION` |
-| Broadcast | Отправляет подписанное в сеть | не существует; `broadcastAvailable` — константа `false` |
+- выбранный Solana RPC/indexer с SLA, archive access и finality semantics;
+- production AWS KMS или GCP KMS account, credentials, IAM policy, rotation и
+  recovery procedure;
+- KYC/AML/sanctions providers и юридическое решение по custody;
+- production deposit address policy, hot/cold limits и incident runbook;
+- dry-run production migration audit и отдельное разрешение владельца системы.
 
-Единственный переключатель подписи — `SOLANA_SIGNING_ENABLED`.
-Настоящий вызов `Sign` не зависит ни от какого другого boolean.
+## Миграции
 
-`KMS_SIGNING_ENABLED` объявлен устаревшим. Он относился к готовности
-LIVE-контура и подписью не управлял:
+Все аддитивные. Ни `DROP`, ни `DELETE`, ни `TRUNCATE`, ни разрушительных
+`ALTER`; существующие денежные строки не переписываются.
 
-- отсутствие и `false` принимаются без изменений;
-- `true` останавливает старт с указанием, куда переехала настройка;
-- несовпадение значений не разрешается в пользу «включено»;
-- вне слоя совместимости в `env.ts` флаг не читается — за этим
-  следит контрактный тест.
+| Миграция | Что добавляет |
+| --- | --- |
+| `20260827160000_add_phase4_live_foundation` | enum, таблицы и индексы Phase 4 |
+| `20260904100000_add_phase4_reconciliation` | поля сверки, курсор адресов, защёлка |
+| `20260904200000_add_transaction_intent` | намерение транзакции и попытка подписи |
+| `20260904210000_add_intent_lifecycle` | жизненный цикл намерения |
+| `20260904220000_add_signing_identity` | реестр ключа подписи |
+| `20260905100000_add_solana_network_proof` | доказательство проверки узла сети |
 
-Состояние контура считает одна чистая функция,
-`transactionSigningState` в `@memex/core`. Её используют startup
-guards, фабрика подписанта, воркер, API, `/agent` и админская
-диагностика. Повторного расчёта по частям нет нигде.
-
-Проверить конфигурацию, ничего не меняя и никуда не обращаясь:
-
-```bash
-npm run phase4:config-audit
-```
-
-## Миграция
-
-`20260827160000_add_phase4_live_foundation` — additive-only: новые enum,
-таблицы и индексы. В ней нет `DROP`, `DELETE` или `TRUNCATE`; существующие
-денежные строки не переписываются. Production migration не выполнялась.
+Production migration не выполнялась.

@@ -10,6 +10,17 @@ import { defineConfig } from 'vitest/config';
  */
 export default defineConfig({
   test: {
+    /*
+     * Сквозной стенд сюда не входит.
+     *
+     * Его файлы называются `*.e2e.test.ts` и подходят под обычный
+     * шаблон, поэтому исключение обязательно: без него команда
+     * `npm test` пыталась бы поднять их без базы и падала бы на
+     * машине, где никакой базы для тестов нет.
+     *
+     * Запускается стенд отдельно: `npm run test:e2e`.
+     */
+    exclude: ['**/node_modules/**', '**/dist/**', 'src/e2e/**'],
     env: {
       NODE_ENV: 'test',
       DATABASE_URL: 'postgresql://test:test@localhost:5432/memex_test',

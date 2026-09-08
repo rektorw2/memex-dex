@@ -16,6 +16,7 @@ import {
   initialPaperCapitalLedger,
   markPaperPosition,
   openPaperCapitalLedger,
+  revaluePaperCapital,
   openPaperPosition,
   type AllocationPolicySnapshot,
   type PaperAgentStrategy,
@@ -535,6 +536,28 @@ async function allocateForSession(input: {
 
         const before = ledgerSnapshot(session);
         const after = openPaperCapitalLedger(before, decision.amountUsd);
+
+        /*
+         * Начальная переоценка применяется сразу, в той же транзакции.
+         *
+         * Комиссия входа, сетевой сбор и проскальзывание понесены в
+         * момент открытия: позиция стоит меньше, чем из неё вычли.
+         * Раньше `mark` считался здесь же, но до счёта не доходил —
+         * записывался только в строку распределения. Из-за этого между
+         * открытием и первой отметкой цены счёт показывал equity,
+         * равный начальному капиталу, то есть больше того, что есть
+         * на самом деле. Первая отметка потом «роняла» его без всякой
+         * новой котировки, и это выглядело как движение рынка.
+         */
+        const otherOpen = await tx.paperAgentAllocation.findMany({
+          where: { sessionId: session.id, state: 'OPEN' },
+          select: { unrealizedPnlUsd: true },
+        });
+        const unrealizedTotal = otherOpen
+          .reduce((sum, row) => sum.plus(row.unrealizedPnlUsd ?? 0), new P.Decimal(0))
+          .plus(mark.pnlUsd);
+        const revalued = revaluePaperCapital(after, unrealizedTotal.toString());
+
         const claimed = await tx.paperAgentAccountSession.updateMany({
           where: {
             id: session.id,
@@ -545,6 +568,10 @@ async function allocateForSession(input: {
             freeBalanceUsd: decimal(after.freeBalanceUsd),
             inPositionsUsd: decimal(after.inPositionsUsd),
             openPositions: after.openPositions,
+            unrealizedPnlUsd: decimal(revalued.unrealizedPnlUsd),
+            equityUsd: decimal(revalued.equityUsd),
+            peakEquityUsd: decimal(revalued.peakEquityUsd),
+            drawdownPct: decimal(revalued.drawdownPct),
             dailyEntries: entriesToday + 1,
             dailyEntriesDate: today,
             ledgerVersion: { increment: 1 },
@@ -601,7 +628,9 @@ async function allocateForSession(input: {
             inPositionsBeforeUsd: session.inPositionsUsd,
             inPositionsAfterUsd: decimal(after.inPositionsUsd),
             realizedPnlAfterUsd: session.realizedPnlUsd,
-            equityAfterUsd: session.equityUsd,
+            // Тот же пересчёт, что записан в счёт: журнал не может
+            // утверждать иное, чем строка, к которой он относится.
+            equityAfterUsd: decimal(revalued.equityUsd),
             tradingFeesAfterUsd: session.tradingFeesUsd,
             slippageAfterUsd: session.slippageUsd,
             networkCostsAfterUsd: session.networkCostsUsd,
@@ -950,21 +979,22 @@ export async function processPaperAllocationPositions(now = new Date()): Promise
       const markedUnrealized = otherUnrealized.plus(mark.pnlUsd);
 
       if (!mark.shouldClose) {
-        const equity = session.freeBalanceUsd
-          .plus(session.reservedBalanceUsd)
-          .plus(session.inPositionsUsd)
-          .plus(markedUnrealized);
-        const peakEquity = P.Decimal.max(session.peakEquityUsd, equity);
-        const drawdownPct = peakEquity.lte(0)
-          ? new P.Decimal(0)
-          : peakEquity.minus(equity).div(peakEquity).mul(100);
+        /*
+         * Та же формула, что и при открытии, — из ядра.
+         *
+         * Раньше она стояла здесь отдельной копией, а при открытии
+         * не применялась вовсе. Две записи одного правила разошлись
+         * не «когда-нибудь», а сразу: счёт после открытия показывал
+         * начальный капитал, и первая же отметка цены его исправляла.
+         */
+        const revalued = revaluePaperCapital(ledgerSnapshot(session), markedUnrealized.toString());
         const claimed = await tx.paperAgentAccountSession.updateMany({
           where: { id: session.id, ledgerVersion: session.ledgerVersion },
           data: {
-            unrealizedPnlUsd: markedUnrealized,
-            equityUsd: equity,
-            peakEquityUsd: peakEquity,
-            drawdownPct,
+            unrealizedPnlUsd: decimal(revalued.unrealizedPnlUsd),
+            equityUsd: decimal(revalued.equityUsd),
+            peakEquityUsd: decimal(revalued.peakEquityUsd),
+            drawdownPct: decimal(revalued.drawdownPct),
             ledgerVersion: { increment: 1 },
             lastRecalculatedAt: now,
           },

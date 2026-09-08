@@ -1,4 +1,4 @@
-import type { FastifyPluginAsync } from 'fastify';
+import type { FastifyPluginAsync, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import {
   isLivePaperSignalOrigin,
@@ -8,6 +8,9 @@ import {
   summarizePaperAgentLatencies,
   summarizePaperDecisionDimensions,
   liveReadiness,
+  liveReadinessStage,
+  liveReadinessWithDiagnostics,
+  phase4SectionsVerdict,
   SOLANA_DEPOSIT_ASSETS,
   depositNetworkStatus,
 } from '@memex/core';
@@ -16,6 +19,7 @@ import { prisma } from '../lib/prisma.js';
 import { getOkxSignalIngestStatus } from '../workers/okx-signal-ingest.js';
 import { readFundingSafetyState } from '../services/prisma-solana-reconciliation-repository.js';
 import { readSigningState } from '../services/signing-state.js';
+import { readSchemaReadiness } from '../services/schema-readiness.js';
 import {
   ensurePaperAgentConfig,
   getPaperAgentRuntimeStatus,
@@ -29,10 +33,57 @@ import {
   configurePaperAllocationAccounts,
   resetPaperAllocationAccount,
 } from '../services/paper-agent-allocation.js';
+import {
+  createPaperTestSignal,
+  createPaperTestToken,
+  setPaperTestPrice,
+} from '../services/paper-test-source.js';
 
 const CONTROL_ID = 'primary';
 const SAMPLE_LIMIT = 5_000;
 const MIN_CLOSED_FOR_COMPARISON = 30;
+
+/** Результат чтения дополнительного раздела. */
+type SectionResult<T> = { ok: true; value: T } | { ok: false };
+
+/** Куда пишется настоящая причина отказа раздела. */
+type SectionLogger = { error: (details: Record<string, unknown>, message: string) => void };
+
+/**
+ * Чтение дополнительного раздела, сбой которого не роняет ответ.
+ *
+ * Два разных адресата, и путать их нельзя. В журнал уходит настоящая
+ * причина вместе с `reqId`: без неё дежурный видит «раздел недоступен»
+ * и не может ничего сделать. Человеку не уходит ничего — ни текста
+ * ошибки, ни имени таблицы, ни кода драйвера.
+ *
+ * Ловится любая ошибка. Разбирать её здесь на «ожидаемые» и
+ * «неожиданные» значило бы завести список, который однажды разойдётся
+ * с реальностью, и вернуть тот же пустой экран для случая, забытого
+ * в списке.
+ */
+async function optionalSection<T>(
+  read: () => Promise<T>,
+  /*
+   * Имя раздела перечислением, а не строкой.
+   *
+   * Оно попадает в журнал и в `unavailable`, который видит человек.
+   * Свободная строка означала бы, что опечатка в имени раздела
+   * доедет до экрана и там будет выглядеть новым видом сбоя.
+   */
+  section: 'funding' | 'signing' | 'schema',
+  log: SectionLogger,
+): Promise<SectionResult<T>> {
+  try {
+    return { ok: true, value: await read() };
+  } catch (error) {
+    log.error(
+      { section, err: error },
+      'диагностический раздел /agent недоступен, ответ отдан без него',
+    );
+    return { ok: false };
+  }
+}
 
 function numberOf(value: unknown): number | null {
   if (value == null) return null;
@@ -492,7 +543,12 @@ function summarizeAllocations(rows: any[]) {
 
 /** Административная наблюдаемость и только ручное управление. */
 export const paperAgentRoutes: FastifyPluginAsync = async (app) => {
-  const readSnapshot = async () => {
+  /*
+   * Журнал берётся у запроса: только там есть `reqId`, по которому
+   * дежурный связывает жалобу человека с записью о причине.
+   */
+  const readSnapshot = async (req?: { log?: SectionLogger }) => {
+    const log = req?.log ?? app.log;
     await ensurePaperAgentConfig();
     const since = new Date(Date.now() - 24 * 60 * 60 * 1_000);
     const [
@@ -715,16 +771,41 @@ export const paperAgentRoutes: FastifyPluginAsync = async (app) => {
       lastActivityAtMs: runtime.lastActivityAt == null ? null : Date.parse(runtime.lastActivityAt),
       nowMs: Date.now(),
     });
-    // Состояние защёлки читается из базы: её поднимает воркер сверки,
-    // возможно в другом процессе.
-    const fundingSafety = await readFundingSafetyState();
     /*
-     * Реестр ключа читается один раз на ответ.
+     * Дополнительная диагностика. Дальше этой точки ни один сбой
+     * не имеет права унести данные PAPER: всё, что читается ниже,
+     * относится к контурам, которых бумажная торговля не касается.
      *
-     * Наружу пойдёт только производное состояние: отпечаток и адрес
-     * — для администратора, а этот ответ видит обычный человек.
+     * Состояние защёлки читается из базы: её поднимает воркер сверки,
+     * возможно в другом процессе. Реестр ключа — оттуда же; наружу
+     * пойдёт только производное состояние, без отпечатка и адреса.
      */
-    const signing = await readSigningState();
+    const [fundingSafety, signing, schema] = await Promise.all([
+      optionalSection(() => readFundingSafetyState(), 'funding', log),
+      optionalSection(() => readSigningState(), 'signing', log),
+      /*
+       * Применена ли схема — по живой базе, а не по флагу.
+       *
+       * `LIVE_MIGRATIONS_READY` отвечал на вопрос «считает ли
+       * оператор схему готовой», а лестница помечала этот вход
+       * наблюдаемым фактом. Поставить флаг можно одной строкой в
+       * панели развёртывания, в том числе на базе, где нужных
+       * таблиц нет.
+       */
+      optionalSection(() => readSchemaReadiness(), 'schema', log),
+    ]);
+    /*
+     * Молчащая проверка схемы не считается пройденной.
+     *
+     * Раздел необязательный: его сбой не имеет права унести данные
+     * PAPER. Но и подставлять вместо него `true` нельзя — «не
+     * прочиталось» это не «применено».
+     */
+    const migrationsReady = schema.ok && schema.value.ready;
+    const sections = phase4SectionsVerdict({
+      funding: fundingSafety.ok ? 'AVAILABLE' : 'UNAVAILABLE',
+      signing: signing.ok ? 'AVAILABLE' : 'UNAVAILABLE',
+    });
     const live = liveReadiness({
       executionMode: env.EXECUTION_MODE,
       liveAgentEnabled: env.LIVE_AGENT_ENABLED,
@@ -736,23 +817,89 @@ export const paperAgentRoutes: FastifyPluginAsync = async (app) => {
       transactionSigningEnabled: env.SOLANA_SIGNING_ENABLED,
       rpcReady: env.LIVE_RPC_READY,
       reconciliationReady: env.LIVE_RECONCILIATION_ENABLED,
-      migrationsReady: env.LIVE_MIGRATIONS_READY,
+      migrationsReady,
       semiAutoReady: env.LIVE_AGENT_CONTROL_MODE === 'semi-auto',
       networkAdaptersReady: false,
       autoRequested: env.LIVE_AGENT_CONTROL_MODE === 'auto',
     });
+    const guardedLive = liveReadinessWithDiagnostics(live, sections);
+    /*
+     * Ступень готовности к LIVE на devnet.
+     *
+     * Не заменяет `blockers`, а отвечает на другой вопрос: не «чего
+     * не хватает», а «на чём мы стоим». Считается только когда обе
+     * диагностики ответили: молчащая проверка не может подтвердить
+     * ступень, и подставлять здесь оптимистичные значения нельзя.
+     */
+    const stage =
+      signing.ok && fundingSafety.ok
+        ? liveReadinessStage({
+            paperAgentConfigured: control.activeAllocationMode != null,
+            allocationConfigured: allocationAccounts.length > 0,
+            signingEnabled: signing.value.facts.signingEnabled,
+            signerProviderSupported: signing.value.facts.providerSupported,
+            signerKeyConfigured: signing.value.facts.keyConfigured,
+            signerKeyFingerprintObserved: signing.value.facts.keyFingerprint != null,
+            identityRegistered: signing.value.facts.identityState === 'OK',
+            expectedKeyMatches: signing.value.facts.expectedKeyMatches === true,
+            networkVerified: signing.value.facts.networkVerified,
+            reconciliationEnabled: env.LIVE_RECONCILIATION_ENABLED,
+            safetyLatchHealthy: fundingSafety.value === 'HEALTHY',
+            migrationsReady,
+            signatureValidated: signing.value.facts.signatureValidated,
+            hasAmbiguousAttempt: signing.value.facts.hasAmbiguousAttempt,
+            network: signing.value.facts.network,
+          })
+        : null;
 
     return {
       paper: true,
       network: 'Solana',
       phase4: {
+        /*
+         * Доступность блока — первое поле, потому что от неё зависит
+         * смысл всех остальных. `UNAVAILABLE` означает «не знаем», и
+         * это честнее любого значения по умолчанию.
+         */
+        status: sections.status,
+        unavailable: sections.unavailable,
         mode: 'SEMI_AUTO',
         network: 'SOLANA',
         live: {
           enabled: env.LIVE_AGENT_ENABLED,
           executionEnabled: env.LIVE_EXECUTION_ENABLED,
-          ready: live.ready,
-          blockers: live.blockers,
+          // Молчащая диагностика не считается пройденной проверкой.
+          ready: guardedLive.ready,
+          blockers: guardedLive.blockers,
+          /*
+           * Ступень лестницы devnet. `null` — диагностика молчит,
+           * и место на лестнице неизвестно; выдумывать его нельзя.
+           */
+          stage: stage?.stage ?? null,
+          stageBlockers: stage?.blockers ?? [],
+          mainnetRequested: stage?.mainnetRequested ?? false,
+          /*
+           * Состояние узла сети — очищенное и без адреса.
+           *
+           * Раньше готовность сети выводилась из наличия переменной
+           * `SOLANA_PREFLIGHT_RPC_URL`, и экран показывал «проверено»
+           * там, где не проверяли ничего. Теперь это состояние
+           * доказательства: когда проверяли, до каких пор годится и
+           * почему не годится сейчас.
+           *
+           * Ни URL, ни query, ни отпечатка настройки: отпечаток
+           * односторонний, но по нему видна история смен endpoint, а
+           * этого экрану знать незачем. `null` — диагностика подписи
+           * молчит, и о сети ничего не известно.
+           */
+          rpc: signing.ok && signing.value.devnetProof
+            ? {
+                state: signing.value.devnetProof.state,
+                verifiedAt: signing.value.devnetProof.verifiedAt,
+                expiresAt: signing.value.devnetProof.expiresAt,
+                stale: signing.value.devnetProof.stale,
+              }
+            : null,
         },
         funding: {
           enabled: env.FUNDING_ENABLED,
@@ -773,12 +920,14 @@ export const paperAgentRoutes: FastifyPluginAsync = async (app) => {
          * ощущение поломки там, где идёт обычная проверка, и при этом
          * рассказывают постороннему, как устроен контур.
          */
-        depositNetwork: {
-          status: depositNetworkStatus({
-            fundingEnabled: env.FUNDING_ENABLED,
-            safety: fundingSafety,
-          }),
-        },
+        depositNetwork: fundingSafety.ok
+          ? {
+              status: depositNetworkStatus({
+                fundingEnabled: env.FUNDING_ENABLED,
+                safety: fundingSafety.value,
+              }),
+            }
+          : null,
         /*
          * Контур подписи для человека.
          *
@@ -786,33 +935,41 @@ export const paperAgentRoutes: FastifyPluginAsync = async (app) => {
          * `broadcastAvailable: false` — не настройка, которую можно
          * включить, а факт: транспорта отправки в контуре нет.
          */
-        signing: {
-          /*
-           * Наружу идёт вычисленное состояние, а не сырые флаги.
-           *
-           * Флаг отвечает на вопрос «что попросили», состояние — на
-           * вопрос «что получилось». Раньше здесь стоял флаг, и
-           * человек видел «готово» там, где ключ не подтверждён.
-           */
-          state: signing.state,
-          status: signing.publicView,
-          network: signing.facts.network,
-          signingEnabled: signing.facts.signingEnabled,
-          signingConfigured: !signing.blockers.includes('KEY_NOT_CONFIGURED')
-            && !signing.blockers.includes('PROVIDER_NOT_SELECTED'),
-          identityVerified: !signing.blockers.includes('IDENTITY_NOT_REGISTERED')
-            && !signing.blockers.includes('IDENTITY_MISMATCH'),
-          networkVerified: signing.facts.networkVerified,
-          signatureValidated: signing.facts.signatureValidated,
-          safetyState: fundingSafety,
-          /*
-           * Не настройка, которую можно включить, а факт: транспорта
-           * отправки в контуре нет. `SIGNED` не равно `SUBMITTED`.
-           */
-          broadcastAvailable: signing.facts.broadcastAvailable,
-          // Старое поле сохранено: фронт и API выкатываются раздельно.
-          ready: signing.allowsKmsCall,
-        },
+        signing: signing.ok
+          ? {
+              /*
+               * Наружу идёт вычисленное состояние, а не сырые флаги.
+               *
+               * Флаг отвечает на вопрос «что попросили», состояние — на
+               * вопрос «что получилось». Раньше здесь стоял флаг, и
+               * человек видел «готово» там, где ключ не подтверждён.
+               */
+              state: signing.value.state,
+              status: signing.value.publicView,
+              network: signing.value.facts.network,
+              signingEnabled: signing.value.facts.signingEnabled,
+              signingConfigured: !signing.value.blockers.includes('KEY_NOT_CONFIGURED')
+                && !signing.value.blockers.includes('PROVIDER_NOT_SELECTED'),
+              identityVerified: !signing.value.blockers.includes('IDENTITY_NOT_REGISTERED')
+                && !signing.value.blockers.includes('IDENTITY_MISMATCH'),
+              networkVerified: signing.value.facts.networkVerified,
+              signatureValidated: signing.value.facts.signatureValidated,
+              /*
+               * Состояние защёлки берётся из своего раздела и только
+               * если тот ответил. Раньше здесь стояло значение,
+               * прочитанное выше без всякой оговорки, — и при молчащей
+               * сверке экран показывал бы `HEALTHY`.
+               */
+              safetyState: fundingSafety.ok ? fundingSafety.value : null,
+              /*
+               * Не настройка, которую можно включить, а факт: транспорта
+               * отправки в контуре нет. `SIGNED` не равно `SUBMITTED`.
+               */
+              broadcastAvailable: signing.value.facts.broadcastAvailable,
+              // Старое поле сохранено: фронт и API выкатываются раздельно.
+              ready: signing.value.allowsKmsCall,
+            }
+          : null,
         withdrawals: { enabled: env.WITHDRAWALS_ENABLED },
         compliance: { state: 'NOT_CONFIGURED' },
         proposal: null,
@@ -956,10 +1113,27 @@ export const paperAgentRoutes: FastifyPluginAsync = async (app) => {
     });
     if (!actor) return reply.code(401).send({ error: 'Требуется авторизация' });
 
-    return publicSnapshotOf(await readSnapshot(), actor.role === 'ADMIN');
+    try {
+      return publicSnapshotOf(await readSnapshot(req), actor.role === 'ADMIN');
+    } catch (error) {
+      /*
+       * Сюда попадает только отказ обязательной части: счёт, позиции,
+       * решения. Дополнительная диагностика до этого места не доходит
+       * — её сбой уже разобран внутри снимка.
+       *
+       * 503, а не 500: состояние временное, повтор осмыслен, и
+       * интерфейсу нужно отличать «сервер не может ответить сейчас»
+       * от «нет доступа» и от «нет такого экрана».
+       *
+       * Наружу — только машинный код. Настоящая причина уходит в
+       * журнал вместе с `reqId`, по которому дежурный находит запись.
+       */
+      req.log.error({ err: error }, 'обязательные данные /agent недоступны');
+      return reply.code(503).send({ code: 'PAPER_SNAPSHOT_UNAVAILABLE' });
+    }
   });
 
-  app.get('/admin/paper-agent', { preHandler: [app.requireAdmin] }, readSnapshot);
+  app.get('/admin/paper-agent', { preHandler: [app.requireAdmin] }, (req) => readSnapshot(req));
 
   app.put('/admin/paper-agent/allocation', { preHandler: [app.requireAdmin] }, async (req) => {
     const limitOverrides = z
@@ -1410,5 +1584,95 @@ export const paperAgentRoutes: FastifyPluginAsync = async (app) => {
         ];
       });
     });
+  });
+
+  /*
+   * Управляемый источник сигналов и цен.
+   *
+   * Три маршрута под `requireAdmin`, и этого мало: сама служба
+   * ещё раз спрашивает допуск по конфигурации. Роль отвечает
+   * на вопрос «кто», настройка — на вопрос «здесь ли вообще
+   * можно», и подменять одно другим нельзя.
+   *
+   * 403 с машинным кодом на любой отказ: перечислять человеку,
+   * какое именно условие не выполнено, здесь незачем — причина
+   * уходит в код ответа, а не в текст.
+   */
+  const testSourceRefusal = (reason: string, reply: FastifyReply) =>
+    reply.code(403).send({ code: `PAPER_TEST_SOURCE_${reason}` });
+
+  app.post('/admin/paper-agent/test-source/token', { preHandler: [app.requireAdmin] }, async (req, reply) => {
+    const body = z
+      .object({
+        symbol: z.string().min(1).max(32),
+        name: z.string().min(1).max(64),
+        priceUsd: z.number().positive().nullable().default(null),
+        poolCreatedAt: z.string().datetime().nullable().default(null),
+      })
+      .parse(req.body);
+
+    const created = await createPaperTestToken(req.user.role, {
+      symbol: body.symbol,
+      name: body.name,
+      priceUsd: body.priceUsd,
+      poolCreatedAt: body.poolCreatedAt == null ? null : new Date(body.poolCreatedAt),
+    });
+    if (!created.ok) return testSourceRefusal(created.reason, reply);
+
+    await prisma.auditLog.create({
+      data: {
+        actorId: req.user.sub,
+        action: 'paper_agent.test_token',
+        entity: 'Token',
+        entityId: created.value.id,
+        after: { address: created.value.address },
+      },
+    });
+    return created.value;
+  });
+
+  app.put('/admin/paper-agent/test-source/price', { preHandler: [app.requireAdmin] }, async (req, reply) => {
+    const body = z
+      .object({ tokenId: z.string().min(1), priceUsd: z.number().positive().nullable() })
+      .parse(req.body);
+
+    const updated = await setPaperTestPrice(req.user.role, body.tokenId, body.priceUsd);
+    if (!updated.ok) return testSourceRefusal(updated.reason, reply);
+
+    return { ok: true };
+  });
+
+  app.post('/admin/paper-agent/test-source/signal', { preHandler: [app.requireAdmin] }, async (req, reply) => {
+    const body = z
+      .object({
+        tokenId: z.string().min(1),
+        walletTypes: z.array(z.string().min(1)).min(1),
+        amountUsd: z.number().positive(),
+        signaledAt: z.string().datetime(),
+        receivedAt: z.string().datetime(),
+        priceUsd: z.number().positive().nullable().default(null),
+      })
+      .parse(req.body);
+
+    const created = await createPaperTestSignal(req.user.role, {
+      tokenId: body.tokenId,
+      walletTypes: body.walletTypes,
+      amountUsd: body.amountUsd,
+      signaledAt: new Date(body.signaledAt),
+      receivedAt: new Date(body.receivedAt),
+      priceUsd: body.priceUsd,
+    });
+    if (!created.ok) return testSourceRefusal(created.reason, reply);
+
+    await prisma.auditLog.create({
+      data: {
+        actorId: req.user.sub,
+        action: 'paper_agent.test_signal',
+        entity: 'OkxSignal',
+        entityId: created.value.id,
+        after: { tokenId: body.tokenId },
+      },
+    });
+    return created.value;
   });
 };

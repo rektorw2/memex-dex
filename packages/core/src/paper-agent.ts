@@ -34,18 +34,33 @@ export type PaperAgentState =
   | 'PAPER_CLOSED'
   | 'ERROR';
 
-export type PaperAgentDecisionCode =
-  | 'ELIGIBLE'
-  | 'WAITING_FOR_PRICE'
-  | 'WAITING_FOR_ENTRY_DELAY'
-  | 'UNSUPPORTED_SIGNAL_TYPE'
-  | 'AMOUNT_BELOW_THRESHOLD'
-  | 'TOKEN_AGE_UNKNOWN'
-  | 'TOKEN_TOO_OLD'
-  | 'NETWORK_NOT_SUPPORTED_PHASE_2'
-  | 'INVALID_SIGNAL_TIMESTAMPS'
-  | 'DECISION_DEADLINE_EXCEEDED'
-  | 'PRICE_UNAVAILABLE_BEFORE_DEADLINE';
+/**
+ * Все исходы решения по сигналу — списком, а не только типом.
+ *
+ * Тип существует лишь во время компиляции, и тест не может спросить
+ * его «все ли исходы я проверил». Из-за этого два кода —
+ * `WAITING_FOR_PRICE` и `WAITING_FOR_ENTRY_DELAY` — прожили без
+ * единой проверки: они были объявлены, возвращались из расчёта, но
+ * ни один тест их не называл.
+ *
+ * Список делает полноту проверяемой: новый исход, добавленный сюда
+ * без сценария, роняет тест полноты.
+ */
+export const PAPER_AGENT_DECISION_CODES = [
+  'ELIGIBLE',
+  'WAITING_FOR_PRICE',
+  'WAITING_FOR_ENTRY_DELAY',
+  'UNSUPPORTED_SIGNAL_TYPE',
+  'AMOUNT_BELOW_THRESHOLD',
+  'TOKEN_AGE_UNKNOWN',
+  'TOKEN_TOO_OLD',
+  'NETWORK_NOT_SUPPORTED_PHASE_2',
+  'INVALID_SIGNAL_TIMESTAMPS',
+  'DECISION_DEADLINE_EXCEEDED',
+  'PRICE_UNAVAILABLE_BEFORE_DEADLINE',
+] as const;
+
+export type PaperAgentDecisionCode = (typeof PAPER_AGENT_DECISION_CODES)[number];
 
 export const PAPER_SIGNAL_ORIGINS = [
   'WEBSOCKET_LIVE',

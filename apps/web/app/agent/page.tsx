@@ -4,7 +4,8 @@ import Link from 'next/link';
 import { SemiAutoProposals } from '@/components/SemiAutoProposals';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import useSWR from 'swr';
-import { api, errorMessage, fetcher } from '@/lib/api';
+import { ApiError, api, errorMessage, fetcher } from '@/lib/api';
+import { agentFailureVerdict, type AgentFailureKind } from '@memex/core';
 import { publicAsset } from '@/lib/public-assets';
 
 type MaybeNumber = number | null;
@@ -82,9 +83,37 @@ interface PaperWallet {
 }
 
 interface Phase4Status {
+  /*
+   * Доступность диагностики. Может отсутствовать: статика и API
+   * выкладываются раздельно, и старый сервер этого поля не отдаёт.
+   */
+  status?: 'AVAILABLE' | 'UNAVAILABLE';
+  unavailable?: string[];
   mode: 'SEMI_AUTO';
   network: 'SOLANA';
-  live: { enabled: boolean; executionEnabled: boolean; ready: boolean; blockers: string[] };
+  live: {
+    enabled: boolean;
+    executionEnabled: boolean;
+    ready: boolean;
+    blockers: string[];
+    /** Ступень лестницы devnet. `null` — диагностика молчит. */
+    stage?: string | null;
+    stageBlockers?: string[];
+    mainnetRequested?: boolean;
+    /*
+     * Состояние узла сети. Может отсутствовать: статика и API
+     * выкладываются раздельно, и старый сервер этого поля не отдаёт.
+     *
+     * Адреса узла здесь нет и не будет. Наружу идут состояние и
+     * время — этого хватает, чтобы понять, доверять ли ступени.
+     */
+    rpc?: {
+      state: 'NOT_CONFIGURED' | 'NOT_RUN' | 'VERIFYING' | 'VERIFIED' | 'STALE' | 'FAILED';
+      verifiedAt: string | null;
+      expiresAt: string | null;
+      stale: boolean;
+    } | null;
+  };
   funding: {
     enabled: boolean;
     source: 'DISABLED' | 'NOT_CONFIGURED';
@@ -96,7 +125,7 @@ interface Phase4Status {
    * сервера. Обязательное поле здесь означало бы белый экран у
    * человека, который ни при чём.
    */
-  depositNetwork?: { status: 'VALIDATING' | 'PAUSED' | 'REVIEW_REQUIRED' | 'NOT_CONNECTED' };
+  depositNetwork?: { status: 'VALIDATING' | 'PAUSED' | 'REVIEW_REQUIRED' | 'NOT_CONNECTED' } | null;
   /** Может отсутствовать: статика и API выкладываются раздельно. */
   signing?: {
     ready: boolean;
@@ -104,7 +133,7 @@ interface Phase4Status {
     broadcastAvailable: boolean;
     /** Необязательно: старый API этого поля не отдаёт. */
     status?: string;
-  };
+  } | null;
   withdrawals: { enabled: boolean };
   compliance: { state: 'NOT_CONFIGURED' | 'REVIEW_REQUIRED' | 'APPROVED' };
   proposal: null;
@@ -149,8 +178,18 @@ const STATUS: Record<PublicAgentData['health'], { label: string; detail: string;
   REFUSED: { label: 'Остановлен защитой', detail: 'Разрешён только PAPER-режим', tone: 'text-down' },
 };
 
+/*
+ * Подписи состояний run.
+ *
+ * `DEPOSIT` отсюда убран. Состояния с таким именем у run не бывает —
+ * подпись была мёртвой, — но главное не это: в бумажном режиме
+ * никакого внесения средств не существует, и слово «внесено» рядом
+ * с готовящимся приёмом настоящих депозитов вводило бы в заблуждение
+ * ровно там, где ошибиться дороже всего. Создание счёта называется
+ * `INITIALIZE` и подписано в `LEDGER_LABELS`.
+ */
 const EVENT_LABELS: Record<string, string> = {
-  DEPOSIT: 'PAPER-счёт создан', ENTRY: 'Позиция открыта', EXIT: 'Позиция закрыта',
+  ENTRY: 'Позиция открыта', EXIT: 'Позиция закрыта',
   RESERVE: 'Капитал зарезервирован', RELEASE: 'Резерв освобождён', RESET: 'Счёт перезапущен',
   PAPER_OPEN: 'Позиция открыта', PAPER_CLOSED: 'Позиция закрыта', SKIPPED: 'Сигнал пропущен',
   WAITING_PRICE: 'Ожидается цена', ERROR: 'Не удалось обработать сигнал',
@@ -189,7 +228,7 @@ export default function AgentPage() {
     }
   }
 
-  if (error) return <StateCard title="Агент временно недоступен">Обновите страницу через несколько секунд.</StateCard>;
+  if (error) return <AgentFailure error={error} onRetry={() => { void mutate(); }} />;
   if (!data) return <AgentSkeleton />;
 
   const status = STATUS[data.health];
@@ -394,15 +433,157 @@ const DEPOSIT_STATUS = {
     tone: 'border-warn/30 bg-warn/10 text-warn',
     dot: 'bg-warn',
   },
+  /*
+   * Отдельное состояние, а не оттенок «ещё не подключено».
+   *
+   * «Не подключено» — утверждение о контуре; «не отвечает» —
+   * признание, что о нём сейчас ничего не известно. Показывать
+   * первое вместо второго значит выдавать догадку за факт.
+   */
+  UNAVAILABLE: {
+    badge: 'состояние неизвестно',
+    title: 'Не удалось прочитать состояние пополнений',
+    note: 'На PAPER-счёт это не влияет: он показан выше и работает.',
+    tone: 'border-border bg-raised text-muted',
+    dot: 'bg-muted',
+  },
 } as const;
+
+/**
+ * Ступени подготовки к LIVE — словами, а не кодами.
+ *
+ * Список показывает, где контур находится сейчас и сколько ещё
+ * впереди. Отдельно названа верхняя ступень: mainnet не следующая
+ * галочка на этом пути, а стена.
+ *
+ * Кодов блокировок здесь нет намеренно. `SIGNER_KEY_NOT_OBSERVED`
+ * ничего не говорит человеку и заодно описывает постороннему
+ * внутреннее устройство.
+ */
+const STAGE_TEXT: Record<string, string> = {
+  PAPER_READY: 'Бумажный режим работает',
+  DEVNET_SIGNING_CONFIGURED: 'Контур подписи собран',
+  DEVNET_IDENTITY_VERIFIED: 'Ключ подтверждён',
+  DEVNET_FUNDING_RECONCILED: 'Сверка зачислений работает',
+  DEVNET_SIGNATURE_PROVEN: 'Подпись проверена на devnet',
+  MAINNET_BLOCKED: 'Всё, что можно проверить на devnet, пройдено',
+};
+
+const STAGE_ORDER = [
+  'PAPER_READY',
+  'DEVNET_SIGNING_CONFIGURED',
+  'DEVNET_IDENTITY_VERIFIED',
+  'DEVNET_FUNDING_RECONCILED',
+  'DEVNET_SIGNATURE_PROVEN',
+  'MAINNET_BLOCKED',
+];
+
+/**
+ * Состояние узла сети — словами.
+ *
+ * Шесть состояний вместо одного «проверено». Раньше готовность сети
+ * выводилась из наличия адреса узла в настройках, и человек читал
+ * «проверено» там, где никто ничего не проверял. Разница между «не
+ * настроен», «не проверялся» и «устарел» — это разница между «нечего
+ * делать», «сделайте проверку» и «сделайте её заново».
+ */
+const RPC_TEXT: Record<string, { label: string; tone: string }> = {
+  NOT_CONFIGURED: { label: 'узел не настроен', tone: 'text-muted' },
+  NOT_RUN: { label: 'проверка не выполнялась', tone: 'text-muted' },
+  VERIFYING: { label: 'проверяется', tone: 'text-accent' },
+  VERIFIED: { label: 'проверен', tone: 'text-up' },
+  STALE: { label: 'проверка устарела', tone: 'text-warn' },
+  FAILED: { label: 'проверка не прошла', tone: 'text-down' },
+};
+
+function RpcState({ rpc }: { rpc: NonNullable<Phase4Status['live']['rpc']> }) {
+  /*
+   * Незнакомое состояние не выдаётся за известное.
+   *
+   * Статика и API выкладываются раздельно: новый сервер может
+   * прислать состояние, о котором эта страница ещё не знает.
+   * Подставить сюда «проверен» значило бы соврать из-за рассинхрона
+   * выкладки.
+   */
+  const text = RPC_TEXT[rpc.state] ?? { label: 'состояние неизвестно', tone: 'text-muted' };
+
+  return (
+    <p className="mt-3 flex flex-wrap items-baseline gap-x-2 gap-y-1 text-xs" data-rpc-state={rpc.state}>
+      <span className="text-muted">Узел devnet:</span>
+      <span className={text.tone}>{text.label}</span>
+      {rpc.verifiedAt && (
+        <span className="text-muted">
+          · последняя успешная проверка {new Date(rpc.verifiedAt).toLocaleString('ru-RU')}
+        </span>
+      )}
+      {rpc.stale && <span className="text-warn">· требуется повторная проверка</span>}
+    </p>
+  );
+}
+
+function LiveStage({ live }: { live: Phase4Status['live'] }) {
+  /*
+   * Диагностика молчит — ступени нет. Показывать нижнюю
+   * «на всякий случай» нельзя: это утверждение о состоянии,
+   * которого никто не проверял.
+   */
+  if (live.stage == null) {
+    return (
+      <p className="mt-4 rounded-lg border border-border bg-raised/60 p-3 text-xs text-muted" data-live-stage="UNKNOWN">
+        Готовность LIVE сейчас не читается. На PAPER-счёт это не влияет.
+      </p>
+    );
+  }
+
+  const reached = STAGE_ORDER.indexOf(live.stage);
+  return (
+    <div className="mt-4 rounded-lg border border-border p-3" data-live-stage={live.stage}>
+      <p className="text-xs font-semibold tracking-wider text-muted">ПОДГОТОВКА LIVE · DEVNET</p>
+      <ol className="mt-2 space-y-1 text-xs" role="list">
+        {STAGE_ORDER.map((stage, index) => (
+          <li key={stage} className="flex items-start gap-2" data-stage-done={index <= reached ? 'true' : undefined}>
+            <span aria-hidden className={index <= reached ? 'text-accent' : 'text-muted'}>
+              {index <= reached ? '●' : '○'}
+            </span>
+            <span className={index <= reached ? 'text-white' : 'text-muted'}>{STAGE_TEXT[stage]}</span>
+          </li>
+        ))}
+      </ol>
+      {/*
+        Состояние узла показывается рядом со ступенями намеренно.
+        Ступень «Ключ подтверждён» требует проверенной сети, и без
+        этой строки человек не мог бы понять, почему лестница стоит.
+      */}
+      {live.rpc && <RpcState rpc={live.rpc} />}
+      {/*
+        Формулировка выбрана так, чтобы её нельзя было прочитать как
+        «скоро включим». Переход в mainnet — отдельное решение с
+        отдельным контуром, а не следующая ступень этой лестницы.
+      */}
+      <p className="mt-3 text-xs leading-relaxed text-muted">
+        Реальные средства не задействованы ни на одной ступени. Переход в основную сеть
+        этим путём не открывается.
+      </p>
+    </div>
+  );
+}
 
 function Phase4Foundation({ status }: { status: Phase4Status }) {
   const usdc = status.funding.assets.find((asset) => asset.symbol === 'USDC');
   // Нет поля или незнакомое значение — показываем «ещё не подключено».
   // Любой другой выбор по умолчанию обещал бы работающие пополнения.
-  const deposit =
-    DEPOSIT_STATUS[status.depositNetwork?.status as keyof typeof DEPOSIT_STATUS] ??
-    DEPOSIT_STATUS.NOT_CONNECTED;
+  /*
+   * Три разных случая, и путать их нельзя:
+   *   • раздел ответил и назвал состояние — показываем его;
+   *   • раздел не ответил (`status: 'UNAVAILABLE'`) — говорим,
+   *     что состояние неизвестно;
+   *   • поля нет вовсе (старый сервер) — прежнее «не подключено».
+   */
+  const diagnosticsDown = status.status === 'UNAVAILABLE' && status.depositNetwork == null;
+  const deposit = diagnosticsDown
+    ? DEPOSIT_STATUS.UNAVAILABLE
+    : DEPOSIT_STATUS[status.depositNetwork?.status as keyof typeof DEPOSIT_STATUS] ??
+      DEPOSIT_STATUS.NOT_CONNECTED;
   const steps = ['Ожидаем перевод', 'Обнаружен', 'Подтверждения', 'Финальность', 'Зачисление'];
   return <section className="mt-4 grid gap-4 xl:grid-cols-[1.2fr_.8fr]" aria-label="Подготовка LIVE">
     <article className="panel p-4 sm:p-5">
@@ -414,7 +595,9 @@ function Phase4Foundation({ status }: { status: Phase4Status }) {
         </div>
         <span
           role="status"
-          data-deposit-status={status.depositNetwork?.status ?? 'NOT_CONNECTED'}
+          data-deposit-status={
+            diagnosticsDown ? 'UNAVAILABLE' : status.depositNetwork?.status ?? 'NOT_CONNECTED'
+          }
           className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs transition-colors duration-200 motion-reduce:transition-none ${deposit.tone}`}
         >
           <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${deposit.dot}`} />
@@ -472,6 +655,7 @@ function Phase4Foundation({ status }: { status: Phase4Status }) {
     <article className="panel p-4 sm:p-5">
       <p className="text-xs font-semibold tracking-wider text-muted">SEMI-AUTO</p><h2 className="mt-1 font-semibold">Подтверждение до исполнения</h2>
       <dl className="mt-4 space-y-2 text-sm"><div className="flex justify-between gap-3"><dt className="text-muted">Сеть</dt><dd>Solana</dd></div><div className="flex justify-between gap-3"><dt className="text-muted">Сумма и комиссии</dt><dd className="text-muted">появятся в предложении</dd></div><div className="flex justify-between gap-3"><dt className="text-muted">Compliance</dt><dd className="text-warn">не настроен</dd></div></dl>
+      <LiveStage live={status.live} />
       <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-1"><button type="button" disabled className="min-h-11 rounded-lg border border-border bg-raised px-4 text-sm text-muted">Подтверждение LIVE недоступно</button><button type="button" disabled className="min-h-11 rounded-lg border border-down/25 bg-down/5 px-4 text-sm text-muted">LIVE kill switch недоступен</button><Link href="/terminal/" className="inline-flex min-h-11 items-center justify-center rounded-lg border border-border px-4 text-sm text-accent hover:border-accent/50 hover:text-white">Открыть терминал</Link></div>
     </article>
   </section>;
@@ -516,6 +700,101 @@ function RunCard({ run }: { run: AgentRun }) {
   return <article className="panel p-4"><div className="flex items-start gap-3"><TokenMark run={run} /><div className="min-w-0 flex-1"><div className="truncate font-semibold">{run.token?.symbol ?? run.symbol}</div><div className="truncate text-xs text-muted">{run.token?.name ?? run.address}</div></div><div className={`num text-sm ${pnlClass(run.unrealizedPnlUsd)}`}>{money(run.unrealizedPnlUsd)}</div></div><div className="mt-4 grid grid-cols-2 gap-3"><Metric label="Позиция" value={money(run.positionUsd)} tone="neutral" /><Metric label="Максимум" value={run.maxMultiple == null ? '—' : `${run.maxMultiple.toFixed(2)}×`} tone="neutral" /></div>{run.tokenId && <Link href={`/terminal/?token=${encodeURIComponent(run.tokenId)}`} className="mt-4 inline-flex min-h-11 items-center text-sm font-medium text-accent hover:text-white">Открыть график →</Link>}</article>;
 }
 
+/**
+ * То же состояние, но для того, кто его чинит.
+ *
+ * Разница с пользовательским видом не в оформлении, а в назначении.
+ * Человеку нужен ответ «работает или нет»; дежурному — «что именно
+ * снять, чтобы поднялось». Поэтому здесь коды блокировок и названия
+ * неотвечающих разделов: это адресаты, а не оттенки одного текста.
+ *
+ * Чего здесь всё равно нет: идентификатора ключа, адреса узла,
+ * строки подключения и текста ошибки. Права администратора в
+ * интерфейсе не делают эти вещи безопасными на экране — они уходят
+ * в журнал, где у них есть `reqId` и срок хранения.
+ */
+function AdminLiveStage({ phase4, busy, act }: {
+  phase4: Phase4Status;
+  busy: boolean;
+  act: (work: () => Promise<unknown>, success: string) => Promise<void>;
+}) {
+  const unavailable = phase4.unavailable ?? [];
+  const stageBlockers = phase4.live.stageBlockers ?? [];
+  const rpc = phase4.live.rpc ?? null;
+
+  return (
+    <section className="panel p-4 sm:p-5" aria-label="Диагностика подготовки LIVE">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 className="font-semibold">Подготовка LIVE · диагностика</h2>
+        <span className="text-xs text-muted" data-admin-stage={phase4.live.stage ?? 'UNKNOWN'}>
+          ступень {phase4.live.stage ?? 'неизвестна'}
+        </span>
+      </div>
+
+      {unavailable.length > 0 && (
+        <p className="mt-3 rounded-lg border border-warn/25 bg-warn/5 p-3 text-xs text-warn" role="status">
+          Разделы диагностики не отвечают: {unavailable.join(', ')}. Причина записана в журнал
+          сервера. PAPER-режим при этом работает.
+        </p>
+      )}
+
+      <dl className="mt-3 space-y-2 text-xs">
+        <div className="flex flex-wrap justify-between gap-2">
+          <dt className="text-muted">Блокировки ступени</dt>
+          <dd className="num text-right">{stageBlockers.length > 0 ? stageBlockers.join(', ') : '—'}</dd>
+        </div>
+        <div className="flex flex-wrap justify-between gap-2">
+          <dt className="text-muted">Блокировки LIVE</dt>
+          <dd className="num text-right">{phase4.live.blockers.join(', ') || '—'}</dd>
+        </div>
+        <div className="flex flex-wrap justify-between gap-2">
+          <dt className="text-muted">Запрошен mainnet</dt>
+          <dd className={phase4.live.mainnetRequested ? 'text-down' : 'text-muted'}>
+            {phase4.live.mainnetRequested ? 'да — переход запрещён' : 'нет'}
+          </dd>
+        </div>
+        <div className="flex flex-wrap justify-between gap-2">
+          <dt className="text-muted">Узел devnet</dt>
+          <dd className="text-right" data-admin-rpc={rpc?.state ?? 'UNKNOWN'}>
+            {rpc ? RPC_TEXT[rpc.state]?.label ?? rpc.state : 'не читается'}
+            {rpc?.expiresAt && (
+              <span className="text-muted"> · годно до {new Date(rpc.expiresAt).toLocaleString('ru-RU')}</span>
+            )}
+          </dd>
+        </div>
+      </dl>
+
+      {/*
+        Проверку запускает только администратор, и адрес узла она
+        берёт с сервера: тела у запроса нет вовсе. Прислать сюда свой
+        URL значило бы поднять ступень готовности проверкой чужого
+        узла.
+
+        Действие только читает сеть — ничего не подписывает и не
+        отправляет, — и попадает в журнал.
+      */}
+      <button
+        type="button"
+        disabled={busy || rpc?.state === 'NOT_CONFIGURED' || rpc?.state === 'VERIFYING'}
+        className="btn-ghost mt-4"
+        data-action="verify-devnet"
+        onClick={() => {
+          void act(
+            () => api('/admin/live/devnet-network/check', { method: 'POST' }),
+            'Проверка узла devnet выполнена',
+          );
+        }}
+      >
+        Проверить devnet
+      </button>
+      <p className="mt-2 text-xs leading-relaxed text-muted">
+        Проверка только читает сеть: health, genesis hash и доступность методов. Ничего не
+        подписывается и не отправляется. Адрес узла задаётся на сервере и здесь не показывается.
+      </p>
+    </section>
+  );
+}
+
 function AdminSettings(props: {
   data: PublicAgentData; admin?: AdminAgentData; busy: boolean; notice: string | null;
   mode: 'FIXED' | 'AUTOPILOT'; setMode: (value: 'FIXED' | 'AUTOPILOT') => void;
@@ -525,6 +804,7 @@ function AdminSettings(props: {
 }) {
   const { data, admin, busy, notice, mode, setMode, capital, setCapital, positions, setPositions, profile, setProfile, act } = props;
   return <div className="space-y-4">
+    <AdminLiveStage phase4={data.phase4} busy={busy} act={act} />
     <section className="panel p-4 sm:p-5"><div className="flex flex-wrap items-center justify-between gap-4"><div><h2 className="font-semibold">Управление агентом</h2><p className="mt-1 text-sm text-muted">Stop запрещает новые входы; открытые PAPER-позиции продолжают сопровождаться.</p></div><button disabled={busy || (!data.control.isEnabled && !data.wallet)} className={data.control.isEnabled ? 'btn-sell' : 'btn-buy'} onClick={() => {
       if (!window.confirm(data.control.isEnabled ? 'Остановить новые входы агента?' : 'Запустить PAPER-агента?')) return;
       void act(() => api('/admin/paper-agent', { method: 'PUT', body: JSON.stringify({ isEnabled: !data.control.isEnabled }) }), data.control.isEnabled ? 'Новые входы остановлены' : 'PAPER-агент запущен');
@@ -562,6 +842,89 @@ function TokenMark({ run }: { run: AgentRun }) {
 function ModeBadge({ wallet }: { wallet: PaperWallet }) { return <span className="rounded-full border border-border bg-raised px-2.5 py-1 text-xs text-muted">{wallet.mode === 'FIXED' ? 'Fixed allocation' : `Autopilot · ${wallet.riskProfile?.toLowerCase() ?? 'balanced'}`}</span>; }
 function Metric({ label, value, tone }: { label: string; value: string; tone: 'up' | 'down' | 'neutral' }) { return <div className="rounded-lg border border-border bg-raised/60 p-3"><div className="text-xs text-muted">{label}</div><div className={`num mt-1 text-sm font-semibold ${tone === 'up' ? 'text-up' : tone === 'down' ? 'text-down' : ''}`}>{value}</div></div>; }
 function StateCard({ title, children }: { title: string; children: ReactNode }) { return <div className="panel grid min-h-48 place-items-center p-6 text-center"><div><h2 className="font-semibold">{title}</h2><p className="mt-2 max-w-md text-sm text-muted">{children}</p></div></div>; }
+
+/**
+ * Четыре причины, по которым экран не открылся, — и четыре разных ответа.
+ *
+ * Раньше здесь была одна карточка: «Агент временно недоступен.
+ * Обновите страницу через несколько секунд». В трёх случаях из
+ * четырёх этот совет вёл в никуда: при истёкшей сессии и при
+ * отсутствии подписки обновление не помогает вообще никогда.
+ *
+ * Разбор кода живёт в ядре: интерфейс не должен решать, что значит
+ * 403. Здесь только текст и действие.
+ *
+ * Технических подробностей нет ни в одном состоянии. Ни адреса,
+ * ни кода ответа, ни текста ошибки: человеку они не помогают,
+ * а постороннему рассказывают об устройстве.
+ */
+const FAILURE_COPY: Record<AgentFailureKind, { title: string; detail: string }> = {
+  SIGN_IN_REQUIRED: {
+    title: 'Нужно войти заново',
+    detail: 'Сессия закончилась. Введённые настройки агента сохранены.',
+  },
+  ACCESS_REQUIRED: {
+    title: 'Экран агента недоступен на текущем тарифе',
+    detail: 'Агент входит в Pro. Пробный период открывает его целиком.',
+  },
+  SERVER_UNAVAILABLE: {
+    title: 'Сервер сейчас не отвечает',
+    detail: 'Это ненадолго. Данные PAPER-счёта не изменились.',
+  },
+  NETWORK_UNAVAILABLE: {
+    title: 'Не удалось связаться с сервером',
+    detail: 'Соединение прервалось. Данные PAPER-счёта не изменились.',
+  },
+};
+
+function AgentFailure({ error, onRetry }: { error: unknown; onRetry: () => void }) {
+  /*
+   * Ответ без кода — это отсутствие ответа.
+   *
+   * `NetworkError` не несёт статуса, и подставлять сюда `500`
+   * нельзя: «сервер ответил ошибкой» и «сервер не ответил» —
+   * разные поломки с разными советами.
+   */
+  const status = error instanceof ApiError ? error.status : null;
+  const verdict = agentFailureVerdict({ status });
+  const copy = FAILURE_COPY[verdict.kind];
+
+  return (
+    <div className="panel grid min-h-48 place-items-center p-6 text-center">
+      <div data-agent-failure={verdict.kind}>
+        <h2 className="font-semibold" role="alert">{copy.title}</h2>
+        <p className="mt-2 max-w-md text-sm text-muted">{copy.detail}</p>
+        <div className="mt-4 flex flex-wrap justify-center gap-2">
+          {verdict.retryable && (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="min-h-11 rounded-lg border border-border px-4 text-sm text-accent hover:border-accent/50 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+            >
+              Попробовать ещё раз
+            </button>
+          )}
+          {verdict.kind === 'SIGN_IN_REQUIRED' && (
+            <Link
+              href="/login"
+              className="inline-flex min-h-11 items-center justify-center rounded-lg border border-border px-4 text-sm text-accent hover:border-accent/50 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+            >
+              Войти
+            </Link>
+          )}
+          {verdict.kind === 'ACCESS_REQUIRED' && (
+            <Link
+              href="/plans"
+              className="inline-flex min-h-11 items-center justify-center rounded-lg border border-border px-4 text-sm text-accent hover:border-accent/50 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+            >
+              Посмотреть тарифы
+            </Link>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 function AgentSkeleton() { return <div aria-label="Загрузка агента" className="space-y-4"><div className="skeleton h-44 rounded-xl"/><div className="grid gap-3 sm:grid-cols-4">{[0,1,2,3].map((item) => <div key={item} className="skeleton h-24 rounded-xl"/>)}</div><div className="skeleton h-80 rounded-xl"/></div>; }
 function money(value: MaybeNumber) { if (value == null || !Number.isFinite(value)) return '—'; return `${value < 0 ? '−' : ''}$${Math.abs(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`; }
 function percent(value: MaybeNumber) { return value == null ? '—' : `${value.toFixed(2)}%`; }

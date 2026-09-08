@@ -288,13 +288,26 @@ describe('старый флаг не используется вне слоя с
   });
 
   it('публичный API не отдаёт сырой флаг как готовность', () => {
+    /*
+     * Поиск по началу строки, а не по `signing: {`.
+     *
+     * Прежний вариант искал открывающую скобку сразу за именем поля.
+     * Когда блок стал условным (`signing: signing.ok ? {`), поиск
+     * перестал что-либо находить, срез оказался пустым — и тест
+     * прошёл бы на пустой строке, если бы не искал в ней текст.
+     * Здесь якорь — отступ и имя поля, а конец блока ищется от
+     * найденного начала, а не от начала файла.
+     */
     const source = readFileSync(
       new URL('../modules/paper-agent.ts', import.meta.url), 'utf8',
     ).replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
-    const block = source.slice(source.indexOf('signing: {'), source.indexOf('withdrawals: {'));
+    const start = source.search(/^ {8}signing:/m);
+    const block = source.slice(start, source.indexOf('withdrawals: {', start));
 
+    expect(start).toBeGreaterThan(0);
     expect(block).not.toMatch(/env\.SOLANA_SIGNING_ENABLED/);
-    expect(block).toContain('signing.state');
+    // Наружу идёт вычисленное состояние, а не флаг.
+    expect(block).toMatch(/state: signing(\.value)?\.state/);
   });
 });
 

@@ -295,8 +295,29 @@ export function scorePaperAllocationSignal(facts: PaperSignalAllocationFacts): P
   return { score: bounded, band, sourceType, reasons, missingOrStale, policyKey: PAPER_ALLOCATION_SCORE_POLICY.key, policyVersion: PAPER_ALLOCATION_SCORE_POLICY.version };
 }
 
+/**
+ * Денежный масштаб счёта — тот же, что у колонок `Decimal(24, 8)`.
+ *
+ * Значение хранится с восемью знаками, и всё, что считается «на
+ * бумаге», обязано считаться в том же масштабе. Иначе получается
+ * расхождение, которое невозможно объяснить человеку: сохранённый
+ * `equity` не сходится с суммой сохранённых составляющих на одну
+ * последнюю единицу.
+ */
+export const PAPER_MONEY_SCALE = 8;
+
+/**
+ * Привести значение к каноническому денежному масштабу.
+ *
+ * Обрезание, а не округление вверх: приписать себе долю копейки,
+ * которой нет, хуже, чем недосчитать её.
+ */
+function money(value: Decimal): Decimal {
+  return value.toDecimalPlaces(PAPER_MONEY_SCALE, Decimal.ROUND_DOWN);
+}
+
 function decimalText(value: Decimal): string {
-  return value.toDecimalPlaces(8, Decimal.ROUND_DOWN).toFixed();
+  return money(value).toFixed();
 }
 
 export function allocatePaperCapital(context: AllocationContext): AllocationDecision {
@@ -396,6 +417,61 @@ export function openPaperCapitalLedger(snapshot: PaperCapitalLedgerSnapshot, amo
   return { ...snapshot, freeBalanceUsd: decimalText(free.minus(amount)), inPositionsUsd: decimalText(D(snapshot.inPositionsUsd).plus(amount)), openPositions: snapshot.openPositions + 1 };
 }
 
+/**
+ * Переоценка счёта по текущей стоимости открытых позиций.
+ *
+ * Одна формула на все места, где меняется стоимость счёта:
+ *
+ *     equity = свободно + резерв + вложено + нереализованный результат
+ *
+ * Раньше она была написана дважды — при открытии её не было вовсе,
+ * а при отметке цены она стояла прямо в адаптере. Из-за этого счёт
+ * между открытием позиции и первой отметкой показывал equity, равный
+ * начальному капиталу, хотя комиссия входа, сетевой сбор и
+ * проскальзывание уже были понесены. Человек видел сумму больше той,
+ * что у него на самом деле есть, — а на этом экране готовится приём
+ * настоящих денег.
+ *
+ * Пик и просадка считаются здесь же: пик не опускается, просадка
+ * измеряется от него.
+ */
+export function revaluePaperCapital(
+  snapshot: PaperCapitalLedgerSnapshot,
+  unrealizedTotalUsd: Numeric,
+): Pick<
+  PaperCapitalLedgerSnapshot,
+  'unrealizedPnlUsd' | 'equityUsd' | 'peakEquityUsd' | 'drawdownPct'
+> {
+  const raw = D(unrealizedTotalUsd);
+  if (!raw.isFinite()) throw new Error('INVALID_UNREALIZED');
+
+  /*
+   * Сначала канонический масштаб, только потом сумма.
+   *
+   * Порядок здесь — не стиль, а точность. Раньше `equity` считался
+   * из необрезанного результата, а сохранялись оба поля обрезанными
+   * по отдельности: сохранённый `equity` расходился с суммой
+   * сохранённых составляющих на 0.00000001. Одна последняя единица
+   * — но инвариант бухгалтерии либо точный, либо его нет.
+   */
+  const unrealized = money(raw);
+  const equity = money(
+    money(D(snapshot.freeBalanceUsd))
+      .plus(money(D(snapshot.reservedBalanceUsd)))
+      .plus(money(D(snapshot.inPositionsUsd)))
+      .plus(unrealized),
+  );
+  const peak = Decimal.max(money(D(snapshot.peakEquityUsd)), equity);
+  const drawdown = peak.lte(0) ? new Decimal(0) : peak.minus(equity).div(peak).mul(100);
+
+  return {
+    unrealizedPnlUsd: unrealized.toFixed(),
+    equityUsd: equity.toFixed(),
+    peakEquityUsd: peak.toFixed(),
+    drawdownPct: decimalText(drawdown),
+  };
+}
+
 export function closePaperCapitalLedger(snapshot: PaperCapitalLedgerSnapshot, input: {
   allocatedUsd: Numeric; netExitUsd: Numeric; tradingFeesUsd: Numeric; slippageUsd: Numeric; networkCostsUsd: Numeric;
 }): PaperCapitalLedgerSnapshot {
@@ -411,17 +487,33 @@ export function closePaperCapitalLedger(snapshot: PaperCapitalLedgerSnapshot, in
     netExit.lt(0) || tradingFees.lt(0) || slippage.lt(0) || networkCosts.lt(0) ||
     inPositions.lt(allocated) || snapshot.openPositions < 1
   ) throw new Error('INVALID_CLOSE');
-  const realized = netExit.minus(allocated);
-  const freeAfter = D(snapshot.freeBalanceUsd).plus(netExit);
-  const inPositionsAfter = inPositions.minus(allocated);
-  const realizedAfter = D(snapshot.realizedPnlUsd).plus(realized);
-  const equity = freeAfter.plus(snapshot.reservedBalanceUsd).plus(inPositionsAfter).plus(snapshot.unrealizedPnlUsd);
-  const peak = Decimal.max(D(snapshot.peakEquityUsd), equity);
+  /*
+   * Тот же порядок, что и в переоценке: сначала канонический
+   * масштаб каждой составляющей, потом сумма.
+   *
+   * `netExit` приходит с полной точностью, и `freeAfter` раньше
+   * обрезался отдельно от `equity`. Инвариант «equity равен сумме
+   * сохранённых частей» после закрытия расходился бы так же, как
+   * расходился после открытия.
+   */
+  const realized = money(netExit.minus(allocated));
+  const freeAfter = money(D(snapshot.freeBalanceUsd).plus(netExit));
+  const inPositionsAfter = money(inPositions.minus(allocated));
+  const realizedAfter = money(D(snapshot.realizedPnlUsd).plus(realized));
+  const unrealizedAfter = money(D(snapshot.unrealizedPnlUsd));
+  const equity = money(
+    freeAfter
+      .plus(money(D(snapshot.reservedBalanceUsd)))
+      .plus(inPositionsAfter)
+      .plus(unrealizedAfter),
+  );
+  const peak = Decimal.max(money(D(snapshot.peakEquityUsd)), equity);
   const drawdown = peak.lte(0) ? new Decimal(0) : peak.minus(equity).div(peak).mul(100);
   return {
     ...snapshot,
-    freeBalanceUsd: decimalText(freeAfter), inPositionsUsd: decimalText(inPositionsAfter), realizedPnlUsd: decimalText(realizedAfter),
+    freeBalanceUsd: freeAfter.toFixed(), inPositionsUsd: inPositionsAfter.toFixed(), realizedPnlUsd: realizedAfter.toFixed(),
+    unrealizedPnlUsd: unrealizedAfter.toFixed(),
     tradingFeesUsd: decimalText(D(snapshot.tradingFeesUsd).plus(tradingFees)), slippageUsd: decimalText(D(snapshot.slippageUsd).plus(slippage)), networkCostsUsd: decimalText(D(snapshot.networkCostsUsd).plus(networkCosts)),
-    equityUsd: decimalText(equity), peakEquityUsd: decimalText(peak), drawdownPct: decimalText(drawdown), openPositions: snapshot.openPositions - 1,
+    equityUsd: equity.toFixed(), peakEquityUsd: peak.toFixed(), drawdownPct: decimalText(drawdown), openPositions: snapshot.openPositions - 1,
   };
 }

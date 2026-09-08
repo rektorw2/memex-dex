@@ -9,9 +9,9 @@
 import { Prisma as P } from '@prisma/client';
 import {
   PAPER_AGENT_STRATEGIES,
+  actionablePaperOrigins,
   evaluatePaperSignal,
-  isLivePaperSignalOrigin,
-  isPaperSignalOrigin,
+  isActionablePaperOrigin,
   markPaperPosition,
   openPaperPosition,
   paperAgentModeVerdict,
@@ -187,9 +187,42 @@ async function createRunIfMissing(
   strategy: { id: string; config: unknown },
 ): Promise<string | null> {
   if (!signal) return null;
-  try {
-    const row = await prisma.paperAgentRun.create({
-      data: {
+
+  const key = { signalId: signal.id, strategyId: strategy.id };
+
+  /*
+   * Быстрый путь: run этой пары уже существует.
+   *
+   * Сигнал приходит к воркеру не один раз — его кладут в очередь,
+   * его же находит догон пропущенных, его же перечитывает проход по
+   * ожидающим. Раньше каждый такой заход доходил до вставки и получал
+   * `P2002`, и журнал заполнялся пойманными конфликтами на совершенно
+   * штатной работе. В таком журнале настоящую аварию не разглядеть.
+   */
+  const known = await prisma.paperAgentRun.findUnique({
+    where: { signalId_strategyId: key },
+    select: { id: true },
+  });
+  if (known) return known.id;
+
+  /*
+   * Вставка через `ON CONFLICT DO NOTHING`.
+   *
+   * `createMany` со `skipDuplicates` компилируется Prisma именно в
+   * него: конфликт разрешает сама база одним оператором, исключение
+   * не возникает вовсе. Ограничение уникальности при этом никуда не
+   * делось и по-прежнему остаётся единственным арбитром гонки —
+   * поменялось только то, что проигравший узнаёт об этом из
+   * количества вставленных строк, а не из брошенной ошибки.
+   *
+   * Проверка выше гонку не решает и не претендует: между ней и
+   * вставкой другой процесс успевает вставить свою строку. Именно
+   * поэтому арбитром остаётся база, а не приложение.
+   */
+  const inserted = await prisma.paperAgentRun.createMany({
+    skipDuplicates: true,
+    data: [
+      {
         signalId: signal.id,
         strategyId: strategy.id,
         providerKey: signal.providerKey,
@@ -215,18 +248,32 @@ async function createRunIfMissing(
           note: 'diagnostic_only',
         },
       },
-      select: { id: true },
-    });
-    return row.id;
-  } catch (error: any) {
-    if (error?.code !== 'P2002') throw error;
-    runtime.duplicatesSeen++;
-    const existing = await prisma.paperAgentRun.findUnique({
-      where: { signalId_strategyId: { signalId: signal.id, strategyId: strategy.id } },
-      select: { id: true },
-    });
-    return existing?.id ?? null;
-  }
+    ],
+  });
+
+  /*
+   * Ноль вставленных строк означает, что гонку выиграл другой
+   * процесс. Это по-прежнему наблюдаемое событие — просто теперь
+   * оно приходит числом, а не исключением, и потому его видно в
+   * метрике, а не в куче пойманных ошибок.
+   */
+  if (inserted.count === 0) runtime.duplicatesSeen++;
+
+  /*
+   * Идентификатор читается после вставки, потому что `createMany`
+   * его не возвращает. Строка к этому моменту есть в базе — своя
+   * или чужая, и это одно и то же: пара `(signalId, strategyId)`
+   * определяет её однозначно.
+   *
+   * `null` возможен в одном случае: победитель гонки откатился.
+   * Тогда сигнал остаётся необработанным и его подберёт следующий
+   * проход — тот самый догон пропущенных, ради которого он и есть.
+   */
+  const row = await prisma.paperAgentRun.findUnique({
+    where: { signalId_strategyId: key },
+    select: { id: true },
+  });
+  return row?.id ?? null;
 }
 
 function loadSignal(id: string) {
@@ -439,7 +486,19 @@ export async function processPaperAgentSignal(signalId: string): Promise<void> {
     });
     return;
   }
-  if (!isPaperSignalOrigin(signal.ingestOrigin) || !isLivePaperSignalOrigin(signal.ingestOrigin)) {
+  /*
+   * По каким сигналам агент вправе действовать.
+   *
+   * Список считается один раз в ядре и зависит от того, включён ли
+   * управляемый источник. При выключенном флаге он ровно тот же, что
+   * был раньше, — production ничего не замечает.
+   *
+   * Раньше здесь стояло `isLivePaperSignalOrigin`, и это соединяло два
+   * разных вопроса: «можно ли действовать» и «считать ли живым».
+   * Из-за этого управляемый источник, сделанный ради проверки
+   * PAPER-режима, не мог довести до воркера ни одного сигнала.
+   */
+  if (!isActionablePaperOrigin(signal.ingestOrigin, env.PAPER_TEST_SOURCE_ENABLED)) {
     await prisma.okxSignal.updateMany({
       where: { id: signal.id },
       data: { paperAgentIngestCode: 'BACKFILL_DIAGNOSTIC_ONLY' },
@@ -633,9 +692,21 @@ export async function processOpenPaperPositions(now = new Date()): Promise<void>
   }
 }
 
-async function tick(): Promise<void> {
-  if (!runtime.running || ticking) return;
-  ticking = true;
+/**
+ * Один проход воркера.
+ *
+ * Экспортируется, чтобы сквозной стенд мог прогнать очередь без
+ * таймера. Это не тестовый дубль и не копия: `tick` ниже вызывает
+ * ровно эту функцию, добавляя к ней только защиту от повторного
+ * входа и проверку «воркер запущен». Разделение сделано так, а не
+ * копированием тела, потому что вторая реализация того же прохода
+ * однажды разошлась бы с первой — и стенд начал бы проверять то,
+ * чего в production нет.
+ *
+ * Проверку `runtime.running` сюда намеренно не переносили: стенд
+ * управляет проходами сам и таймер не запускает.
+ */
+export async function runPaperAgentTickOnce(): Promise<void> {
   runtime.lastTickAt = new Date().toISOString();
   try {
     const control = await prisma.paperAgentControl.findUnique({ where: { id: CONTROL_ID } });
@@ -664,6 +735,8 @@ async function tick(): Promise<void> {
      * сигнала есть run, поэтому рестарт объявил бы его законченным. Условие
      * ниже спрашивает ровно то, что нужно: отсутствует ли run этой версии.
      */
+    // Один список на оба запроса ниже: два списка однажды разошлись бы.
+    const actionable = actionablePaperOrigins(env.PAPER_TEST_SOURCE_ENABLED);
     const enabledStrategies = await prisma.paperAgentStrategy.findMany({
       where: { isEnabled: true },
       select: { id: true },
@@ -674,7 +747,7 @@ async function tick(): Promise<void> {
           where: {
             signaledAt: { gte: new Date(Date.now() - SIGNAL_LOOKBACK_MS) },
             chain: 'SOLANA',
-            ingestOrigin: { in: ['WEBSOCKET_LIVE', 'REST_RECONCILIATION'] },
+            ingestOrigin: { in: actionable },
             paperAgentRuns: { none: { strategyId: strategy.id } },
           },
           select: { id: true },
@@ -687,7 +760,7 @@ async function tick(): Promise<void> {
       where: {
         state: { in: ['WAITING_PRICE', 'WAITING_ENTRY'] },
         chain: 'SOLANA',
-        signalOrigin: { in: ['WEBSOCKET_LIVE', 'REST_RECONCILIATION'] },
+        signalOrigin: { in: actionable },
       },
       select: { signalId: true },
       orderBy: { updatedAt: 'asc' },
@@ -717,6 +790,21 @@ async function tick(): Promise<void> {
         observedAt: new Date().toISOString(),
       },
     }).catch(() => undefined);
+  }
+}
+
+/**
+ * Проход по таймеру.
+ *
+ * Добавляет к общему проходу ровно две вещи: не запускается, пока
+ * воркер не стартовал, и не входит второй раз, пока идёт первый.
+ * Больше здесь ничего нет — вся работа в `runPaperAgentTickOnce`.
+ */
+async function tick(): Promise<void> {
+  if (!runtime.running || ticking) return;
+  ticking = true;
+  try {
+    await runPaperAgentTickOnce();
   } finally {
     ticking = false;
   }

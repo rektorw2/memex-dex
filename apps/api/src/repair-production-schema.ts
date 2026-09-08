@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { readdirSync } from 'node:fs';
+import { migrationsOnDisk } from './lib/migrations-on-disk.js';
 import { prisma } from './lib/prisma.js';
 import {
   ACCESS_ENUMS,
@@ -13,38 +13,6 @@ import {
   type ProductionSchemaSnapshot,
 } from './lib/production-schema-repair.js';
 import { readProductionSchemaSnapshot } from './lib/production-schema-snapshot.js';
-
-/**
- * Имена миграций в репозитории.
- *
- * Загрузчик сверяет их со своим списком известных: `migrate deploy`
- * применяет всё непринятое, и единственная защита от неосторожного
- * `ALTER` — заранее знать, что именно будет применено.
- *
- * `null` возвращается только при нечитаемом каталоге и означает
- * отказ, а не пропуск проверки: ошибка чтения не должна снимать
- * защиту, ради которой проверка и заведена.
- */
-function migrationsOnDisk(): string[] | null {
-  /*
-   * Путь считается от самого файла, а не от рабочего каталога.
-   * Загрузчик стартует из `/app`, но полагаться на это незачем:
-   * не найденный каталог означает пропуск проверки, то есть тихое
-   * ослабление ровно той защиты, ради которой она заведена.
-   *
-   * Из `apps/api/dist/` и из `apps/api/src/` глубина одинакова,
-   * поэтому путь работает и в контейнере, и под tsx.
-   */
-  const dir = new URL('../../../prisma/migrations', import.meta.url);
-
-  try {
-    return readdirSync(dir, { withFileTypes: true })
-      .filter((e) => e.isDirectory())
-      .map((e) => e.name);
-  } catch {
-    return null;
-  }
-}
 
 function readSnapshot(): Promise<ProductionSchemaSnapshot> {
   // Те же самые запросы прогоняются по PGlite в тесте: список

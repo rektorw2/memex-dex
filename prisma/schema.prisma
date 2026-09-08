@@ -679,6 +679,15 @@ model PaperAgentAccountSession {
   openPositions      Int      @default(0)
   dailyEntries       Int      @default(0)
   dailyEntriesDate   DateTime
+  /// Версия оптимистичной блокировки, а не номер записи журнала.
+  ///
+  /// Каждое изменение строки счёта делается условным обновлением
+  /// `where: { ledgerVersion }` с инкрементом: выигрывает тот, кто
+  /// прочитал актуальную версию, проигравший получает `count: 0`
+  /// и повторяет. Поэтому счётчик растёт и при переоценке открытой
+  /// позиции, когда новой записи в `PaperAgentCapitalLedger`
+  /// не появляется — событий журнала он не считает и считать
+  /// не должен.
   ledgerVersion      Int      @default(0)
   lastRecalculatedAt DateTime @default(now())
 
@@ -2092,6 +2101,70 @@ model FundingSafetyLatch {
   clearedAt  DateTime?
   clearedBy  String?
   updatedAt  DateTime  @updatedAt
+}
+
+/**
+ * Доказательство того, что узел сети проверен.
+ *
+ * Отдельная таблица, потому что раньше «сеть проверена» выводилось из
+ * наличия переменной с адресом узла. Строка с адресом не доказывает
+ * ни доступности, ни того, что это devnet: она остаётся на месте, пока
+ * узел меняют, отключают или заменяют на боевой.
+ *
+ * Запись переживает рестарт намеренно. Доказательство, живущее в
+ * памяти процесса, обнуляется при каждом деплое, и контур либо
+ * оказывается неготов на ровном месте, либо (хуже) кто-то добавляет
+ * умолчание «наверное, всё в порядке».
+ *
+ * Чего здесь нет: адреса узла, query-строки, заголовков, учётных
+ * данных и тел ответов RPC. Endpoint представлен односторонним
+ * отпечатком — по нему видно, что настройку сменили, но не видно,
+ * на какую.
+ */
+model SolanaNetworkProof {
+  /** Назначение проверки: `solana-signing` и подобные. Не адрес. */
+  id            String @id
+  /** Версия формата записи. Чужую версию читать нельзя. */
+  formatVersion Int    @default(1)
+  /** Сеть, как её назвала конфигурация в момент проверки. */
+  network       String
+
+  /** VERIFIED | FAILED. Отсутствия записи не бывает — бывает её нет вовсе. */
+  outcome String
+  /** Наблюдённый genesis hash. Публичное значение сети, не секрет. */
+  genesisHash String?
+  /** SHA-256 настройки endpoint. Ни URL, ни ключа, ни query. */
+  endpointFingerprint String
+  /** Какие методы RPC подтверждены ответом узла. */
+  methods String[] @default([])
+  /** Безопасные машинные коды отказа. Ни текста, ни тела ответа. */
+  failureCode String?
+  failureKind String?
+  /** Наибольшая наблюдённая задержка вызова. */
+  maxLatencyMs       Int?
+  commitmentLagSlots Int?
+
+  verifiedAt DateTime?
+  expiresAt  DateTime?
+  checkedAt  DateTime
+  /** Кто запустил проверку. Идентификатор администратора либо null. */
+  checkedBy String?
+
+  /**
+   * Аренда на время проверки.
+   *
+   * Не мьютекс в памяти: процессов бывает несколько, и «я уже
+   * проверяю» одного из них остальным не видно. Просроченная аренда
+   * освобождается сама — упавший процесс не должен запрещать
+   * проверку навсегда.
+   */
+  leaseHolder    String?
+  leaseExpiresAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([network, outcome])
 }
 
 enum SolanaTransactionState {

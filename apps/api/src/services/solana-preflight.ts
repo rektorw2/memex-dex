@@ -94,6 +94,21 @@ export interface PreflightReport {
   /** Имя сети, а не адрес: URL может содержать API-ключ. */
   network: SolanaNetworkName;
   ok: boolean;
+  /**
+   * Genesis hash, который вернул узел.
+   *
+   * Публичный опознавательный знак сети, а не секрет: он одинаков у
+   * всех, кто подключён к той же цепочке, и по нему нельзя узнать ни
+   * адрес узла, ни тариф, ни ключ.
+   *
+   * Поле нужно, чтобы доказательство проверки опиралось на ответ
+   * узла, а не на ожидание проверяющего. Записать вместо него
+   * ожидаемое значение значило бы сохранить собственную догадку и
+   * потом сверять её саму с собой.
+   *
+   * `null` — узел не ответил или ответил не строкой.
+   */
+  observedGenesisHash: string | null;
   checks: PreflightCheck[];
   /** Отставание confirmed от finalized в слотах. Null — не измерено. */
   commitmentLagSlots: number | null;
@@ -158,7 +173,7 @@ export async function runSolanaPreflight(
     checks.push(fail('GENESIS', genesis.code, genesis.kind, genesis.latencyMs));
     // Без подтверждённой сети остальные проверки бессмысленны:
     // они бы проверяли работоспособность неизвестно чего.
-    return report(options.network, checks, null, budget, null);
+    return report(options.network, null, checks, null, budget, null);
   }
   const observed = typeof genesis.value === 'string' ? genesis.value : '';
   if (observed !== expected) {
@@ -176,7 +191,7 @@ export async function runSolanaPreflight(
       'NETWORK_MISMATCH',
       genesis.latencyMs,
     ));
-    return report(options.network, checks, null, budget, null);
+    return report(options.network, observed || null, checks, null, budget, null);
   }
   checks.push(verdict('GENESIS', 'matches', genesis.latencyMs, maxLatencyMs));
 
@@ -245,7 +260,7 @@ export async function runSolanaPreflight(
     checks.push(skipped('SIGNATURE_STATUSES', 'NO_PROBE_SIGNATURE'));
     checks.push(skipped('GET_TRANSACTION', 'NO_PROBE_SIGNATURE'));
     if (options.requireHistory) checks.push(skipped('HISTORY_CAPABILITY', 'NO_PROBE_SIGNATURE'));
-    return report(options.network, checks, lag, budget, bootstrap);
+    return report(options.network, observed, checks, lag, budget, bootstrap);
   }
 
   const statuses = await call(() => rpc.call<unknown>('getSignatureStatuses', [
@@ -291,11 +306,12 @@ export async function runSolanaPreflight(
         ));
   }
 
-  return report(options.network, checks, lag, budget, bootstrap);
+  return report(options.network, observed, checks, lag, budget, bootstrap);
 }
 
 function report(
   network: SolanaNetworkName,
+  observedGenesisHash: string | null,
   checks: PreflightCheck[],
   commitmentLagSlots: number | null,
   budget: ScanBudgetResult | null,
@@ -305,7 +321,15 @@ function report(
   // отчёт: она честно помечена как непроверенная.
   const checksOk = checks.every((check) => check.outcome !== 'FAIL');
   const budgetOk = budget == null || budget.status === 'FITS';
-  return { network, ok: checksOk && budgetOk, checks, commitmentLagSlots, budget, bootstrap };
+  return {
+    network,
+    ok: checksOk && budgetOk,
+    observedGenesisHash,
+    checks,
+    commitmentLagSlots,
+    budget,
+    bootstrap,
+  };
 }
 
 /** Успех с оглядкой на задержку: медленный узел исправен, но непригоден. */
