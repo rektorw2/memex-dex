@@ -1,0 +1,95 @@
+{
+  "provenance": "Selected fields transcribed from the Render shell JSON shown by a Prisma transaction with SET TRANSACTION READ ONLY; not a full database dump.",
+  "at": "2026-09-09T19:39:59.947Z",
+  "revision": "2b92c029ee9fad403afc09390d92761fa5f74ed6",
+  "control": {
+    "isEnabled": true,
+    "baselineStrategyKey": "okx-signal-v3-baseline",
+    "activeAllocationMode": "FIXED"
+  },
+  "lastHour": {
+    "count": 36,
+    "lateOver30Seconds": 30,
+    "states": {
+      "SKIPPED": 36
+    },
+    "decisionCodes": {
+      "AMOUNT_BELOW_THRESHOLD": 10,
+      "DECISION_DEADLINE_EXCEEDED": 18,
+      "TOKEN_TOO_OLD": 8
+    }
+  },
+  "freshSignalsAtLeast600": [
+    {
+      "symbol": "Grok",
+      "chain": "ROBINHOOD",
+      "amountUsd": "1201.43463027",
+      "latencyMs": 28746,
+      "poolCreatedAt": null,
+      "decisionCode": "DECISION_DEADLINE_EXCEEDED"
+    },
+    {
+      "symbol": "HORST",
+      "chain": "ROBINHOOD",
+      "amountUsd": "2026.710584",
+      "latencyMs": 1057,
+      "poolCreatedAt": null,
+      "decisionCode": "DECISION_DEADLINE_EXCEEDED"
+    },
+    {
+      "symbol": "DUOLIPA",
+      "chain": "ROBINHOOD",
+      "amountUsd": "2878.2819128",
+      "latencyMs": 13282,
+      "poolCreatedAt": null,
+      "decisionCode": "DECISION_DEADLINE_EXCEEDED"
+    },
+    {
+      "symbol": "SATS",
+      "chain": "SOLANA",
+      "amountUsd": "2274.50915381",
+      "latencyMs": 2328,
+      "poolCreatedAt": null,
+      "decisionCode": "DECISION_DEADLINE_EXCEEDED"
+    },
+    {
+      "symbol": "SLAWTH",
+      "chain": "SOLANA",
+      "amountUsd": "6852.49063265",
+      "latencyMs": 13910,
+      "poolCreatedAt": null,
+      "decisionCode": "DECISION_DEADLINE_EXCEEDED"
+    },
+    {
+      "symbol": "OTC",
+      "chain": "SOLANA",
+      "amountUsd": "1839.04388875",
+      "latencyMs": 765,
+      "poolCreatedAt": "2026-08-28T13:31:29.000Z",
+      "decisionCode": "TOKEN_TOO_OLD"
+    }
+  ],
+  "paperOpenOrClosedRunCounts": [],
+  "sessions": [
+    {
+      "kind": "ACTIVE",
+      "freeBalanceUsd": "700",
+      "inPositionsUsd": "0",
+      "openPositions": 0,
+      "dailyEntries": 0
+    },
+    {
+      "kind": "SHADOW",
+      "freeBalanceUsd": "700",
+      "inPositionsUsd": "0",
+      "openPositions": 0,
+      "dailyEntries": 0
+    }
+  ],
+  "config": {
+    "restInterval": "60000",
+    "plan": null,
+    "monthly": null,
+    "rps": null
+  }
+}

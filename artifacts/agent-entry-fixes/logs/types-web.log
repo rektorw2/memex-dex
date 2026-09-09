@@ -1,0 +1,2 @@
+apps/web/app/agent/agent-page.test.tsx(1015,54): error TS2339: Property 'toHaveTextContent' does not exist on type 'Assertion<HTMLElement>'.
+apps/web/app/agent/agent-page.test.tsx(1016,54): error TS2339: Property 'toHaveTextContent' does not exist on type 'Assertion<HTMLElement>'.

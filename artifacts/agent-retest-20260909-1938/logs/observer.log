@@ -1,0 +1,20 @@
+✔ continuous 24h fixture passes, not a production observation (7.2005ms)
+✔ two-observations (1.086959ms)
+✔ restarts-every-ten-minutes (16.629708ms)
+✔ two otherwise valid observations cannot pass (1.562083ms)
+✔ gap, duplicate and reverse time fail (6.428125ms)
+✔ blank/absent metrics fail (18.685708ms)
+✔ restarts and uptime zero fail (2.984834ms)
+✔ worker health is independent of source failure (4.224208ms)
+✔ health endpoint failure and missing completed ticks fail (6.216084ms)
+✔ memory windows are time based with uneven sampling (9.945833ms)
+✔ unknown source does not imply broken worker (3.884834ms)
+✔ actual duration, not row count controls outage (5.3855ms)
+ℹ tests 12
+ℹ suites 0
+ℹ pass 12
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 148.67225

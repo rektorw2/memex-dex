@@ -1008,3 +1008,11 @@ it('объясняет 60036 и раздельно показывает login, �
   expect(screen.getByText('Доставка последнего решения: 192540 мс')).toBeTruthy();
   expect(screen.getByText('Решение агента после получения: 190 мс')).toBeTruthy();
 });
+
+it('REST response is not presented as proof of timely delivery when allocation is unconfirmed', () => {
+  state.publicData = data({source:{transportMode:'REST_ONLY',socketState:'rest_only',fallbackActive:true,lastRestSuccessAt:'2026-09-09T00:00:00Z',restDelivery:{status:'BUDGET_UNCONFIRMED',roundMs:300000,message:'Бюджет и частота OKX REST не подтверждены. Своевременный вход не обеспечен; требуется восстановить WS или выделить квоту.'}}});
+  render(<AgentPage />);
+  expect(screen.getByTestId('rest-delivery-status').closest('details')).toBeNull();
+  expect(screen.getByTestId('rest-delivery-status').textContent).toContain('Обход сетей: 300 с.');
+  expect(screen.getByTestId('rest-delivery-status').textContent).toContain('Своевременный вход не обеспечен');
+});

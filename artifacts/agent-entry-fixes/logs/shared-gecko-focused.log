@@ -1,0 +1,17 @@
+
+> @memex/api@0.1.0 test
+> vitest run --run src/services/metadata-adapter-integration.test.ts src/services/market-data-rate-limit.test.ts src/services/paper-token-metadata.test.ts
+
+
+ RUN  v3.2.7 /Users/myrotec/Desktop/memex-dex/apps/api
+
+ ✓ src/services/market-data-rate-limit.test.ts (3 tests) 6ms
+ ✓ src/services/paper-token-metadata.test.ts (10 tests) 54ms
+ ✓ src/services/metadata-adapter-integration.test.ts (10 tests) 701ms
+   ✓ real Robinhood adapter makes HTTP request, validates pool identity and saves only pool creation date  426ms
+
+ Test Files  3 passed (3)
+      Tests  23 passed (23)
+   Start at  04:27:59
+   Duration  1.03s (transform 380ms, setup 0ms, collect 158ms, tests 761ms, environment 0ms, prepare 179ms)
+

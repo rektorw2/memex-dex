@@ -1,0 +1,70 @@
+[
+  {
+    "path": ".env.example",
+    "matches": true
+  },
+  {
+    "path": "apps/api/src/e2e/metadata-http.e2e.test.ts",
+    "matches": true
+  },
+  {
+    "path": "apps/api/src/lib/env.ts",
+    "matches": true
+  },
+  {
+    "path": "apps/api/src/modules/paper-agent.ts",
+    "matches": true
+  },
+  {
+    "path": "apps/api/src/server.ts",
+    "matches": true
+  },
+  {
+    "path": "apps/api/src/services/gecko-admission.ts",
+    "matches": true
+  },
+  {
+    "path": "apps/api/src/services/market-data-rate-limit.test.ts",
+    "matches": true
+  },
+  {
+    "path": "apps/api/src/services/market-data.ts",
+    "matches": true
+  },
+  {
+    "path": "apps/api/src/services/metadata-adapter-integration.test.ts",
+    "matches": true
+  },
+  {
+    "path": "apps/api/src/services/paper-token-metadata.ts",
+    "matches": true
+  },
+  {
+    "path": "apps/api/src/services/signal-rest-schedule.test.ts",
+    "matches": true
+  },
+  {
+    "path": "apps/api/src/services/signal-rest-schedule.ts",
+    "matches": true
+  },
+  {
+    "path": "apps/api/src/workers/okx-rest-scheduling.test.ts",
+    "matches": true
+  },
+  {
+    "path": "apps/api/src/workers/okx-signal-ingest.ts",
+    "matches": true
+  },
+  {
+    "path": "apps/api/src/workers/okx-signal-source-state.test.ts",
+    "matches": true
+  },
+  {
+    "path": "apps/web/app/agent/agent-page.test.tsx",
+    "matches": true
+  },
+  {
+    "path": "apps/web/app/agent/agent-screen.tsx",
+    "matches": true
+  }
+]

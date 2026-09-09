@@ -1,0 +1,41 @@
+{
+  "status": "prepared_for_independent_review",
+  "productionReady": false,
+  "committed": false,
+  "pushed": false,
+  "deployed": false,
+  "productionSettingsChanged": false,
+  "tradesExecuted": false,
+  "base": "2b92c029ee9fad403afc09390d92761fa5f74ed6",
+  "sourceFiles": 17,
+  "tests": {
+    "core": 2072,
+    "api": 1892,
+    "web": 456,
+    "total": 4420,
+    "e2e": 100,
+    "observer": 12
+  },
+  "builds": {
+    "core": "pass",
+    "prismaGenerate": "pass",
+    "typesApi": "pass",
+    "typesWeb": "pass",
+    "pagesStatic": "pass"
+  },
+  "ui": {
+    "widths": [
+      390,
+      1280
+    ],
+    "fixture": true,
+    "overflow": false
+  },
+  "schemaMigrationsChanged": false,
+  "remaining": [
+    "Independent review and separately authorized publication",
+    "Actual OKX key budget/RPS and WS restoration",
+    "Real eligible PAPER entry/management/exit",
+    "At least 24 hours observation"
+  ]
+}

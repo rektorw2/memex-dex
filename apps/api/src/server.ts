@@ -240,6 +240,7 @@ export async function buildServer() {
           },
       // Состояние источника — отдельно от живости процесса.
       source: {
+        restDelivery: ingest.restDelivery,
         state: source.available ? 'available' : 'unavailable',
         available: source.available,
         code: source.code,

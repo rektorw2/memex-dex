@@ -1,0 +1,1236 @@
+diff --git a/.env.example b/.env.example
+index 57bc106..ea52fcd 100644
+--- a/.env.example
++++ b/.env.example
+@@ -55,6 +55,14 @@ OKX_PASSPHRASE=
+ OKX_PROJECT_ID=
+ OKX_WS_ENABLED=true
+ OKX_SIGNAL_REST_FALLBACK_INTERVAL_MS=60000
++# Optional REST-only acceleration: fill only after verifying this key's plan,
++# remaining Premium quota and assigned Signal RPS. Zero means unconfirmed.
++# Allocation is capped at half the documented Premium plan quota.
++# OKX_PLAN=growth
++OKX_SIGNAL_REST_MONTHLY_BUDGET=0
++OKX_SIGNAL_REST_REQUESTS_PER_SECOND=0
++# Count consumers sharing the allocation, including other deployments.
++OKX_SIGNAL_REST_CONSUMERS=1
+ 
+ # Те же ключи под именами из документации OKX. Заполнять нужно
+ # один из вариантов, не оба.
+diff --git a/apps/api/src/lib/env.ts b/apps/api/src/lib/env.ts
+index c66a3f8..c086787 100644
+--- a/apps/api/src/lib/env.ts
++++ b/apps/api/src/lib/env.ts
+@@ -255,9 +255,13 @@ const schema = z.object({
+   OKX_ACTIVITY_REST_FALLBACK_INTERVAL_MS: z.coerce.number().default(20_000),
+   /**
+    * Запасной опрос Signal вращается по одной сети за проход.
+-   * Основной путь — WebSocket; минута здесь бережёт платную квоту,
+-   * но за полный круг всё равно проходит не больше четырёх минут.
++   * Без подтверждённого бюджета сохраняется медленный опрос и явное
++   * ограничение свежести: пять сетей при 60 сек дают круг в пять минут.
+    */
++  // Explicit owner allocation; zero keeps conservative legacy polling and reports unknown freshness.
++  OKX_SIGNAL_REST_MONTHLY_BUDGET: z.coerce.number().int().min(0).default(0),
++  OKX_SIGNAL_REST_REQUESTS_PER_SECOND: z.coerce.number().min(0).max(10).default(0),
++  OKX_SIGNAL_REST_CONSUMERS: z.coerce.number().int().min(1).max(100).default(1),
+   OKX_SIGNAL_REST_FALLBACK_INTERVAL_MS: z.coerce.number().min(15_000).default(60_000),
+ 
+   /**
+diff --git a/apps/api/src/modules/paper-agent.ts b/apps/api/src/modules/paper-agent.ts
+index c2cc364..9acb0c4 100644
+--- a/apps/api/src/modules/paper-agent.ts
++++ b/apps/api/src/modules/paper-agent.ts
+@@ -459,6 +459,7 @@ export function publicSnapshotOf(snapshot: any, isAdmin: boolean) {
+       lastWsEventAt: snapshot.okxSignal.socket?.lastChannelEventAt ?? null,
+       nextAccessCheckAt: snapshot.okxSignal.socket?.nextAccessCheckAt ?? null,
+       accessMessage: snapshot.okxSignal.accessMessage ?? null,
++      restDelivery: snapshot.okxSignal.restDelivery ?? null,
+       lastRestErrorCode: snapshot.okxSignal.lastRestErrorCode ?? null,
+       providerDeliveryLatencyMs: lastDecision?.providerDeliveryLatencyMs ?? null,
+       agentDecisionLatencyMs: lastDecision?.agentDecisionLatencyMs ?? null,
+diff --git a/apps/api/src/server.ts b/apps/api/src/server.ts
+index 54eed61..74cb672 100644
+--- a/apps/api/src/server.ts
++++ b/apps/api/src/server.ts
+@@ -240,6 +240,7 @@ export async function buildServer() {
+           },
+       // Состояние источника — отдельно от живости процесса.
+       source: {
++        restDelivery: ingest.restDelivery,
+         state: source.available ? 'available' : 'unavailable',
+         available: source.available,
+         code: source.code,
+diff --git a/apps/api/src/services/market-data-rate-limit.test.ts b/apps/api/src/services/market-data-rate-limit.test.ts
+index b273f82..ef29805 100644
+--- a/apps/api/src/services/market-data-rate-limit.test.ts
++++ b/apps/api/src/services/market-data-rate-limit.test.ts
+@@ -1,58 +1,24 @@
+-import { afterEach, describe, expect, it, vi } from 'vitest';
+-import { PacedRateLimiter } from './market-data.js';
+-
+-afterEach(() => {
+-  vi.useRealTimers();
++import { afterEach, beforeEach, expect, it, vi } from 'vitest';
++import { metadataGateDatabase } from '../test-support/metadata-gate.js';
++const gate = metadataGateDatabase();
++vi.mock('../lib/prisma.js', () => ({ prisma: { $transaction: (fn: any) => gate.transaction(() => fn({ $queryRaw: gate.$queryRaw, $executeRaw: gate.$executeRaw })) } }));
++import { GeckoRateLimiter } from './gecko-admission.js';
++beforeEach(() => { gate.reset(); vi.useFakeTimers(); vi.setSystemTime(0); });
++afterEach(() => vi.useRealTimers());
++it('shared background budget is paced across separate process instances', async () => {
++  const a = new GeckoRateLimiter(), b = new GeckoRateLimiter(); const starts: number[] = [];
++  const tasks = [a, b, a].map(async limiter => { await limiter.take(); starts.push(Date.now()); });
++  await vi.runAllTimersAsync(); await Promise.all(tasks); expect(starts).toEqual([0, 30000, 60000]);
+ });
+-
+-describe('равномерный лимит GeckoTerminal', () => {
+-  it('не выпускает разрешённый минутный бюджет одним залпом', async () => {
+-    vi.useFakeTimers();
+-    vi.setSystemTime(0);
+-
+-    const limiter = new PacedRateLimiter(2, 1_000);
+-    const started: number[] = [];
+-    const tasks = [0, 1, 2].map(async () => {
+-      await limiter.take();
+-      started.push(Date.now());
+-    });
+-
+-    await vi.runAllTimersAsync();
+-    await Promise.all(tasks);
+-
+-    expect(started).toEqual([0, 500, 1_000]);
+-  });
+-
+-  it('после 429 удерживает всю очередь до конца backoff', async () => {
+-    vi.useFakeTimers();
+-    vi.setSystemTime(0);
+-
+-    const limiter = new PacedRateLimiter(10, 1_000);
+-    await limiter.take();
+-    limiter.backoff(2_000);
+-
+-    let released = false;
+-    const waiting = limiter.take().then(() => {
+-      released = true;
+-    });
+-
+-    await vi.advanceTimersByTimeAsync(1_999);
+-    expect(released).toBe(false);
+-
+-    await vi.advanceTimersByTimeAsync(1);
+-    await waiting;
+-    expect(released).toBe(true);
+-  });
++it('provider backoff survives a new instance and blocks urgent as well as background requests', async () => {
++  const a = new GeckoRateLimiter(); await a.take(); await a.backoff(60000);
++  const restarted = new GeckoRateLimiter(); expect(await restarted.tryTake(30000)).toBe(false);
++  await vi.advanceTimersByTimeAsync(30000); expect(await restarted.tryTake(30000)).toBe(false);
++  await vi.advanceTimersByTimeAsync(30000); expect(await restarted.tryTake(90000)).toBe(true);
+ });
+-
+-it('metadata admission is immediate, respects provider backoff and creates no queue', async () => {
+-  vi.useFakeTimers(); vi.setSystemTime(0);
+-  const limiter = new PacedRateLimiter(2, 1_000);
+-  expect(limiter.tryTake()).toBe(true);
+-  for (let i=0;i<100;i++) expect(limiter.tryTake()).toBe(false);
+-  expect(vi.getTimerCount()).toBe(0);
+-  await vi.advanceTimersByTimeAsync(500); expect(limiter.tryTake()).toBe(true);
+-  limiter.backoff(2_000);
+-  await vi.advanceTimersByTimeAsync(1_999); expect(limiter.tryTake()).toBe(false);
+-  await vi.advanceTimersByTimeAsync(1); expect(limiter.tryTake()).toBe(true);
++it('urgent requests create no wait queue and never consume parallel slots', async () => {
++  const a = new GeckoRateLimiter(), b = new GeckoRateLimiter();
++  const attempts = await Promise.all(Array.from({ length: 100 }, (_, i) => (i % 2 ? a : b).tryTake(30000)));
++  expect(attempts.filter(Boolean)).toHaveLength(1); expect(vi.getTimerCount()).toBe(0);
++  await vi.advanceTimersByTimeAsync(7500); expect(await b.tryTake(30000)).toBe(true);
+ });
+diff --git a/apps/api/src/services/market-data.ts b/apps/api/src/services/market-data.ts
+index 3c07d2c..ebdedb0 100644
+--- a/apps/api/src/services/market-data.ts
++++ b/apps/api/src/services/market-data.ts
+@@ -1,3 +1,4 @@
++import { GeckoRateLimiter } from './gecko-admission.js';
+ import type { Chain } from '@prisma/client';
+ import { tokenDisplaySymbol } from '@memex/core';
+ import { logger } from '../lib/logger.js';
+@@ -10,8 +11,8 @@ import { logger } from '../lib/logger.js';
+  * API нет, у Birdeye они за ключом. Строить свечи самим из тиков цены
+  * означало бы ждать сутки, прежде чем на графике появится хоть что-то.
+  *
+- * Ограничение бесплатного тарифа — 30 запросов в минуту на IP. Это мало,
+- * поэтому все обращения проходят через общий лимитер, а свечи обновляются
++ * Текущая API reference указывает около 10 запросов в минуту (старый FAQ — 30).
++ * Берём консервативные 8/мин через общий лимитер, а свечи обновляются
+  * по очереди, а не для всех токенов сразу.
+  */
+ 
+@@ -19,16 +20,15 @@ const API = 'https://api.geckoterminal.com/api/v2';
+ 
+ /**
+  * Идентификаторы сетей в GeckoTerminal.
+- * null означает, что сеть не поддерживается — импорт для неё пропускается
+- * без ошибки. Robinhood Chain запущен в июле 2026, агрегаторы данных
+- * подключают такие сети с задержкой в несколько месяцев.
++ * Robinhood verified against /networks/robinhood/tokens/{address}/pools:
++ * pool_created_at is the creation date of the selected liquidity pool.
+  */
+ const NETWORK: Record<Chain, string | null> = {
+   SOLANA: 'solana',
+   BNB: 'bsc',
+   BASE: 'base',
+   ETHEREUM: 'eth',
+-  ROBINHOOD: null,
++  ROBINHOOD: 'robinhood',
+ };
+ 
+ export function isMarketDataSupported(chain: Chain): boolean {
+@@ -37,65 +37,8 @@ export function isMarketDataSupported(chain: Chain): boolean {
+ 
+ // ─────────────────────────── Ограничитель частоты ───────────────────────────
+ 
+-/**
+- * Token bucket на 25 запросов в минуту — с запасом к лимиту в 30.
+- * Без него импортёр и построитель свечей начнут получать 429 и молча
+- * оставят витрину пустой.
+- */
+-export class PacedRateLimiter {
+-  private nextAt = 0;
+-  private blockedUntil = 0;
+-  private tail: Promise<void> = Promise.resolve();
+-  private readonly spacingMs: number;
+-
+-  constructor(capacity: number, perMs: number) {
+-    this.spacingMs = Math.ceil(perMs / capacity);
+-  }
+-
+-  /**
+-   * Выдать следующий слот без залпа.
+-   *
+-   * Прежний token bucket разрешал первые 25 запросов в одну
+-   * миллисекунду. Формально минутный бюджет не превышался, но
+-   * GeckoTerminal ограничивает и короткие всплески — именно поэтому
+-   * в Render четыре OHLCV-запроса одновременно получили 429.
+-   */
+-  take(): Promise<void> {
+-    const ticket = this.tail.then(async () => {
+-      for (;;) {
+-        const now = Date.now();
+-        const target = Math.max(this.nextAt, this.blockedUntil);
+-        if (target <= now) break;
+-        await new Promise((resolve) => setTimeout(resolve, target - now));
+-      }
+-      this.nextAt = Date.now() + this.spacingMs;
+-    });
+-
+-    // Ошибка одного ожидающего не должна навсегда закрыть очередь.
+-    this.tail = ticket.catch(() => undefined);
+-    return ticket;
+-  }
+-
+-  /** PAPER metadata never joins the importer's potentially long queue. */
+-  tryTake(): boolean {
+-    const now = Date.now();
+-    if (now < Math.max(this.nextAt, this.blockedUntil)) return false;
+-    this.nextAt = now + this.spacingMs;
+-    return true;
+-  }
+-
+-  /** Остановить всю очередь после ответа 429. */
+-  backoff(ms: number): void {
+-    this.blockedUntil = Math.max(this.blockedUntil, Date.now() + Math.max(0, ms));
+-  }
+-}
+-
+-/*
+- * Двадцать равномерных запросов в минуту вместо залпа из двадцати пяти.
+- * Запас нужен, потому что на Render лимит считается по исходящему IP,
+- * а во время деплоя старый и новый экземпляры могут коротко пересекаться.
+- */
+-const limiter = new PacedRateLimiter(20, 60_000);
++// One durable provider budget for every process, importer and urgent request.
++const limiter = new GeckoRateLimiter();
+ 
+ function retryAfterMs(value: string | null): number | null {
+   if (!value) return null;
+@@ -105,12 +48,14 @@ function retryAfterMs(value: string | null): number | null {
+   return Number.isFinite(date) ? Math.max(0, date - Date.now()) : null;
+ }
+ 
+-export const reservePoolMetadataSlot = (): boolean => limiter.tryTake();
+-type RequestOptions = { signal?: AbortSignal; reserved?: boolean };
++export const reservePoolMetadataSlot = (deadlineAt: number): Promise<boolean> => limiter.tryTake(deadlineAt);
++export type PoolMetadataFailure = 'UNSUPPORTED_NETWORK' | 'RATE_LIMITED' | 'HTTP_ERROR' | 'NETWORK_ERROR' | 'DEADLINE' | 'POOL_NOT_FOUND' | 'POOL_DATE_UNAVAILABLE';
++type RequestOptions = { signal?: AbortSignal; reserved?: boolean; onUnavailable?: (reason: PoolMetadataFailure) => void };
+ async function get<T>(path: string, options: RequestOptions = {}): Promise<T | null> {
+-  if (options.signal?.aborted) return null;
+-  if (!options.reserved) await limiter.take();
++  if (options.signal?.aborted) { options.onUnavailable?.('DEADLINE'); return null; }
+   try {
++    if (!options.reserved) await limiter.take();
++    if (options.signal?.aborted) { options.onUnavailable?.('DEADLINE'); return null; }
+     const res = await fetch(`${API}${path}`, {
+       headers: { accept: 'application/json;version=20230302' },
+       signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(10_000)]) : AbortSignal.timeout(10_000),
+@@ -118,16 +63,19 @@ async function get<T>(path: string, options: RequestOptions = {}): Promise<T | n
+ 
+     if (res.status === 429) {
+       const waitMs = Math.max(60_000, retryAfterMs(res.headers.get('retry-after')) ?? 0);
+-      limiter.backoff(waitMs);
++      await limiter.backoff(waitMs);
++      options.onUnavailable?.('RATE_LIMITED');
+       logger.warn({ path, retryAfterMs: waitMs }, 'GeckoTerminal: превышен лимит запросов');
+       return null;
+     }
+     if (!res.ok) {
++      options.onUnavailable?.('HTTP_ERROR');
+       logger.debug({ path, status: res.status }, 'GeckoTerminal: запрос не удался');
+       return null;
+     }
+     return (await res.json()) as T;
+   } catch (e: any) {
++    options.onUnavailable?.(options.signal?.aborted ? 'DEADLINE' : 'NETWORK_ERROR');
+     logger.debug({ path, err: e?.message }, 'GeckoTerminal: ошибка сети');
+     return null;
+   }
+@@ -289,13 +237,14 @@ export async function fetchPoolForToken(
+   options: RequestOptions = {},
+ ): Promise<PoolToken | null> {
+   const network = NETWORK[chain];
+-  if (!network) return null;
++  if (!network) { options.onUnavailable?.('UNSUPPORTED_NETWORK'); return null; }
+ 
+   const data = await get<{ data: GeckoPool[]; included: GeckoIncluded[] }>(
+-    `/networks/${network}/tokens/${tokenAddress}/pools?include=base_token&page=1`,
++    `/networks/${network}/tokens/${tokenAddress}/pools?include=base_token,quote_token&page=1`,
+     options,
+   );
+-  if (!data?.data?.length) return null;
++  if (!data) return null;
++  if (!data.data?.length) { options.onUnavailable?.('POOL_NOT_FOUND'); return null; }
+ 
+   const tokens = new Map<string, GeckoIncluded>();
+   for (const item of data.included ?? []) {
+@@ -303,10 +252,15 @@ export async function fetchPoolForToken(
+   }
+ 
+   // Самый ликвидный пул: цена в мелком пуле не отражает рынок.
+-  const best = [...data.data].sort(
++  const expectedId = `${network}_${tokenAddress}`;
++  const sameId = (id: string | undefined) => chain === 'SOLANA' ? id === expectedId : id?.toLowerCase() === expectedId.toLowerCase();
++  const best = data.data.filter(pool => sameId(pool.relationships?.base_token?.data?.id) || sameId(pool.relationships?.quote_token?.data?.id)).sort(
+     (a, b) => (num(b.attributes.reserve_in_usd) ?? 0) - (num(a.attributes.reserve_in_usd) ?? 0),
+   )[0];
+-  if (!best) return null;
++  if (!best) { options.onUnavailable?.('POOL_NOT_FOUND'); return null; }
++  const created = best.attributes.pool_created_at ? new Date(best.attributes.pool_created_at) : null;
++  const validDate = created && Number.isFinite(created.getTime()) && created.getTime() > 0 && created.getTime() <= Date.now() ? created : null;
++  if (!validDate) options.onUnavailable?.('POOL_DATE_UNAVAILABLE');
+ 
+   const base = tokens.get(best.relationships?.base_token?.data?.id ?? '');
+ 
+@@ -324,9 +278,7 @@ export async function fetchPoolForToken(
+     volume24hUsd: num(best.attributes.volume_usd?.h24),
+     priceChange24h: num(best.attributes.price_change_percentage?.h24),
+     fdvUsd: num(best.attributes.fdv_usd),
+-    poolCreatedAt: best.attributes.pool_created_at
+-      ? new Date(best.attributes.pool_created_at)
+-      : null,
++    poolCreatedAt: validDate,
+   };
+ }
+ 
+diff --git a/apps/api/src/services/paper-token-metadata.ts b/apps/api/src/services/paper-token-metadata.ts
+index b6df198..c4c3a63 100644
+--- a/apps/api/src/services/paper-token-metadata.ts
++++ b/apps/api/src/services/paper-token-metadata.ts
+@@ -1,3 +1,4 @@
++import { withMetadataGate as locked } from './gecko-admission.js';
+ import { randomUUID } from 'node:crypto';
+ import type { Chain } from '@prisma/client';
+ import { prisma } from '../lib/prisma.js';
+@@ -5,29 +6,8 @@ import { fetchPoolForToken, reservePoolMetadataSlot } from './market-data.js';
+ import { logger } from '../lib/logger.js';
+ 
+ export type MetadataAdmission = 'accepted' | 'in_flight' | 'completed' | 'waiting_capacity' | 'exhausted' | 'expired';
+-type Attempt = { tokenId: string; owner: string; firstAt: number; leaseUntil: number; attempts: number; completed: boolean };
+-type Gate = { nextAt: number; requests: Attempt[] };
+ const LEASE_MS = 15_000;
+-const WINDOW_MS = 60_000;
+-
+-/** One bounded, locked database row coordinates all strategies/processes.
+- * No durable queue: at most twelve starts/minute and two unfinished leases.
+- * A crash leaves a lease recoverable once, within the caller's ORIGINAL deadline.
+- */
+-async function locked<T>(work: (gate: Gate, now: number) => T): Promise<T> {
+-  return prisma.$transaction(async tx => {
+-    await tx.$executeRaw`INSERT INTO "PaperMetadataGate" ("id", "state") VALUES (1, '{"nextAt":0,"requests":[]}'::jsonb) ON CONFLICT DO NOTHING`;
+-    const [row] = await tx.$queryRaw<Array<{ state: Gate }>>`SELECT "state" FROM "PaperMetadataGate" WHERE "id" = 1 FOR UPDATE`;
+-    // Read after acquiring the lock, rather than transaction start time.
+-    const [clock] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AS "now"`;
+-    const gate = row!.state;
+-    const now = clock!.now.getTime();
+-    gate.requests = gate.requests.filter(r => now < Math.max(r.firstAt + WINDOW_MS, r.leaseUntil));
+-    const result = work(gate, now);
+-    await tx.$executeRaw`UPDATE "PaperMetadataGate" SET "state" = ${JSON.stringify(gate)}::jsonb WHERE "id" = 1`;
+-    return result;
+-  });
+-}
++const MAX_TRACKED = 32;
+ 
+ export async function requestPaperTokenMetadata(
+   tokenId: string, chain: Chain, address: string, deadlineAt: number,
+@@ -40,11 +20,12 @@ export async function requestPaperTokenMetadata(
+     if (previous?.completed) return 'completed';
+     if (previous && previous.leaseUntil > now) return 'in_flight';
+     if (previous && previous.attempts >= 2) return 'exhausted';
++    if (!previous && gate.requests.length >= MAX_TRACKED) return 'waiting_capacity';
+     if (now < gate.nextAt || gate.requests.filter(r => !r.completed && r.leaseUntil > now).length >= 2) return 'waiting_capacity';
+     leaseUntil = now + LEASE_MS;
+     gate.nextAt = now + 5_000;
+     if (previous) Object.assign(previous, { owner, leaseUntil, attempts: previous.attempts + 1 });
+-    else gate.requests.push({ tokenId, owner, firstAt: now, leaseUntil, attempts: 1, completed: false });
++    else gate.requests.push({ tokenId, owner, firstAt: now, leaseUntil, attempts: 1, completed: false, deadlineAt });
+     return 'accepted';
+   });
+   if (result !== 'accepted') return result;
+@@ -54,26 +35,35 @@ export async function requestPaperTokenMetadata(
+   // A paused old owner must not start a request after losing its lease.
+   const until = Math.min(deadlineAt, leaseUntil - 1_000);
+   if (Date.now() >= until) return 'expired';
+-  if (!reservePoolMetadataSlot()) {
+-    await locked(gate => {
++  if (!await reservePoolMetadataSlot(until)) {
++    await locked((gate, now) => {
+       const request = gate.requests.find(r => r.tokenId === tokenId && r.owner === owner);
+-      if (request) { request.leaseUntil = 0; request.attempts--; }
++      if (request) {
++        request.leaseUntil = 0; request.attempts--;
++        // No HTTP request started: do not spend the global five-second slot.
++        // Preserve a newer owner's reservation, if one exists.
++        if (gate.nextAt === leaseUntil - LEASE_MS + 5_000) gate.nextAt = now;
++      }
+     });
+     return 'waiting_capacity';
+   }
++  if (Date.now() >= until) return 'expired';
+   const signal = AbortSignal.timeout(Math.max(1, Math.min(10_000, until - Date.now())));
+-  void fetchPoolForToken(chain, address, { signal, reserved: true }).then(async pool => {
++  let outcome = 'POOL_DATE_UNAVAILABLE';
++  void fetchPoolForToken(chain, address, { signal, reserved: true, onUnavailable: reason => { outcome = reason; } }).then(async pool => {
+     const date = pool?.poolCreatedAt;
+     if (signal.aborted || !date || !Number.isFinite(date.getTime()) || date.getTime() <= 0 || date.getTime() > Date.now()) return;
+-    await prisma.token.updateMany({
++    const updated = await prisma.token.updateMany({
+       where: { id: tokenId, chain, address, poolCreatedAt: null },
+       data: { poolCreatedAt: date },
+     });
++    outcome = updated.count > 0 ? 'POOL_DATE_SAVED' : 'TOKEN_ALREADY_UPDATED';
+   }).catch(error => logger.debug({ tokenId, errorCode: error?.code ?? 'METADATA_UNAVAILABLE' }, 'PAPER: дата пула не получена'))
+     .finally(async () => {
+       await locked(gate => {
+         const request = gate.requests.find(r => r.tokenId === tokenId && r.owner === owner);
+-        if (request) request.completed = true;
++        if (request) { request.completed = true; request.outcome = signal.aborted ? 'DEADLINE' : outcome; }
++        logger.debug({ tokenId, chain, outcome: signal.aborted ? 'DEADLINE' : outcome }, 'PAPER: результат получения даты пула');
+       }).catch(error => logger.debug({ tokenId, error }, 'PAPER: lease метаданных восстановится после таймаута'));
+     });
+   return result;
+diff --git a/apps/api/src/workers/okx-signal-ingest.ts b/apps/api/src/workers/okx-signal-ingest.ts
+index 8d9a760..2904377 100644
+--- a/apps/api/src/workers/okx-signal-ingest.ts
++++ b/apps/api/src/workers/okx-signal-ingest.ts
+@@ -1,12 +1,12 @@
+ /**
+  * Живая лента OKX Signal → история сигналов и каталог токенов.
+  *
+- * Основной путь — официальный WebSocket. REST вызывается один раз при
+- * старте для заполнения последних событий и затем только при нездоровом
+- * сокете, по одной сети за проход. Это даёт минимальную задержку без
+- * превращения открытой вкладки в потребителя платной квоты OKX.
++ * Основной путь — официальный WebSocket. REST сверяет сети по общему
++ * расписанию: при здоровом WS медленно, при отказе — в пределах явно
++ * выделенного бюджета. Вкладки не запускают опрос и не расходуют квоту.
+  */
+ 
++import { randomUUID } from 'node:crypto';
+ import { Prisma as P } from '@prisma/client';
+ import {
+   OKX_CHAIN_INDEX,
+@@ -16,6 +16,7 @@ import {
+   type OkxSignal,
+   type PaperSignalOrigin,
+ } from '@memex/core';
++import { SignalRestSchedule, signalRestPlan, claimSharedSignalPoll, finishSharedSignalPoll } from '../services/signal-rest-schedule.js';
+ import { env } from '../lib/env.js';
+ import { logger } from '../lib/logger.js';
+ import { prisma } from '../lib/prisma.js';
+@@ -68,8 +69,9 @@ let running = false;
+ let startedAt: number | null = null;
+ let client: OkxWalletWebSocketClient | null = null;
+ let reconciliationTimer: NodeJS.Timeout | null = null;
+-let reconciliationCursor = 0;
++let restSchedule = new SignalRestSchedule();
+ let reconciling = false;
++let refreshingProbes = false;
+ let lastReconciliationAt = 0;
+ let lastRestSuccessAt = 0;
+ let lastRestErrorCode: string | null = null;
+@@ -309,6 +311,18 @@ export async function ingestOkxSignal(
+  * (`signalSourceVerdict`), чтобы его можно было проверить таблицей,
+  * а воркер агента и интерфейс не могли разойтись в толковании.
+  */
++function restPlan() {
++  return signalRestPlan({
++    plan: env.OKX_PLAN,
++    monthlyBudget: env.OKX_SIGNAL_REST_MONTHLY_BUDGET,
++    requestsPerSecond: env.OKX_SIGNAL_REST_REQUESTS_PER_SECOND,
++    consumers: env.OKX_SIGNAL_REST_CONSUMERS,
++    legacyIntervalMs: env.OKX_SIGNAL_REST_FALLBACK_INTERVAL_MS,
++  }, activeSignalChains().length);
++}
++function pollInterval() {
++  return client?.isHealthy() ? Math.max(env.OKX_SIGNAL_REST_FALLBACK_INTERVAL_MS, restPlan().intervalMs) : restPlan().intervalMs;
++}
+ export function getOkxSignalSourceFacts(now = Date.now()): SignalSourceFacts {
+   const stats = client?.stats() ?? null;
+   return {
+@@ -318,16 +332,26 @@ export function getOkxSignalSourceFacts(now = Date.now()): SignalSourceFacts {
+     channelDeniedCode: stats?.channelAccessDeniedCode ?? permanentDenialCode,
+     lastRestSuccessAtMs: lastRestSuccessAt === 0 ? null : lastRestSuccessAt,
+     lastRestErrorCode,
+-    restIntervalMs: env.OKX_SIGNAL_REST_FALLBACK_INTERVAL_MS,
++    restIntervalMs: pollInterval(),
+     startedAtMs: running ? startedAt : null,
+     nowMs: now,
+   };
+ }
+ 
+ export function getOkxSignalIngestStatus() {
+-  const interval = env.OKX_SIGNAL_REST_FALLBACK_INTERVAL_MS;
++  const interval = pollInterval();
+   return {
+     running,
++    restDelivery: {
++      ...restPlan(),
++      ...(client?.isHealthy() ? {
++        status: 'WS_PRIMARY',
++        message: 'REST выполняет фоновую сверку. Основная доставка — WS; её подтверждают подписка и настоящее событие.',
++      } : {}),
++      intervalMs: interval,
++      roundMs: interval * activeSignalChains().length,
++      blockedUntil: restSchedule.blockedUntil > Date.now() ? new Date(restSchedule.blockedUntil).toISOString() : null,
++    },
+     transportMode,
+     permanentDenialCode,
+     accessMessage:
+@@ -345,7 +369,7 @@ export function getOkxSignalIngestStatus() {
+     nextRestReconciliationAt:
+       !running || lastReconciliationAt === 0
+         ? null
+-        : new Date(lastReconciliationAt + interval).toISOString(),
++        : new Date(Math.max(restSchedule.nextAt, restSchedule.blockedUntil)).toISOString(),
+     socket: client?.stats() ?? null,
+   };
+ }
+@@ -439,42 +463,53 @@ async function reconciliationTick(): Promise<void> {
+   if (!running || reconciling) return;
+   reconciling = true;
+   try {
+-  const now = Date.now();
+-  await refreshSignalSupportedChains(now).catch((error) => {
+-    logger.debug({ code: error?.code }, 'OKX Signal: список сетей не обновлён');
+-  });
+-  // Узлы EVM-сетей: chainId перепроверяется раз в десять минут, не на каждый снимок.
+-  await refreshEvmProbes(now).catch(() => undefined);
+-  if (!isRestReconciliationDue(
+-    now,
+-    lastReconciliationAt,
+-    env.OKX_SIGNAL_REST_FALLBACK_INTERVAL_MS,
+-  )) return;
+-  lastReconciliationAt = now;
+-
+-  const active = activeSignalChains();
+-  if (active.length === 0) return;
+-  const [chain] = active[reconciliationCursor % active.length]!;
+-  reconciliationCursor++;
+-
+-  try {
+-    const outcome = await fetchLatestSignalsOutcome(chain, 100);
+-    if (outcome.kind !== 'ok') {
+-      recordRestFailure(outcome);
+-      logger.warn({ chain, kind: outcome.kind, detail: outcome.detail }, 'OKX Signal: REST reconciliation отклонена провайдером');
+-      return;
++    const now = Date.now();
++    void refreshSignalSupportedChains(now).catch((error) => {
++      logger.debug({ code: error?.code }, 'OKX Signal: список сетей не обновлён');
++    });
++    // Узлы EVM-сетей: chainId перепроверяется раз в десять минут, не на каждый снимок.
++    if (!refreshingProbes) {
++      refreshingProbes = true;
++      void refreshEvmProbes(now).catch(() => undefined).finally(() => { refreshingProbes = false; });
+     }
+-    for (const signal of [...outcome.signals].reverse()) {
+-      await ingestOkxSignal(signal, 'REST_RECONCILIATION');
++    const interval = pollInterval();
++    const selected = restSchedule.claim(activeSignalChains(), Date.now(), interval);
++    if (!selected) return;
++    const owner = randomUUID();
++    let shared;
++    try { shared = await claimSharedSignalPoll(activeSignalChains(), interval, owner); }
++    catch (error) { restSchedule.complete(Date.now(), interval, { kind: 'network' }); throw error; }
++    restSchedule.blockedUntil = Math.max(restSchedule.blockedUntil, shared.blockedUntil);
++    if (!shared.chain) { restSchedule.complete(Date.now(), interval); return; }
++    const [chain] = shared.chain;
++    lastReconciliationAt = Date.now();
++    let failure: { kind: string; retryAfterMs?: number | null } | undefined;
++
++    try {
++      const outcome = await fetchLatestSignalsOutcome(chain, 100);
++      if (outcome.kind !== 'ok') {
++        failure = outcome;
++        recordRestFailure(outcome);
++        logger.warn({ chain, kind: outcome.kind, detail: outcome.detail }, 'OKX Signal: REST reconciliation отклонена провайдером');
++        return;
++      }
++      for (const signal of [...outcome.signals].reverse()) {
++        await ingestOkxSignal(signal, 'REST_RECONCILIATION');
++      }
++      recordRestSuccess();
++    } catch (error: any) {
++      failure = { kind: 'network' };
++      lastRestErrorCode = `network:${String(error?.code ?? error?.name ?? 'REST_RECONCILIATION_FAILED')}`;
++      logger.warn(
++        { chain, code: lastRestErrorCode },
++        'OKX Signal: REST reconciliation не выполнена',
++      );
++    } finally {
++      restSchedule.complete(Date.now(), interval, failure);
++      await finishSharedSignalPoll(owner, interval, restSchedule.blockedUntil);
+     }
+-    recordRestSuccess();
+-  } catch (error: any) {
+-    lastRestErrorCode = `network:${String(error?.code ?? error?.name ?? 'REST_RECONCILIATION_FAILED')}`;
+-    logger.warn(
+-      { chain, code: lastRestErrorCode },
+-      'OKX Signal: REST reconciliation не выполнена',
+-    );
+-  }
++  } catch (error) {
++    logger.warn({ error }, 'OKX Signal: общий допуск REST недоступен, запрос отложен');
+   } finally { reconciling = false; }
+ }
+ 
+@@ -510,19 +545,10 @@ export function startOkxSignalIngest(): void {
+   // подписку, как только OKX её назвал.
+   client.start();
+   void refreshSignalSupportedChains().catch(() => undefined);
+-  void syncLatestOkxSignals().catch((error) => {
+-    lastRestErrorCode = `network:${String(error?.code ?? error?.name ?? 'REST_BACKFILL_FAILED')}`;
+-    logger.warn({ code: error?.code }, 'OKX Signal: начальная синхронизация не удалась');
+-  });
+-
+-  /*
+-   * Даже здоровый сокет не доказывает, что во время предыдущего
+-   * reconnect не было разрыва. Раз в минуту сверяем одну сеть:
+-   * полный круг занимает четыре минуты, providerKey убирает повторы.
+-   * Это достаточно редко для квоты и не оставляет тихих дыр в истории.
+-   */
+-  lastReconciliationAt = Date.now();
+-  reconciliationTimer = setInterval(() => void reconciliationTick(), 5_000);
++  // Startup uses the same paced path. No five-network backfill burst and no
++  // historical event gains a new timestamp: the agent enforces signaledAt.
++  void reconciliationTick();
++  reconciliationTimer = setInterval(() => void reconciliationTick(), 250);
+   reconciliationTimer.unref?.();
+ 
+   logger.info({ chains: activeSignalChains().map(([chain]) => chain) }, 'OKX Signal: живая лента запущена');
+@@ -534,7 +560,7 @@ export function stopOkxSignalIngest(): void {
+   client = null;
+   if (reconciliationTimer) clearInterval(reconciliationTimer);
+   reconciliationTimer = null;
+-  reconciliationCursor = 0;
++  restSchedule = new SignalRestSchedule();
+   lastReconciliationAt = 0;
+   lastRestSuccessAt = 0;
+   lastRestErrorCode = null;
+diff --git a/apps/api/src/workers/okx-signal-source-state.test.ts b/apps/api/src/workers/okx-signal-source-state.test.ts
+index 4a78dc5..1d5284d 100644
+--- a/apps/api/src/workers/okx-signal-source-state.test.ts
++++ b/apps/api/src/workers/okx-signal-source-state.test.ts
+@@ -9,6 +9,8 @@
+  * успеха обновляется только после подтверждённого ответа, а после
+  * восстановления входы открываются сами.
+  */
++import { metadataGateDatabase } from '../test-support/metadata-gate.js';
++const gate = metadataGateDatabase();
+ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+ import { signalSourceVerdict } from '@memex/core';
+ 
+@@ -25,7 +27,7 @@ vi.mock('../lib/logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), err
+ vi.mock('../lib/prisma.js', () => ({
+   prisma: {
+     okxSignal: { findUnique: async () => null, update: async () => null },
+-    $transaction: async () => { throw new Error('база в этом тесте не нужна'); },
++    $transaction: (fn: any) => gate.transaction(() => fn({ $queryRaw: gate.$queryRaw, $executeRaw: gate.$executeRaw })),
+   },
+ }));
+ vi.mock('./hot-tokens.js', () => ({ markHot: vi.fn() }));
+@@ -62,6 +64,7 @@ const fetchMock = vi.fn(async (url: string) => {
+ const verdict = (now: number) => signalSourceVerdict(ingest.getOkxSignalSourceFacts(now));
+ 
+ beforeEach(() => {
++  gate.reset();
+   vi.stubGlobal('fetch', fetchMock);
+   replies = [];
+   budget.allow = true;
+diff --git a/apps/web/app/agent/agent-page.test.tsx b/apps/web/app/agent/agent-page.test.tsx
+index 0720c12..3c5a939 100644
+--- a/apps/web/app/agent/agent-page.test.tsx
++++ b/apps/web/app/agent/agent-page.test.tsx
+@@ -1008,3 +1008,11 @@ it('объясняет 60036 и раздельно показывает login, 
+   expect(screen.getByText('Доставка последнего решения: 192540 мс')).toBeTruthy();
+   expect(screen.getByText('Решение агента после получения: 190 мс')).toBeTruthy();
+ });
++
++it('REST response is not presented as proof of timely delivery when allocation is unconfirmed', () => {
++  state.publicData = data({source:{transportMode:'REST_ONLY',socketState:'rest_only',fallbackActive:true,lastRestSuccessAt:'2026-09-09T00:00:00Z',restDelivery:{status:'BUDGET_UNCONFIRMED',roundMs:300000,message:'Бюджет и частота OKX REST не подтверждены. Своевременный вход не обеспечен; требуется восстановить WS или выделить квоту.'}}});
++  render(<AgentPage />);
++  expect(screen.getByTestId('rest-delivery-status').closest('details')).toBeNull();
++  expect(screen.getByTestId('rest-delivery-status').textContent).toContain('Обход сетей: 300 с.');
++  expect(screen.getByTestId('rest-delivery-status').textContent).toContain('Своевременный вход не обеспечен');
++});
+diff --git a/apps/web/app/agent/agent-screen.tsx b/apps/web/app/agent/agent-screen.tsx
+index 6629677..d7a3e68 100644
+--- a/apps/web/app/agent/agent-screen.tsx
++++ b/apps/web/app/agent/agent-screen.tsx
+@@ -190,6 +190,7 @@ interface PublicAgentData {
+     lastSubscriptionAt?: number | null;
+     lastWsEventAt?: number | null;
+     nextAccessCheckAt?: number | null;
++    restDelivery?: { status: string; roundMs: number; message: string; blockedUntil?: string | null } | null;
+     accessMessage?: string | null;
+     lastRestErrorCode?: string | null;
+     providerDeliveryLatencyMs?: number | null;
+@@ -389,6 +390,7 @@ function AgentHero({ data, status }: { data: PublicAgentData; status: (typeof ST
+       <span>·</span><span>{positionCount(data.metrics24h.openPositions)}</span>
+       <span>·</span><span>выход: {data.wallet?.exitPlan?.label ?? 'Цель 2×'}</span>
+     </div>
++    {data.source.restDelivery && data.source.restDelivery.status !== 'WS_PRIMARY' && <p className="mt-2 rounded-md border border-warn/30 bg-warn/10 px-3 py-2 text-xs leading-relaxed text-warn" data-testid="rest-delivery-status">{data.source.restDelivery.message} Обход сетей: {Math.ceil(data.source.restDelivery.roundMs / 1000)} с.{data.source.restDelivery.blockedUntil ? ' Опрос приостановлен после отказа провайдера.' : ''}</p>}
+     <details className="mt-2 text-xs text-muted" data-signal-diagnostics>
+       <summary className="min-h-8 cursor-pointer">Связь с OKX и задержки</summary>
+       {data.source.accessMessage && <p className="mt-1 text-warn">{data.source.accessMessage}</p>}
+diff --git a/apps/api/src/e2e/metadata-http.e2e.test.ts b/apps/api/src/e2e/metadata-http.e2e.test.ts
+new file mode 100644
+index 0000000..de74200
+--- /dev/null
++++ b/apps/api/src/e2e/metadata-http.e2e.test.ts
+@@ -0,0 +1,90 @@
++import { afterAll, afterEach, beforeEach, expect, it, vi } from 'vitest';
++import { prisma } from '../lib/prisma.js';
++import { createToken, emitSignal, setupPaperAgent, resetData, forbidNetwork, expectNoSigningOrBroadcast, baselineRun } from './harness.js';
++// Only independent network-readiness facts are fixed. The worker, metadata
++// service, limiter, HTTP response parsing and PostgreSQL gate are real.
++vi.mock('../services/agent-networks.js', () => ({ isAgentNetworkReady: () => true, readyAgentNetworks: () => ['SOLANA', 'BNB', 'ROBINHOOD'] }));
++let restore: () => void;
++let worker: typeof import('../workers/paper-agent.js');
++let date: string | null;
++let wrongPool = false;
++let calls: string[];
++const address = '0x03d148407da8696888d154a00ac02d5182756f0a';
++beforeEach(async () => {
++  restore = forbidNetwork(); await resetData(); await prisma.paperMetadataGate.deleteMany();
++  await setupPaperAgent({ capitalUsd: '1000', maxOpenPositions: 4 });
++  vi.resetModules(); worker = await import('../workers/paper-agent.js'); worker.setPaperAgentEnabledCache(true);
++  worker.setPaperSignalSourceProbe(() => ({ configured: true, transportMode: 'WEBSOCKET', socketHealthy: true, channelDeniedCode: null, lastRestSuccessAtMs: Date.now(), lastRestErrorCode: null, restIntervalMs: 60000, startedAtMs: Date.now() - 600000, nowMs: Date.now() }));
++  date = new Date(Date.now() - 60_000).toISOString(); wrongPool = false; calls = [];
++  vi.stubGlobal('fetch', vi.fn(async (url: string) => {
++    expect(url).toContain(`/networks/robinhood/tokens/${address}/pools`); calls.push(url);
++    return new Response(JSON.stringify({ data: [{ attributes: { address: 'pool', reserve_in_usd: '10000', pool_created_at: date }, relationships: { base_token: { data: { id: `robinhood_${wrongPool ? 'unrelated' : address}` } }, quote_token: { data: { id: 'robinhood_quote' } } } }], included: [] }));
++  }));
++});
++afterEach(async () => { worker.setPaperSignalSourceProbe(null); await expectNoSigningOrBroadcast(); vi.unstubAllGlobals(); restore(); });
++afterAll(async () => { await prisma.$disconnect(); });
++async function fixture() {
++  const now = new Date(); const token = await createToken({ priceUsd: 1, poolCreatedAt: null }, now);
++  const signal = await emitSignal({ tokenId: token.id, priceUsd: 1 }, now);
++  await prisma.token.update({ where: { id: token.id }, data: { chain: 'ROBINHOOD', address } });
++  await prisma.okxSignal.update({ where: { id: signal.id }, data: { chain: 'ROBINHOOD', address, ingestOrigin: 'WEBSOCKET_LIVE' } });
++  return { token, signal };
++}
++async function completed() {
++  await vi.waitFor(async () => {
++    const row = await prisma.paperMetadataGate.findUniqueOrThrow({ where: { id: 1 } });
++    expect((row.state as any).requests[0].completed).toBe(true);
++  });
++}
++it('Robinhood worker → actual metadata service → real HTTP adapter → PostgreSQL → one PAPER entry', async () => {
++  const { token, signal } = await fixture(); await worker.processPaperAgentSignal(signal.id); await completed();
++  expect(calls).toHaveLength(1);
++  expect((await prisma.token.findUniqueOrThrow({ where: { id: token.id } })).poolCreatedAt?.toISOString()).toBe(date);
++  await worker.runPaperAgentTickOnce(); expect((await baselineRun(signal.id)).state).toBe('PAPER_OPEN');
++  const opened = await baselineRun(signal.id);
++  const buys = await prisma.paperAgentNotification.count({ where: { runId: opened.id, eventType: 'PAPER_BUY' } });
++  await worker.processPaperAgentSignal(signal.id); await worker.runPaperAgentTickOnce();
++  expect((await baselineRun(signal.id)).id).toBe(opened.id);
++  expect(await prisma.paperAgentAllocation.count({ where: { runId: opened.id, isShadow: false, state: 'OPEN' } })).toBe(1);
++  expect(await prisma.paperAgentNotification.count({ where: { runId: opened.id, eventType: 'PAPER_BUY' } })).toBe(buys);
++  expect(calls).toHaveLength(1);
++});
++it.each(['missing', 'unrelated', 'old'] as const)('%s pool date cannot bypass age/deadline filters or rewrite the final decision', async reason => {
++  const { token, signal } = await fixture();
++  if (reason === 'missing') date = null;
++  if (reason === 'unrelated') wrongPool = true;
++  if (reason === 'old') date = new Date(Date.now() - 86400000).toISOString();
++  await worker.processPaperAgentSignal(signal.id); await completed();
++  if (reason !== 'old') {
++    expect((await prisma.token.findUniqueOrThrow({ where: { id: token.id } })).poolCreatedAt).toBeNull();
++    await prisma.okxSignal.update({ where: { id: signal.id }, data: { signaledAt: new Date(Date.now() - 31000) } });
++  }
++  await worker.runPaperAgentTickOnce(); const final = await baselineRun(signal.id); expect(final.state).toBe('SKIPPED');
++  await prisma.token.update({ where: { id: token.id }, data: { poolCreatedAt: new Date(Date.now() - 60000) } });
++  await worker.processPaperAgentSignal(signal.id); await worker.runPaperAgentTickOnce();
++  expect((await baselineRun(signal.id)).decidedAt).toEqual(final.decidedAt); expect(calls).toHaveLength(1);
++});
++
++it('real PostgreSQL provider budget serializes separate limiters and persists Retry-After through restart', async () => {
++  const { GeckoRateLimiter } = await import('../services/gecko-admission.js');
++  const a = new GeckoRateLimiter(), b = new GeckoRateLimiter();
++  const deadline = Date.now() + 30000;
++  expect((await Promise.all([a.tryTake(deadline), b.tryTake(deadline)])).sort()).toEqual([false, true]);
++  await a.backoff(120000);
++  const restarted = new GeckoRateLimiter(); expect(await restarted.tryTake(deadline)).toBe(false);
++  const state = (await prisma.paperMetadataGate.findUniqueOrThrow({ where: { id: 1 } })).state as any;
++  expect(state.provider.blockedUntil).toBeGreaterThan(Date.now() + 119000);
++  expect(calls).toHaveLength(0);
++});
++
++it('REST round and Retry-After share PostgreSQL across processes and survive metadata bookkeeping', async () => {
++  const { claimSharedSignalPoll, finishSharedSignalPoll } = await import('../services/signal-rest-schedule.js');
++  const { GeckoRateLimiter } = await import('../services/gecko-admission.js');
++  const outcomes = await Promise.all(['one','two'].map(owner => claimSharedSignalPoll(['SOL','BNB'],3000,owner)));
++  expect(outcomes.filter(o => o.chain != null)).toHaveLength(1);
++  const owner = outcomes[0]!.chain != null ? 'one' : 'two';
++  const blocked = Date.now() + 120000; await finishSharedSignalPoll(owner,3000,blocked);
++  await new GeckoRateLimiter().tryTake(Date.now()+30000);
++  expect(await claimSharedSignalPoll(['SOL','BNB'],3000,'restarted')).toEqual({chain:null,blockedUntil:blocked});
++  expect(calls).toHaveLength(0);
++});
+diff --git a/apps/api/src/services/gecko-admission.ts b/apps/api/src/services/gecko-admission.ts
+new file mode 100644
+index 0000000..dd8263c
+--- /dev/null
++++ b/apps/api/src/services/gecko-admission.ts
+@@ -0,0 +1,61 @@
++import { prisma } from '../lib/prisma.js';
++export type MetadataAttempt = { tokenId: string; owner: string; firstAt: number; leaseUntil: number; attempts: number; completed: boolean; outcome?: string; deadlineAt?: number };
++export type MetadataGate = {
++  nextAt: number; requests: MetadataAttempt[];
++  signalRest?: { nextAt: number; blockedUntil: number; cursor: number; leaseUntil: number; owner: string };
++  provider?: { nextAt: number; backgroundNextAt: number; urgentUntil: number; blockedUntil: number };
++};
++/** Same singleton/lock as metadata leases. Optional JSON fields are additive:
++ * old releases preserve them, and no trading rows or migrations are changed.
++ */
++export async function withMetadataGate<T>(work: (gate: MetadataGate, now: number) => T): Promise<T> {
++  return prisma.$transaction(async tx => {
++    await tx.$executeRaw`INSERT INTO "PaperMetadataGate" ("id", "state") VALUES (1, '{"nextAt":0,"requests":[]}'::jsonb) ON CONFLICT DO NOTHING`;
++    const [row] = await tx.$queryRaw<Array<{ state: MetadataGate }>>`SELECT "state" FROM "PaperMetadataGate" WHERE "id" = 1 FOR UPDATE`;
++    const [clock] = await tx.$queryRaw<Array<{ now: Date }>>`SELECT clock_timestamp() AS "now"`;
++    const gate = row!.state; const now = clock!.now.getTime();
++    gate.requests = gate.requests.filter(r => now < Math.max(r.firstAt + 60_000, r.leaseUntil) && !(r.attempts === 0 && r.deadlineAt != null && now >= r.deadlineAt));
++    const result = work(gate, now);
++    await tx.$executeRaw`UPDATE "PaperMetadataGate" SET "state" = ${JSON.stringify(gate)}::jsonb WHERE "id" = 1`;
++    return result;
++  });
++}
++
++/** Shared across processes/restarts: total <=8/min, background <=2/min.
++ * Metadata's separate gate admits <=12/min and <=2 unfinished leases.
++ * No lock is held during waiting/HTTP. Retry-After applies to both classes.
++ */
++export class GeckoRateLimiter {
++  private tail: Promise<unknown> = Promise.resolve();
++  private async reserve(deadlineAt?: number): Promise<{ accepted: boolean; waitMs: number }> {
++    return withMetadataGate((gate, now) => {
++      const p = gate.provider ??= { nextAt: 0, backgroundNextAt: 0, urgentUntil: 0, blockedUntil: 0 };
++      if (deadlineAt != null) {
++        if (now >= deadlineAt) return { accepted: false, waitMs: 0 };
++        p.urgentUntil = Math.max(p.urgentUntil, Math.min(deadlineAt, now + 30_000));
++      }
++      const target = Math.max(p.nextAt, p.blockedUntil, ...(deadlineAt == null ? [p.backgroundNextAt, p.urgentUntil] : []));
++      if (target > now) return { accepted: false, waitMs: target - now };
++      p.nextAt = now + 7_500;
++      if (deadlineAt == null) p.backgroundNextAt = now + 30_000;
++      else p.urgentUntil = 0;
++      return { accepted: true, waitMs: 0 };
++    });
++  }
++  async tryTake(deadlineAt: number): Promise<boolean> { return (await this.reserve(deadlineAt)).accepted; }
++  take(): Promise<void> {
++    const ticket = this.tail.then(async () => {
++      for (;;) {
++        const result = await this.reserve(); if (result.accepted) return;
++        await new Promise(resolve => setTimeout(resolve, Math.max(1, result.waitMs)));
++      }
++    });
++    this.tail = ticket.catch(() => undefined); return ticket;
++  }
++  async backoff(ms: number): Promise<void> {
++    await withMetadataGate((gate, now) => {
++      const p = gate.provider ??= { nextAt: 0, backgroundNextAt: 0, urgentUntil: 0, blockedUntil: 0 };
++      p.blockedUntil = Math.max(p.blockedUntil, now + Math.max(0, ms));
++    });
++  }
++}
+diff --git a/apps/api/src/services/metadata-adapter-integration.test.ts b/apps/api/src/services/metadata-adapter-integration.test.ts
+new file mode 100644
+index 0000000..78e297a
+--- /dev/null
++++ b/apps/api/src/services/metadata-adapter-integration.test.ts
+@@ -0,0 +1,110 @@
++import { afterEach, beforeEach, expect, it, vi } from 'vitest';
++import { metadataGateDatabase } from '../test-support/metadata-gate.js';
++const gate = metadataGateDatabase();
++const mocks = vi.hoisted(() => ({ update: vi.fn(), http: vi.fn() }));
++vi.mock('../lib/prisma.js', () => ({ prisma: { token: { updateMany: mocks.update }, $transaction: (fn: any) => gate.transaction(() => fn({ $queryRaw: gate.$queryRaw, $executeRaw: gate.$executeRaw })) } }));
++vi.mock('../lib/logger.js', () => ({ logger: { debug: vi.fn(), warn: vi.fn() } }));
++const NOW = Date.parse('2026-09-09T01:56:33.589Z');
++const address = '0x03d148407da8696888d154a00ac02d5182756f0a';
++function response(date: string | null = '2026-09-09T01:50:00Z', network = 'robinhood', token = address) {
++  return new Response(JSON.stringify({ data: [{ attributes: { address: 'pool', reserve_in_usd: '10000', pool_created_at: date }, relationships: { base_token: { data: { id: `${network}_${token}` } }, quote_token: { data: { id: `${network}_quote` } } } }], included: [] }), { status: 200 });
++}
++const flush = async () => { for (let i = 0; i < 100; i++) await Promise.resolve(); };
++beforeEach(() => { vi.resetModules(); gate.reset(); vi.useFakeTimers(); vi.setSystemTime(NOW); vi.clearAllMocks(); vi.stubGlobal('fetch', mocks.http); mocks.update.mockResolvedValue({ count: 1 }); mocks.http.mockImplementation(() => Promise.resolve(response())); });
++afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
++it('real Robinhood adapter makes HTTP request, validates pool identity and saves only pool creation date', async () => {
++  const { requestPaperTokenMetadata: request } = await import('./paper-token-metadata.js');
++  expect(await request('t', 'ROBINHOOD', address, NOW + 30_000)).toBe('accepted'); await flush();
++  expect(mocks.http.mock.calls[0]![0]).toContain(`/networks/robinhood/tokens/${address}/pools?include=base_token,quote_token`);
++  expect(mocks.update).toHaveBeenCalledWith({ where: { id: 't', chain: 'ROBINHOOD', address, poolCreatedAt: null }, data: { poolCreatedAt: new Date('2026-09-09T01:50:00Z') } });
++  expect(gate.snapshot().requests[0].outcome).toBe('POOL_DATE_SAVED');
++});
++it.each([null, 'invalid', '2099-01-01', '1970-01-01'])('missing or invalid provider date (%s) is explicitly unavailable, no observation-date fallback', async date => {
++  mocks.http.mockResolvedValue(response(date));
++  const { requestPaperTokenMetadata: request } = await import('./paper-token-metadata.js');
++  await request('t', 'ROBINHOOD', address, NOW + 30_000); await flush();
++  expect(mocks.update).not.toHaveBeenCalled(); expect(gate.snapshot().requests[0].outcome).toBe('POOL_DATE_UNAVAILABLE');
++});
++it('an unrelated pool cannot supply the requested token age', async () => {
++  mocks.http.mockResolvedValue(response(undefined, 'robinhood', 'other'));
++  const { requestPaperTokenMetadata: request } = await import('./paper-token-metadata.js');
++  await request('t', 'ROBINHOOD', address, NOW + 30_000); await flush();
++  expect(mocks.update).not.toHaveBeenCalled(); expect(gate.snapshot().requests[0].outcome).toBe('POOL_NOT_FOUND');
++});
++it('WOWCAT: priority waits out the original 429 then wins a slot before the original deadline, attempts=0 is free', async () => {
++  const market = await import('./market-data.js');
++  const { requestPaperTokenMetadata: request } = await import('./paper-token-metadata.js');
++  mocks.http.mockResolvedValueOnce(new Response('', { status: 429, headers: { 'retry-after': '60' } }));
++  await market.fetchPools('SOLANA');
++  const background = market.fetchPools('SOLANA');
++  await vi.advanceTimersByTimeAsync(57_882); // received 01:57:31.471
++  const deadline = Date.parse('2026-09-09T01:57:38.694Z');
++  expect(await request('wow', 'SOLANA', 'wow', deadline)).toBe('waiting_capacity');
++  expect(gate.snapshot().requests[0]).toMatchObject({ attempts: 0, completed: false, leaseUntil: 0 });
++  expect(gate.snapshot().nextAt).toBe(Date.now());
++  mocks.http.mockImplementation(() => Promise.resolve(response(undefined, 'solana', 'wow')));
++  await vi.advanceTimersByTimeAsync(2_118); // provider backoff ends
++  expect(mocks.http).toHaveBeenCalledTimes(1); // background still waiting
++  expect(await request('wow', 'SOLANA', 'wow', deadline)).toBe('accepted'); await flush();
++  expect(mocks.http).toHaveBeenCalledTimes(2); expect(mocks.update).toHaveBeenCalledTimes(1);
++  await vi.advanceTimersByTimeAsync(10_000); await background;
++});
++it('Retry-After beyond the deadline is never bypassed by another token or repeated attempts', async () => {
++  const market = await import('./market-data.js');
++  const { requestPaperTokenMetadata: request } = await import('./paper-token-metadata.js');
++  mocks.http.mockResolvedValueOnce(new Response('', { status: 429, headers: { 'retry-after': '120' } }));
++  await market.fetchPools('SOLANA');
++  const deadline = NOW + 30_000;
++  for (let t = 0; t < 30; t++) {
++    for (const token of ['a', 'b', 'c']) expect(await request(token, 'ROBINHOOD', address, deadline)).toBe('waiting_capacity');
++    await vi.advanceTimersByTimeAsync(1000);
++  }
++  expect(await request('a', 'ROBINHOOD', address, deadline)).toBe('expired');
++  expect(mocks.http).toHaveBeenCalledTimes(1); expect(mocks.update).not.toHaveBeenCalled();
++});
++it('continuous background traffic leaves bounded slots for several urgent tokens without a burst', async () => {
++  const market = await import('./market-data.js');
++  const { requestPaperTokenMetadata: request } = await import('./paper-token-metadata.js');
++  const times: number[] = []; mocks.http.mockImplementation(() => { times.push(Date.now()); return Promise.resolve(response()); });
++  const background = Array.from({ length: 8 }, () => market.fetchPools('ROBINHOOD'));
++  await flush();
++  for (let t = 0; t < 25; t++) {
++    for (const id of ['a', 'b', 'c']) await request(id, 'ROBINHOOD', address, NOW + 30_000);
++    await vi.advanceTimersByTimeAsync(1000);
++  }
++  expect(mocks.update).toHaveBeenCalledTimes(3);
++  await vi.runAllTimersAsync(); await Promise.all(background);
++  expect(times.every((t, i) => i === 0 || t - times[i - 1]! >= 7500)).toBe(true);
++});
++it('two process instances share deduplication and restart lease recovery with real adapters', async () => {
++  mocks.http.mockImplementation(() => new Promise(() => {}));
++  const a = await import('./paper-token-metadata.js'); vi.resetModules();
++  const b = await import('./paper-token-metadata.js'); const deadline = NOW + 30_000;
++  expect((await Promise.all([a.requestPaperTokenMetadata('t', 'ROBINHOOD', address, deadline), b.requestPaperTokenMetadata('t', 'ROBINHOOD', address, deadline)])).sort()).toEqual(['accepted', 'in_flight']);
++  expect(mocks.http).toHaveBeenCalledTimes(1);
++  await vi.advanceTimersByTimeAsync(16_000);
++  expect(await b.requestPaperTokenMetadata('t', 'ROBINHOOD', address, deadline)).toBe('accepted');
++  await vi.advanceTimersByTimeAsync(15_000);
++  expect(await a.requestPaperTokenMetadata('t', 'ROBINHOOD', address, deadline)).toBe('expired');
++  expect(mocks.http).toHaveBeenCalledTimes(2);
++});
++
++it('failed capacity claims have a fixed cardinality bound, and expired pending rows are pruned', async () => {
++  const market = await import('./market-data.js');
++  const { requestPaperTokenMetadata: request } = await import('./paper-token-metadata.js');
++  mocks.http.mockResolvedValueOnce(new Response('', { status: 429 })); await market.fetchPools('SOLANA');
++  for (let i = 0; i < 200; i++) await request(`token-${i}`, 'ROBINHOOD', address, NOW + 30000);
++  expect(gate.snapshot().requests.length).toBeLessThanOrEqual(32); expect(mocks.http).toHaveBeenCalledTimes(1);
++  await vi.advanceTimersByTimeAsync(30000); await request('next', 'ROBINHOOD', address, NOW + 60000);
++  expect(gate.snapshot().requests.length).toBe(1);
++});
++it('a provider 429 is retained across module restart and a second real adapter instance', async () => {
++  const market = await import('./market-data.js');
++  mocks.http.mockResolvedValueOnce(new Response('', { status: 429, headers: { 'retry-after': '120' } }));
++  await market.fetchPools('SOLANA'); vi.resetModules();
++  const { requestPaperTokenMetadata: request } = await import('./paper-token-metadata.js');
++  expect(await request('t', 'ROBINHOOD', address, NOW + 30000)).toBe('waiting_capacity');
++  await vi.advanceTimersByTimeAsync(30000);
++  expect(await request('t', 'ROBINHOOD', address, NOW + 30000)).toBe('expired');
++  expect(mocks.http).toHaveBeenCalledTimes(1);
++});
+diff --git a/apps/api/src/services/signal-rest-schedule.test.ts b/apps/api/src/services/signal-rest-schedule.test.ts
+new file mode 100644
+index 0000000..40907cf
+--- /dev/null
++++ b/apps/api/src/services/signal-rest-schedule.test.ts
+@@ -0,0 +1,67 @@
++import { metadataGateDatabase } from '../test-support/metadata-gate.js';
++import { beforeEach, afterEach, vi } from 'vitest';
++const gate = metadataGateDatabase();
++vi.mock('../lib/prisma.js', () => ({ prisma: { $transaction: (fn: any) => gate.transaction(() => fn({ $queryRaw: gate.$queryRaw, $executeRaw: gate.$executeRaw })) } }));
++beforeEach(() => { gate.reset(); vi.useFakeTimers(); vi.setSystemTime(0); });
++afterEach(() => vi.useRealTimers());
++import { expect, it } from 'vitest';
++import { SignalRestSchedule, signalRestPlan, claimSharedSignalPoll, finishSharedSignalPoll } from './signal-rest-schedule.js';
++const config = { plan: 'growth', monthlyBudget: 900_000, requestsPerSecond: 1, consumers: 1, legacyIntervalMs: 60_000 };
++it('unverified production budget keeps conservative polling and never claims freshness', () => {
++  expect(signalRestPlan({ legacyIntervalMs: 60_000 }, 5)).toMatchObject({ status: 'BUDGET_UNCONFIRMED', roundMs: 300_000, timelyEntryGuaranteed: false });
++});
++it('explicit allocation respects plan, competing consumers and verified RPS share', () => {
++  expect(signalRestPlan(config, 5)).toMatchObject({ status: 'CONDITIONAL', intervalMs: 3000, roundMs: 15000 });
++  const double = signalRestPlan({ ...config, consumers: 2 }, 5);
++  expect(double.estimatedMonthlyCalls).toBeLessThanOrEqual(900_000);
++  expect(signalRestPlan({ ...config, plan: 'free' }, 5)).toMatchObject({ status: 'INSUFFICIENT_BUDGET', allocatedMonthlyCalls: 50_000 });
++  expect(signalRestPlan({ ...config, requestsPerSecond: 0.1 }, 5).intervalMs).toBe(10_000);
++});
++it('five networks receive fresh generated events within the simulated cycle, bounded cost and no overlap', () => {
++  const plan = signalRestPlan(config, 5); const scheduler = new SignalRestSchedule();
++  const chains = ['SOL', 'BNB', 'RH', 'BASE', 'ETH']; const calls: { chain: string; at: number }[] = [];
++  const last = new Map(chains.map(c => [c, 0])); const delivery: number[] = [];
++  for (let now = 0; now < 60_000; now += 250) {
++    const chain = scheduler.claim(chains, now, plan.intervalMs); if (!chain) continue;
++    calls.push({ chain, at: now }); delivery.push(now - last.get(chain)!); last.set(chain, now);
++    expect(scheduler.claim(chains, now, plan.intervalMs)).toBeNull();
++    scheduler.complete(now + 250, plan.intervalMs);
++  }
++  expect(Math.max(...delivery)).toBeLessThanOrEqual(20_000);
++  expect(calls.length).toBeLessThanOrEqual(20);
++  expect(calls.slice(0, 5).map(c => c.chain)).toEqual(chains);
++});
++it('429 blocks all networks, honors long Retry-After and recovers without a catch-up avalanche', () => {
++  const s = new SignalRestSchedule(); const chains = ['a', 'b', 'c'];
++  expect(s.claim(chains, 0, 3000)).toBe('a');
++  s.complete(100, 3000, { kind: 'rate-limit', retryAfterMs: 120_000 });
++  for (let t = 100; t < 120100; t += 250) expect(s.claim(chains, t, 3000)).toBeNull();
++  expect(s.claim(chains, 120100, 3000)).toBe('b'); s.complete(120200, 3000);
++  expect(s.claim(chains, 120200, 3000)).toBeNull(); expect(s.claim(chains, 123200, 3000)).toBe('c');
++});
++it.each(['network', 'budget', 'auth', 'quota'])('%s failures back off; slow calls do not accumulate debt', kind => {
++  const s = new SignalRestSchedule(); expect(s.claim(['a', 'b'], 0, 3000)).toBe('a');
++  expect(s.claim(['a', 'b'], 60000, 3000)).toBeNull(); s.complete(60000, 3000, { kind });
++  expect(s.claim(['a', 'b'], 60001, 3000)).toBeNull();
++  expect(s.claim(['a', 'b'], 400000, 3000)).toBe('b'); s.complete(400000, 3000);
++  expect(s.claim(['a', 'b'], 400001, 3000)).toBeNull();
++});
++
++it('shared poll reservation prevents parallel process bursts and retains 429 across restart', async () => {
++  const calls = await Promise.all(['a','b','c'].map(owner => claimSharedSignalPoll(['SOL','BNB','RH'],3000,owner)));
++  expect(calls.filter(r => r.chain != null)).toHaveLength(1);
++  await finishSharedSignalPoll('a',3000,120000);
++  await vi.advanceTimersByTimeAsync(10000);
++  expect(await claimSharedSignalPoll(['SOL','BNB','RH'],3000,'restarted')).toEqual({chain:null,blockedUntil:120000});
++  await vi.advanceTimersByTimeAsync(110000);
++  expect((await claimSharedSignalPoll(['SOL','BNB','RH'],3000,'restarted')).chain).toBe('BNB');
++});
++it('crashed poll lease expires once without an accumulated queue, late owner cannot release its successor', async () => {
++  expect((await claimSharedSignalPoll(['SOL','BNB'],3000,'dead')).chain).toBe('SOL');
++  await vi.advanceTimersByTimeAsync(29999);
++  expect((await claimSharedSignalPoll(['SOL','BNB'],3000,'new')).chain).toBeNull();
++  await vi.advanceTimersByTimeAsync(1);
++  expect((await claimSharedSignalPoll(['SOL','BNB'],3000,'new')).chain).toBe('BNB');
++  await finishSharedSignalPoll('dead',3000,0);
++  expect((await claimSharedSignalPoll(['SOL','BNB'],3000,'third')).chain).toBeNull();
++});
+diff --git a/apps/api/src/services/signal-rest-schedule.ts b/apps/api/src/services/signal-rest-schedule.ts
+new file mode 100644
+index 0000000..c0bbcfe
+--- /dev/null
++++ b/apps/api/src/services/signal-rest-schedule.ts
+@@ -0,0 +1,87 @@
++import { withMetadataGate } from './gecko-admission.js';
++import { OKX_PLAN_NAMES, okxPlanQuota, parseOkxPlan } from '@memex/core';
++
++const MONTH_MS = 31 * 24 * 60 * 60_000;
++export type RestScheduleConfig = {
++  plan?: string; monthlyBudget?: number; requestsPerSecond?: number; consumers?: number; legacyIntervalMs: number;
++};
++/** An explicitly allocated share, never an inference about the key's balance.
++ * Leave at least half of the documented Premium quota to competing endpoints.
++ * Consumers includes other processes using this allocation/key. External usage
++ * and provider-side signal publication latency remain unobservable here.
++ */
++export function signalRestPlan(config: RestScheduleConfig, chainCount: number) {
++  const knownPlan = OKX_PLAN_NAMES.includes(config.plan as never);
++  const requested = Math.max(0, config.monthlyBudget ?? 0);
++  const allocated = knownPlan ? Math.min(requested, Math.floor(okxPlanQuota(parseOkxPlan(config.plan)).premium / 2)) : 0;
++  const consumers = Math.max(1, config.consumers ?? 1);
++  const rps = Math.max(0, config.requestsPerSecond ?? 0);
++  const configured = allocated > 0 && rps > 0;
++  // Rounded to the worker's 250ms tick; never catch up by sending a burst.
++  const intervalMs = configured
++    ? Math.ceil(Math.max(MONTH_MS * consumers / allocated, 1000 * consumers / rps, 1000) / 250) * 250
++    : config.legacyIntervalMs;
++  const roundMs = intervalMs * chainCount;
++  const status = !configured ? 'BUDGET_UNCONFIRMED' : chainCount === 0 ? 'NO_CHAINS' : roundMs > 20_000 ? 'INSUFFICIENT_BUDGET' : 'CONDITIONAL';
++  return {
++    status, intervalMs, chainCount, roundMs, allocatedMonthlyCalls: allocated,
++    estimatedMonthlyCalls: Math.ceil(MONTH_MS / intervalMs) * consumers, consumers,
++    timelyEntryGuaranteed: false,
++    message: status === 'BUDGET_UNCONFIRMED'
++      ? 'Бюджет и частота OKX REST не подтверждены. Своевременный вход не обеспечен; требуется восстановить WS или выделить квоту.'
++      : status === 'INSUFFICIENT_BUDGET'
++        ? 'Квоты REST недостаточно для обхода сетей с запасом до срока 30 секунд. Требуется восстановить WS.'
++        : status === 'NO_CHAINS' ? 'Нет подтверждённых сетей для REST.'
++          : 'Расписание REST укладывается в 20 секунд без учёта задержек провайдера и сети. Вход до 30 секунд не гарантирован.',
++  };
++}
++
++/** One in-flight poll, fair rotation, no backlog. All failures consume their
++ * time slot, and Retry-After blocks every chain. A slow response cannot create
++ * a catch-up burst. State is process-local; the explicit allocation is divided
++ * by the configured number of consumers, not advertised as account accounting.
++ */
++export class SignalRestSchedule {
++  nextAt = 0;
++  blockedUntil = 0;
++  private cursor = 0;
++  private inFlight = false;
++  private failures = 0;
++  claim<T>(chains: readonly T[], now: number, intervalMs: number): T | null {
++    if (this.inFlight || chains.length === 0 || now < Math.max(this.nextAt, this.blockedUntil)) return null;
++    this.inFlight = true;
++    this.nextAt = now + intervalMs;
++    return chains[this.cursor++ % chains.length]!;
++  }
++  complete(now: number, intervalMs: number, failure?: { kind: string; retryAfterMs?: number | null }) {
++    this.inFlight = false;
++    this.nextAt = Math.max(this.nextAt, now + intervalMs);
++    if (!failure) { this.failures = 0; return; }
++    this.failures++;
++    const minimum = ['auth', 'quota', 'budget', 'not-configured', 'permanent'].includes(failure.kind) ? 300_000
++      : failure.kind === 'rate-limit' ? 60_000 : Math.min(60_000, 1000 * 2 ** Math.min(this.failures, 6));
++    this.blockedUntil = Math.max(this.blockedUntil, now + Math.max(minimum, failure.retryAfterMs ?? 0));
++  }
++}
++
++/** The provider/key poll slot is shared by deployment processes and survives
++ * restarts. The bounded lease is longer than the HTTP timeout; no durable job
++ * queue and no catch-up. Unknown external users of the key still require an
++ * explicit owner allocation and cannot be accounted for by this database.
++ */
++export async function claimSharedSignalPoll<T>(chains: readonly T[], intervalMs: number, owner: string) {
++  return withMetadataGate((gate, now) => {
++    const state = gate.signalRest ??= { nextAt: 0, blockedUntil: 0, cursor: 0, leaseUntil: 0, owner: '' };
++    if (!chains.length || now < Math.max(state.nextAt, state.blockedUntil, state.leaseUntil)) return { chain: null, blockedUntil: state.blockedUntil };
++    const chain = chains[state.cursor % chains.length]!; state.cursor = (state.cursor + 1) % chains.length;
++    state.owner = owner; state.leaseUntil = now + 30000; state.nextAt = now + intervalMs;
++    return { chain, blockedUntil: state.blockedUntil };
++  });
++}
++export async function finishSharedSignalPoll(owner: string, intervalMs: number, blockedUntil: number) {
++  await withMetadataGate((gate, now) => {
++    const state = gate.signalRest; if (!state || state.owner !== owner) return;
++    state.leaseUntil = 0; state.nextAt = Math.max(state.nextAt, now + intervalMs);
++    state.blockedUntil = Math.max(state.blockedUntil, blockedUntil);
++  });
++}
+diff --git a/apps/api/src/workers/okx-rest-scheduling.test.ts b/apps/api/src/workers/okx-rest-scheduling.test.ts
+new file mode 100644
+index 0000000..047ed02
+--- /dev/null
++++ b/apps/api/src/workers/okx-rest-scheduling.test.ts
+@@ -0,0 +1,63 @@
++import { metadataGateDatabase } from '../test-support/metadata-gate.js';
++const gate = metadataGateDatabase();
++import { afterEach, beforeEach, expect, it, vi } from 'vitest';
++const state = vi.hoisted(() => ({ allow: true, reply: 'ok', delay: false, releases: [] as (() => void)[], calls: [] as { at: number; chain: string }[] }));
++vi.mock('../lib/env.js', () => ({ env: { OKX_API_KEY: 'test-key', OKX_API_SECRET: 'test-secret', OKX_PASSPHRASE: 'test-pass', OKX_WS_ENABLED: false, OKX_PLAN: 'growth', OKX_SIGNAL_REST_MONTHLY_BUDGET: 900000, OKX_SIGNAL_REST_REQUESTS_PER_SECOND: 1, OKX_SIGNAL_REST_CONSUMERS: 1, OKX_SIGNAL_REST_FALLBACK_INTERVAL_MS: 60000 } }));
++vi.mock('../lib/logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } }));
++vi.mock('../lib/prisma.js', () => ({ prisma: { $transaction: (fn: any) => gate.transaction(() => fn({ $queryRaw: gate.$queryRaw, $executeRaw: gate.$executeRaw })) } }));
++vi.mock('./hot-tokens.js', () => ({ markHot: vi.fn() }));
++vi.mock('./candle-builder.js', () => ({ requestCandlesSoon: vi.fn() }));
++vi.mock('./paper-agent.js', () => ({ queuePaperAgentSignal: vi.fn(), setPaperSignalSourceProbe: vi.fn() }));
++vi.mock('../services/evm-chain-probe.js', () => ({ refreshEvmProbes: async () => {} }));
++vi.mock('../services/okx-ws-client.js', () => ({ OkxWalletWebSocketClient: class { start() {} stop() {} setSignalChains() {} isHealthy() { return false; } stats() { return { state: 'rest_only', loginVerified: true, subscriptionsVerified: false, channelAccessDeniedCode: '60036' }; } } }));
++vi.mock('../services/okx-usage.js', () => ({ canSpendOkxCall: () => ({ allow: state.allow, slow: false }), recordOkxCall: vi.fn() }));
++let ingest: typeof import('./okx-signal-ingest.js');
++const indexes = ['1', '56', '501', '8453', '4663'];
++beforeEach(async () => {
++  gate.reset();
++  vi.resetModules(); vi.useFakeTimers(); vi.setSystemTime(new Date('2026-09-09T00:00:00Z'));
++  state.allow = true; state.reply = 'ok'; state.delay = false; state.releases = []; state.calls = [];
++  vi.stubGlobal('fetch', vi.fn(async (url: string, options: RequestInit) => {
++    if (url.includes('/supported/chain')) return new Response(JSON.stringify({ code: '0', data: indexes.map(chainIndex => ({ chainIndex, chainName: chainIndex })) }));
++    if (!url.includes('/signal/list')) throw new Error(`Unexpected HTTP: ${url}`);
++    state.calls.push({ at: Date.now(), chain: JSON.parse(options.body as string)[0].chainIndex });
++    if (state.delay) await new Promise<void>(resolve => state.releases.push(resolve));
++    return state.reply === '429' ? new Response('', { status: 429, headers: { 'retry-after': '120' } })
++      : new Response(JSON.stringify({ code: '0', data: [] }));
++  }));
++  ingest = await import('./okx-signal-ingest.js'); ingest.startOkxSignalIngest(); await vi.advanceTimersByTimeAsync(0);
++});
++afterEach(() => { ingest.stopOkxSignalIngest(); vi.unstubAllGlobals(); vi.useRealTimers(); });
++it('real worker, OKX HTTP adapter and transport limiter pace all five chains without startup burst', async () => {
++  await vi.advanceTimersByTimeAsync(60000);
++  expect(state.calls.length).toBeLessThanOrEqual(21); expect(state.calls.length).toBeGreaterThanOrEqual(18);
++  expect(new Set(state.calls.slice(0, 5).map(c => c.chain)).size).toBe(5);
++  for (let i = 1; i < state.calls.length; i++) expect(state.calls[i]!.at - state.calls[i - 1]!.at).toBeGreaterThanOrEqual(3000);
++  for (const chain of indexes) {
++    const calls = state.calls.filter(c => c.chain === chain);
++    expect(calls.length).toBeGreaterThanOrEqual(3);
++    for (let i = 1; i < calls.length; i++) expect(calls[i]!.at - calls[i - 1]!.at).toBeLessThanOrEqual(20000);
++  }
++  expect(ingest.getOkxSignalIngestStatus().restDelivery).toMatchObject({ status: 'CONDITIONAL', timelyEntryGuaranteed: false });
++});
++it('real HTTP 429 suspends every chain for Retry-After, then resumes paced rotation', async () => {
++  state.reply = '429'; await vi.advanceTimersByTimeAsync(3000);
++  const count = state.calls.length; expect(ingest.getOkxSignalIngestStatus().lastRestErrorCode).toMatch(/rate-limit/);
++  state.reply = 'ok'; await vi.advanceTimersByTimeAsync(119999); expect(state.calls).toHaveLength(count);
++  await vi.advanceTimersByTimeAsync(1); expect(state.calls).toHaveLength(count + 1);
++  expect(ingest.getOkxSignalIngestStatus().lastRestErrorCode).toBeNull();
++  await vi.advanceTimersByTimeAsync(1000); expect(state.calls).toHaveLength(count + 1);
++});
++it('shared usage denial spends no HTTP and does not spin; recovery is bounded', async () => {
++  state.allow = false; const count = state.calls.length; await vi.advanceTimersByTimeAsync(3000);
++  expect(ingest.getOkxSignalIngestStatus().lastRestErrorCode).toBe('budget');
++  await vi.advanceTimersByTimeAsync(60000); expect(state.calls).toHaveLength(count);
++  state.allow = true; await vi.advanceTimersByTimeAsync(240000); expect(state.calls).toHaveLength(count + 1);
++});
++it('slow response prevents overlapping polls and catch-up requests', async () => {
++  state.delay = true; await vi.advanceTimersByTimeAsync(3000); const count = state.calls.length;
++  await vi.advanceTimersByTimeAsync(6000); expect(state.calls).toHaveLength(count);
++  state.delay = false; state.releases.splice(0).forEach(resolve => resolve()); await vi.advanceTimersByTimeAsync(0);
++  await vi.advanceTimersByTimeAsync(2999); expect(state.calls).toHaveLength(count);
++  await vi.advanceTimersByTimeAsync(1); expect(state.calls).toHaveLength(count + 1);
++});

@@ -1,3 +1,4 @@
+import { GeckoRateLimiter } from './gecko-admission.js';
 import type { Chain } from '@prisma/client';
 import { tokenDisplaySymbol } from '@memex/core';
 import { logger } from '../lib/logger.js';
@@ -10,8 +11,8 @@ import { logger } from '../lib/logger.js';
  * API нет, у Birdeye они за ключом. Строить свечи самим из тиков цены
  * означало бы ждать сутки, прежде чем на графике появится хоть что-то.
  *
- * Ограничение бесплатного тарифа — 30 запросов в минуту на IP. Это мало,
- * поэтому все обращения проходят через общий лимитер, а свечи обновляются
+ * Текущая API reference указывает около 10 запросов в минуту (старый FAQ — 30).
+ * Берём консервативные 8/мин через общий лимитер, а свечи обновляются
  * по очереди, а не для всех токенов сразу.
  */
 
@@ -19,16 +20,15 @@ const API = 'https://api.geckoterminal.com/api/v2';
 
 /**
  * Идентификаторы сетей в GeckoTerminal.
- * null означает, что сеть не поддерживается — импорт для неё пропускается
- * без ошибки. Robinhood Chain запущен в июле 2026, агрегаторы данных
- * подключают такие сети с задержкой в несколько месяцев.
+ * Robinhood verified against /networks/robinhood/tokens/{address}/pools:
+ * pool_created_at is the creation date of the selected liquidity pool.
  */
 const NETWORK: Record<Chain, string | null> = {
   SOLANA: 'solana',
   BNB: 'bsc',
   BASE: 'base',
   ETHEREUM: 'eth',
-  ROBINHOOD: null,
+  ROBINHOOD: 'robinhood',
 };
 
 export function isMarketDataSupported(chain: Chain): boolean {
@@ -37,65 +37,8 @@ export function isMarketDataSupported(chain: Chain): boolean {
 
 // ─────────────────────────── Ограничитель частоты ───────────────────────────
 
-/**
- * Token bucket на 25 запросов в минуту — с запасом к лимиту в 30.
- * Без него импортёр и построитель свечей начнут получать 429 и молча
- * оставят витрину пустой.
- */
-export class PacedRateLimiter {
-  private nextAt = 0;
-  private blockedUntil = 0;
-  private tail: Promise<void> = Promise.resolve();
-  private readonly spacingMs: number;
-
-  constructor(capacity: number, perMs: number) {
-    this.spacingMs = Math.ceil(perMs / capacity);
-  }
-
-  /**
-   * Выдать следующий слот без залпа.
-   *
-   * Прежний token bucket разрешал первые 25 запросов в одну
-   * миллисекунду. Формально минутный бюджет не превышался, но
-   * GeckoTerminal ограничивает и короткие всплески — именно поэтому
-   * в Render четыре OHLCV-запроса одновременно получили 429.
-   */
-  take(): Promise<void> {
-    const ticket = this.tail.then(async () => {
-      for (;;) {
-        const now = Date.now();
-        const target = Math.max(this.nextAt, this.blockedUntil);
-        if (target <= now) break;
-        await new Promise((resolve) => setTimeout(resolve, target - now));
-      }
-      this.nextAt = Date.now() + this.spacingMs;
-    });
-
-    // Ошибка одного ожидающего не должна навсегда закрыть очередь.
-    this.tail = ticket.catch(() => undefined);
-    return ticket;
-  }
-
-  /** PAPER metadata never joins the importer's potentially long queue. */
-  tryTake(): boolean {
-    const now = Date.now();
-    if (now < Math.max(this.nextAt, this.blockedUntil)) return false;
-    this.nextAt = now + this.spacingMs;
-    return true;
-  }
-
-  /** Остановить всю очередь после ответа 429. */
-  backoff(ms: number): void {
-    this.blockedUntil = Math.max(this.blockedUntil, Date.now() + Math.max(0, ms));
-  }
-}
-
-/*
- * Двадцать равномерных запросов в минуту вместо залпа из двадцати пяти.
- * Запас нужен, потому что на Render лимит считается по исходящему IP,
- * а во время деплоя старый и новый экземпляры могут коротко пересекаться.
- */
-const limiter = new PacedRateLimiter(20, 60_000);
+// One durable provider budget for every process, importer and urgent request.
+const limiter = new GeckoRateLimiter();
 
 function retryAfterMs(value: string | null): number | null {
   if (!value) return null;
@@ -105,12 +48,14 @@ function retryAfterMs(value: string | null): number | null {
   return Number.isFinite(date) ? Math.max(0, date - Date.now()) : null;
 }
 
-export const reservePoolMetadataSlot = (): boolean => limiter.tryTake();
-type RequestOptions = { signal?: AbortSignal; reserved?: boolean };
+export const reservePoolMetadataSlot = (deadlineAt: number): Promise<boolean> => limiter.tryTake(deadlineAt);
+export type PoolMetadataFailure = 'UNSUPPORTED_NETWORK' | 'RATE_LIMITED' | 'HTTP_ERROR' | 'NETWORK_ERROR' | 'DEADLINE' | 'POOL_NOT_FOUND' | 'POOL_DATE_UNAVAILABLE';
+type RequestOptions = { signal?: AbortSignal; reserved?: boolean; onUnavailable?: (reason: PoolMetadataFailure) => void };
 async function get<T>(path: string, options: RequestOptions = {}): Promise<T | null> {
-  if (options.signal?.aborted) return null;
-  if (!options.reserved) await limiter.take();
+  if (options.signal?.aborted) { options.onUnavailable?.('DEADLINE'); return null; }
   try {
+    if (!options.reserved) await limiter.take();
+    if (options.signal?.aborted) { options.onUnavailable?.('DEADLINE'); return null; }
     const res = await fetch(`${API}${path}`, {
       headers: { accept: 'application/json;version=20230302' },
       signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(10_000)]) : AbortSignal.timeout(10_000),
@@ -118,16 +63,19 @@ async function get<T>(path: string, options: RequestOptions = {}): Promise<T | n
 
     if (res.status === 429) {
       const waitMs = Math.max(60_000, retryAfterMs(res.headers.get('retry-after')) ?? 0);
-      limiter.backoff(waitMs);
+      await limiter.backoff(waitMs);
+      options.onUnavailable?.('RATE_LIMITED');
       logger.warn({ path, retryAfterMs: waitMs }, 'GeckoTerminal: превышен лимит запросов');
       return null;
     }
     if (!res.ok) {
+      options.onUnavailable?.('HTTP_ERROR');
       logger.debug({ path, status: res.status }, 'GeckoTerminal: запрос не удался');
       return null;
     }
     return (await res.json()) as T;
   } catch (e: any) {
+    options.onUnavailable?.(options.signal?.aborted ? 'DEADLINE' : 'NETWORK_ERROR');
     logger.debug({ path, err: e?.message }, 'GeckoTerminal: ошибка сети');
     return null;
   }
@@ -289,13 +237,14 @@ export async function fetchPoolForToken(
   options: RequestOptions = {},
 ): Promise<PoolToken | null> {
   const network = NETWORK[chain];
-  if (!network) return null;
+  if (!network) { options.onUnavailable?.('UNSUPPORTED_NETWORK'); return null; }
 
   const data = await get<{ data: GeckoPool[]; included: GeckoIncluded[] }>(
-    `/networks/${network}/tokens/${tokenAddress}/pools?include=base_token&page=1`,
+    `/networks/${network}/tokens/${tokenAddress}/pools?include=base_token,quote_token&page=1`,
     options,
   );
-  if (!data?.data?.length) return null;
+  if (!data) return null;
+  if (!data.data?.length) { options.onUnavailable?.('POOL_NOT_FOUND'); return null; }
 
   const tokens = new Map<string, GeckoIncluded>();
   for (const item of data.included ?? []) {
@@ -303,10 +252,15 @@ export async function fetchPoolForToken(
   }
 
   // Самый ликвидный пул: цена в мелком пуле не отражает рынок.
-  const best = [...data.data].sort(
+  const expectedId = `${network}_${tokenAddress}`;
+  const sameId = (id: string | undefined) => chain === 'SOLANA' ? id === expectedId : id?.toLowerCase() === expectedId.toLowerCase();
+  const best = data.data.filter(pool => sameId(pool.relationships?.base_token?.data?.id) || sameId(pool.relationships?.quote_token?.data?.id)).sort(
     (a, b) => (num(b.attributes.reserve_in_usd) ?? 0) - (num(a.attributes.reserve_in_usd) ?? 0),
   )[0];
-  if (!best) return null;
+  if (!best) { options.onUnavailable?.('POOL_NOT_FOUND'); return null; }
+  const created = best.attributes.pool_created_at ? new Date(best.attributes.pool_created_at) : null;
+  const validDate = created && Number.isFinite(created.getTime()) && created.getTime() > 0 && created.getTime() <= Date.now() ? created : null;
+  if (!validDate) options.onUnavailable?.('POOL_DATE_UNAVAILABLE');
 
   const base = tokens.get(best.relationships?.base_token?.data?.id ?? '');
 
@@ -324,9 +278,7 @@ export async function fetchPoolForToken(
     volume24hUsd: num(best.attributes.volume_usd?.h24),
     priceChange24h: num(best.attributes.price_change_percentage?.h24),
     fdvUsd: num(best.attributes.fdv_usd),
-    poolCreatedAt: best.attributes.pool_created_at
-      ? new Date(best.attributes.pool_created_at)
-      : null,
+    poolCreatedAt: validDate,
   };
 }
 

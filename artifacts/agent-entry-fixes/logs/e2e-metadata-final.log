@@ -1,0 +1,46 @@
+
+> @memex/api@0.1.0 pretest:e2e
+> tsc -p ../../packages/core/tsconfig.json
+
+
+> @memex/api@0.1.0 test:e2e
+> vitest run --config vitest.e2e.config.ts src/e2e/metadata-http.e2e.test.ts
+
+
+ RUN  v3.2.7 /Users/myrotec/Desktop/memex-dex/apps/api
+
+{"level":20,"time":1788922091520,"pid":98789,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtti0vza000izo85hbbkrsi0","tokenId":"cmtti0vxr000fzo85iuek034f","admission":"accepted","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788922091528,"pid":98789,"hostname":"myrotecs-MacBook-Pro.local","tokenId":"cmtti0vxr000fzo85iuek034f","chain":"ROBINHOOD","outcome":"POOL_DATE_SAVED","msg":"PAPER: результат получения даты пула"}
+{"level":20,"time":1788922091535,"pid":98789,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtti0w04000jzo85i6sjel83","tokenId":"cmtti0vxr000fzo85iuek034f","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788922091545,"pid":98789,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtti0w0h000kzo85qn84ssod","tokenId":"cmtti0vxr000fzo85iuek034f","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788922091554,"pid":98789,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtti0w0q000lzo85vlc1ecr5","tokenId":"cmtti0vxr000fzo85iuek034f","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788922091563,"pid":98789,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtti0w0z000mzo85f2mcalk6","tokenId":"cmtti0vxr000fzo85iuek034f","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788922092023,"pid":98789,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtti0wdh001nzo85ejxclvya","tokenId":"cmtti0wc2001kzo85l6tche5v","admission":"accepted","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788922092026,"pid":98789,"hostname":"myrotecs-MacBook-Pro.local","tokenId":"cmtti0wc2001kzo85l6tche5v","chain":"ROBINHOOD","outcome":"POOL_DATE_UNAVAILABLE","msg":"PAPER: результат получения даты пула"}
+{"level":20,"time":1788922092038,"pid":98789,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtti0we2001ozo85z005w1cw","tokenId":"cmtti0wc2001kzo85l6tche5v","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788922092047,"pid":98789,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtti0wef001pzo859ckl7qwk","tokenId":"cmtti0wc2001kzo85l6tche5v","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788922092056,"pid":98789,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtti0weo001qzo85uzgl5uzl","tokenId":"cmtti0wc2001kzo85l6tche5v","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788922092064,"pid":98789,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtti0wex001rzo85nztcyh3o","tokenId":"cmtti0wc2001kzo85l6tche5v","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788922092335,"pid":98789,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtti0wm7002azo85u2bzkp1j","tokenId":"cmtti0wku0027zo851rg8z5m1","admission":"accepted","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788922092338,"pid":98789,"hostname":"myrotecs-MacBook-Pro.local","tokenId":"cmtti0wku0027zo851rg8z5m1","chain":"ROBINHOOD","outcome":"POOL_NOT_FOUND","msg":"PAPER: результат получения даты пула"}
+{"level":20,"time":1788922092347,"pid":98789,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtti0wmp002bzo85hqvp7a9z","tokenId":"cmtti0wku0027zo851rg8z5m1","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788922092356,"pid":98789,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtti0wn1002czo85iadw3d3o","tokenId":"cmtti0wku0027zo851rg8z5m1","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788922092365,"pid":98789,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtti0wna002dzo859pbqvj5a","tokenId":"cmtti0wku0027zo851rg8z5m1","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788922092377,"pid":98789,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtti0wnj002ezo85hh20n7rm","tokenId":"cmtti0wku0027zo851rg8z5m1","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788922092627,"pid":98789,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtti0wuc002xzo8542xakcba","tokenId":"cmtti0wt1002uzo855gd6wjlr","admission":"accepted","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788922092633,"pid":98789,"hostname":"myrotecs-MacBook-Pro.local","tokenId":"cmtti0wt1002uzo855gd6wjlr","chain":"ROBINHOOD","outcome":"POOL_DATE_SAVED","msg":"PAPER: результат получения даты пула"}
+{"level":20,"time":1788922092640,"pid":98789,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtti0wut002yzo85w0iifhxy","tokenId":"cmtti0wt1002uzo855gd6wjlr","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788922092649,"pid":98789,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtti0wv5002zzo85v4t9961f","tokenId":"cmtti0wt1002uzo855gd6wjlr","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788922092660,"pid":98789,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtti0wve0030zo85xgbw8m27","tokenId":"cmtti0wt1002uzo855gd6wjlr","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788922092668,"pid":98789,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtti0wvp0031zo85t32xw7jf","tokenId":"cmtti0wt1002uzo855gd6wjlr","admission":"completed","msg":"PAPER: ожидание метаданных"}
+ ✓ src/e2e/metadata-http.e2e.test.ts (6 tests) 1838ms
+   ✓ Robinhood worker → actual metadata service → real HTTP adapter → PostgreSQL → one PAPER entry  573ms
+   ✓ missing pool date cannot bypass age/deadline filters or rewrite the final decision  330ms
+   ✓ unrelated pool date cannot bypass age/deadline filters or rewrite the final decision  309ms
+   ✓ old pool date cannot bypass age/deadline filters or rewrite the final decision  345ms
+
+ Test Files  1 passed (1)
+      Tests  6 passed (6)
+   Start at  04:48:09
+   Duration  3.69s (transform 448ms, setup 6ms, collect 849ms, tests 1.84s, environment 0ms, prepare 44ms)
+

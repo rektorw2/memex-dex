@@ -1,0 +1,61 @@
+- banner:
+  - link "Главная":
+    - /url: /terminal/
+    - text: memex
+  - navigation:
+    - link "Терминал":
+      - /url: /terminal/
+    - link "Агент":
+      - /url: /agent/
+    - link "Портфель":
+      - /url: /portfolio/
+  - link "Регистрация":
+    - /url: /login/?mode=register
+  - link "Войти":
+    - /url: /login/
+- main:
+  - heading "Агент memex" [level=1]
+  - generic: PAPER
+  - generic "Сети агента":
+    - 'generic "Solana: сигналы подтверждены OKX"': Solana
+    - 'generic "BNB Chain: сигналы по документации OKX"': BNB Chain
+    - generic "OKX Signal API не отдаёт сигналы по Robinhood Chain (chainIndex 4663 отсутствует в списке)": Robinhood Chain
+  - status "Состояние агента":
+    - generic "Ждёт подходящий сигнал": Готов
+    - generic: ·
+    - generic "Источник сигналов — только официальный OKX Signal API": OKX Signal · Резервный REST-канал
+    - generic: ·
+    - generic: 2 сигналов/24ч
+    - generic: ·
+    - generic: 0 позиций
+    - generic: ·
+    - generic: "выход: Цель 2×"
+  - paragraph: "Бюджет и частота OKX REST не подтверждены. Своевременный вход не обеспечен; требуется восстановить WS или выделить квоту. Обход сетей: 300 с."
+  - generic "Связь с OKX и задержки"
+  - generic: Виртуальный капитал
+  - generic: $1,000.00
+  - generic: За всё время
+  - text: $0.00
+  - generic: (+0.00%)
+  - tablist "Разделы агента":
+    - tab "Обзор" [selected]
+    - tab "Позиции"
+    - tab "История"
+    - tab "Подготовка LIVE"
+  - tabpanel "Обзор":
+    - region "Открытые позиции":
+      - heading "Открытые позиции 0" [level=2]
+      - paragraph: Ждёт подходящий сигнал
+    - region "Последние события":
+      - heading "Последние события" [level=2]
+      - paragraph: Событий пока нет
+      - list
+    - generic "Капитал подробнее":
+      - text: Капитал подробнее
+      - generic: ＋
+  - button "LIVE заблокирован · 1 из 5 ступеней":
+    - text: LIVE заблокирован · 1 из 5 ступеней
+    - generic: →
+- contentinfo:
+  - paragraph: Торговля криптоактивами сопряжена с высоким риском полной потери средств. Мем-коины крайне волатильны и могут обесцениться до нуля. Аналитика и статистика лидеров не являются инвестиционной рекомендацией. Прошлые результаты не гарантируют будущих. Комиссия за успех — 10% от прибыли по копируемым сделкам, удерживается при выходе из позиции.
+- alert

@@ -1,0 +1,76 @@
+
+> @memex/api@0.1.0 pretest:e2e
+> tsc -p ../../packages/core/tsconfig.json
+
+
+> @memex/api@0.1.0 test:e2e
+> vitest run --config vitest.e2e.config.ts src/e2e/metadata-http.e2e.test.ts
+
+
+ RUN  v3.2.7 /Users/myrotec/Desktop/memex-dex/apps/api
+
+{"level":20,"time":1788920676483,"pid":95015,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtth6k4x000izobbktre7oat","tokenId":"cmtth6k3g000fzobbev0zhvcj","admission":"accepted","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788920676490,"pid":95015,"hostname":"myrotecs-MacBook-Pro.local","tokenId":"cmtth6k3g000fzobbev0zhvcj","chain":"ROBINHOOD","outcome":"POOL_DATE_SAVED","msg":"PAPER: результат получения даты пула"}
+{"level":20,"time":1788920676498,"pid":95015,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtth6k5i000jzobbcdiw8a1o","tokenId":"cmtth6k3g000fzobbev0zhvcj","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788920676507,"pid":95015,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtth6k5v000kzobbjh63hyqi","tokenId":"cmtth6k3g000fzobbev0zhvcj","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788920676516,"pid":95015,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtth6k64000lzobbiy3ahlyj","tokenId":"cmtth6k3g000fzobbev0zhvcj","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788920676525,"pid":95015,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtth6k6e000mzobbeprkbj08","tokenId":"cmtth6k3g000fzobbev0zhvcj","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788920676947,"pid":95015,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtth6khz001nzobbr12tunmi","tokenId":"cmtth6kgm001kzobbe2jr5cs5","admission":"accepted","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788920676950,"pid":95015,"hostname":"myrotecs-MacBook-Pro.local","tokenId":"cmtth6kgm001kzobbe2jr5cs5","chain":"ROBINHOOD","outcome":"POOL_DATE_UNAVAILABLE","msg":"PAPER: результат получения даты пула"}
+{"level":20,"time":1788920676961,"pid":95015,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtth6kid001ozobbyehgnyp7","tokenId":"cmtth6kgm001kzobbe2jr5cs5","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788920676971,"pid":95015,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtth6kir001pzobbmtok5uqu","tokenId":"cmtth6kgm001kzobbe2jr5cs5","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788920676980,"pid":95015,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtth6kj0001qzobb0026cfon","tokenId":"cmtth6kgm001kzobbe2jr5cs5","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788920676988,"pid":95015,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtth6kj9001rzobb7q2udcgh","tokenId":"cmtth6kgm001kzobbe2jr5cs5","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788920677252,"pid":95015,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtth6kqf002azobbefq7yffp","tokenId":"cmtth6kow0027zobbxmhr63fu","admission":"accepted","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788920677255,"pid":95015,"hostname":"myrotecs-MacBook-Pro.local","tokenId":"cmtth6kow0027zobbxmhr63fu","chain":"ROBINHOOD","outcome":"POOL_NOT_FOUND","msg":"PAPER: результат получения даты пула"}
+{"level":20,"time":1788920677264,"pid":95015,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtth6kqv002bzobbnflglcy6","tokenId":"cmtth6kow0027zobbxmhr63fu","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788920677273,"pid":95015,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtth6kr6002czobbq2msw34n","tokenId":"cmtth6kow0027zobbxmhr63fu","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788920677282,"pid":95015,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtth6kre002dzobboqrcqu7x","tokenId":"cmtth6kow0027zobbxmhr63fu","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788920677293,"pid":95015,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtth6kro002ezobb7cquh4ww","tokenId":"cmtth6kow0027zobbxmhr63fu","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788920677541,"pid":95015,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtth6kyh002xzobbwjewx97w","tokenId":"cmtth6kx7002uzobbx0ohaulc","admission":"accepted","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788920677546,"pid":95015,"hostname":"myrotecs-MacBook-Pro.local","tokenId":"cmtth6kx7002uzobbx0ohaulc","chain":"ROBINHOOD","outcome":"POOL_DATE_SAVED","msg":"PAPER: результат получения даты пула"}
+{"level":20,"time":1788920677555,"pid":95015,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtth6kyw002yzobbwutobwmo","tokenId":"cmtth6kx7002uzobbx0ohaulc","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788920677563,"pid":95015,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtth6kz8002zzobbd3wfbaqj","tokenId":"cmtth6kx7002uzobbx0ohaulc","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788920677572,"pid":95015,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtth6kzh0030zobbkp4fb6il","tokenId":"cmtth6kx7002uzobbx0ohaulc","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788920677581,"pid":95015,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtth6kzq0031zobb8tf1cc1b","tokenId":"cmtth6kx7002uzobbx0ohaulc","admission":"completed","msg":"PAPER: ожидание метаданных"}
+ ❯ src/e2e/metadata-http.e2e.test.ts (4 tests | 1 failed) 2324ms
+   × Robinhood worker → actual metadata service → real HTTP adapter → PostgreSQL → one PAPER entry 1361ms
+     → expected 2 to be 1 // Object.is equality
+   ✓ missing pool date cannot bypass age/deadline filters or rewrite the final decision  309ms
+   ✓ unrelated pool date cannot bypass age/deadline filters or rewrite the final decision  305ms
+   ✓ old pool date cannot bypass age/deadline filters or rewrite the final decision  347ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/e2e/metadata-http.e2e.test.ts > Robinhood worker → actual metadata service → real HTTP adapter → PostgreSQL → one PAPER entry
+AssertionError: expected 2 to be 1 // Object.is equality
+
+- Expected
++ Received
+
+- 1
++ 2
+
+ ❯ src/e2e/metadata-http.e2e.test.ts:45:177
+     43|   await worker.runPaperAgentTickOnce(); expect((await baselineRun(sign…
+     44|   await worker.processPaperAgentSignal(signal.id); await worker.runPap…
+     45|   expect(await prisma.paperAgentNotification.count({ where: { run: { s…
+       |                                                                                                                                                                                 ^
+     46|   expect(calls).toHaveLength(1);
+     47| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 3 passed (4)
+   Start at  04:24:33
+   Duration  4.32s (transform 483ms, setup 7ms, collect 880ms, tests 2.32s, environment 0ms, prepare 43ms)
+
+npm error Lifecycle script `test:e2e` failed with error:
+npm error code 1
+npm error path /Users/myrotec/Desktop/memex-dex/apps/api
+npm error workspace @memex/api@0.1.0
+npm error location /Users/myrotec/Desktop/memex-dex/apps/api
+npm error command failed
+npm error command sh -c vitest run --config vitest.e2e.config.ts src/e2e/metadata-http.e2e.test.ts

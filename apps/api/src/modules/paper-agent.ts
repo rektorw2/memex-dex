@@ -459,6 +459,7 @@ export function publicSnapshotOf(snapshot: any, isAdmin: boolean) {
       lastWsEventAt: snapshot.okxSignal.socket?.lastChannelEventAt ?? null,
       nextAccessCheckAt: snapshot.okxSignal.socket?.nextAccessCheckAt ?? null,
       accessMessage: snapshot.okxSignal.accessMessage ?? null,
+      restDelivery: snapshot.okxSignal.restDelivery ?? null,
       lastRestErrorCode: snapshot.okxSignal.lastRestErrorCode ?? null,
       providerDeliveryLatencyMs: lastDecision?.providerDeliveryLatencyMs ?? null,
       agentDecisionLatencyMs: lastDecision?.agentDecisionLatencyMs ?? null,

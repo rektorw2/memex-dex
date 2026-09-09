@@ -1,0 +1,31 @@
+{
+  "source": "Render displayed application logs, GeckoTerminal search; selected excerpts only",
+  "message": "GeckoTerminal: превышен лимит запросов",
+  "events": [
+    {
+      "at": "2026-09-09T01:22:09.217Z",
+      "retryAfterMs": 60000,
+      "path": "/networks/bsc/tokens/0x1c5df713898a660ecdd6c775b7df4431e36714e1/pools?include=base_token&page=1"
+    },
+    {
+      "at": "2026-09-09T01:42:18.396Z",
+      "retryAfterMs": 60000,
+      "path": "/networks/bsc/tokens/0x9259dd9978583c997fef56144098e1ac3b67ffff/pools?include=base_token&page=1"
+    },
+    {
+      "at": "2026-09-09T01:53:00.553Z",
+      "retryAfterMs": 60000,
+      "path": "/networks/solana/tokens/DLvpmv8R4oTbC1DixU5yHLbBcmnvfTckGF3XFzLTpump/pools?include=base_token&page=1"
+    },
+    {
+      "at": "2026-09-09T01:56:33.589Z",
+      "retryAfterMs": 60000,
+      "path": "/networks/bsc/pools/0xbb01a21c3d6fde610b4b25c7c2d8019f56eb37f0/trades?trade_volume_in_usd_greater_than=300"
+    },
+    {
+      "at": "2026-09-09T01:57:45.664Z",
+      "retryAfterMs": 60000,
+      "path": "/networks/eth/trending_pools?page=1&include=base_token,quote_token"
+    }
+  ]
+}

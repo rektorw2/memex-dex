@@ -1,0 +1,87 @@
+[
+  {
+    "path": ".env.example",
+    "sha256": "50316cf2019d3e32ba184f42400d1d510fe1dcf280ebe6255525984ec0d6a2f4",
+    "matches": true
+  },
+  {
+    "path": "apps/api/src/e2e/metadata-http.e2e.test.ts",
+    "sha256": "fb13bfc8c31f7637f18567156142df075197714e239d547383fd38489f17cca9",
+    "matches": true
+  },
+  {
+    "path": "apps/api/src/lib/env.ts",
+    "sha256": "2b68523b365075ee02f107080b894b23245bfb7e0be34bd4a3ccaab6d8e2af2f",
+    "matches": true
+  },
+  {
+    "path": "apps/api/src/modules/paper-agent.ts",
+    "sha256": "e25637bb0fe3d2538bcd9a53f4dbd69b6612dde5b17109266cfe669e0652a7d8",
+    "matches": true
+  },
+  {
+    "path": "apps/api/src/server.ts",
+    "sha256": "e1927281b989f8ffdf0fecaa937b651366304633162877bb0958c113b31125a4",
+    "matches": true
+  },
+  {
+    "path": "apps/api/src/services/gecko-admission.ts",
+    "sha256": "d803c827dc6eb5b3e6b64fe0a92fcf207f29507a397ec532a2b40f3b05afcee8",
+    "matches": true
+  },
+  {
+    "path": "apps/api/src/services/market-data-rate-limit.test.ts",
+    "sha256": "c34ed7fe9cfc55b589c262439834cc73851edb6cda197de62d32534a41097135",
+    "matches": true
+  },
+  {
+    "path": "apps/api/src/services/market-data.ts",
+    "sha256": "5cf16e5b47d6d3cc2209b95e3ef0cbebb23d3baf7e8cc44d4a0894d841a24ffc",
+    "matches": true
+  },
+  {
+    "path": "apps/api/src/services/metadata-adapter-integration.test.ts",
+    "sha256": "1606a53ff448684b3a45d3ed8cd00c76dfe7cb6f807135718a0909a32005fc18",
+    "matches": true
+  },
+  {
+    "path": "apps/api/src/services/paper-token-metadata.ts",
+    "sha256": "cb7000c1921fb647e670df71cef7975ae476bc95bd73beae1118b86a061b7470",
+    "matches": true
+  },
+  {
+    "path": "apps/api/src/services/signal-rest-schedule.test.ts",
+    "sha256": "32da4f191d29155ca787dd7665b880ea5e5e49fa7c013fb5420170eb9e60e6e7",
+    "matches": true
+  },
+  {
+    "path": "apps/api/src/services/signal-rest-schedule.ts",
+    "sha256": "820d84f4bd0a9bc9747f95e49ca81b56e655fd292aeb904f57619862042364da",
+    "matches": true
+  },
+  {
+    "path": "apps/api/src/workers/okx-rest-scheduling.test.ts",
+    "sha256": "65c16e78644093cde1f9107ddbcc42872a7b9623d6bc019dd8cc6965a3fd27bf",
+    "matches": true
+  },
+  {
+    "path": "apps/api/src/workers/okx-signal-ingest.ts",
+    "sha256": "656b8c1cab3b7a1e6d9371c32e63140bad06627b7c48249679d4a1724eaf7b16",
+    "matches": true
+  },
+  {
+    "path": "apps/api/src/workers/okx-signal-source-state.test.ts",
+    "sha256": "f6033406fe5d0a17d10e94277c35c884b187d374655919d8c4ab9ab1efe13426",
+    "matches": true
+  },
+  {
+    "path": "apps/web/app/agent/agent-page.test.tsx",
+    "sha256": "ed71dc721361306776b8137fe515328b976c0c9ffb258cf933c602ceac082624",
+    "matches": true
+  },
+  {
+    "path": "apps/web/app/agent/agent-screen.tsx",
+    "sha256": "f627a417aa18bb456e387471a33aa9c12b8aff98e945f457504415d98f8a4135",
+    "matches": true
+  }
+]

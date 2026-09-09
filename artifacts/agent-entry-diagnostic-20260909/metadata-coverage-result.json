@@ -1,0 +1,7 @@
+{
+  "chain": "ROBINHOOD",
+  "supportedByCurrentMetadataAdapter": false,
+  "result": null,
+  "actualProviderRequests": 0,
+  "finding": "Current on-demand metadata path cannot obtain a missing Robinhood pool date"
+}

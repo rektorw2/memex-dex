@@ -190,6 +190,7 @@ interface PublicAgentData {
     lastSubscriptionAt?: number | null;
     lastWsEventAt?: number | null;
     nextAccessCheckAt?: number | null;
+    restDelivery?: { status: string; roundMs: number; message: string; blockedUntil?: string | null } | null;
     accessMessage?: string | null;
     lastRestErrorCode?: string | null;
     providerDeliveryLatencyMs?: number | null;
@@ -389,6 +390,7 @@ function AgentHero({ data, status }: { data: PublicAgentData; status: (typeof ST
       <span>·</span><span>{positionCount(data.metrics24h.openPositions)}</span>
       <span>·</span><span>выход: {data.wallet?.exitPlan?.label ?? 'Цель 2×'}</span>
     </div>
+    {data.source.restDelivery && data.source.restDelivery.status !== 'WS_PRIMARY' && <p className="mt-2 rounded-md border border-warn/30 bg-warn/10 px-3 py-2 text-xs leading-relaxed text-warn" data-testid="rest-delivery-status">{data.source.restDelivery.message} Обход сетей: {Math.ceil(data.source.restDelivery.roundMs / 1000)} с.{data.source.restDelivery.blockedUntil ? ' Опрос приостановлен после отказа провайдера.' : ''}</p>}
     <details className="mt-2 text-xs text-muted" data-signal-diagnostics>
       <summary className="min-h-8 cursor-pointer">Связь с OKX и задержки</summary>
       {data.source.accessMessage && <p className="mt-1 text-warn">{data.source.accessMessage}</p>}

@@ -1,0 +1,131 @@
+{
+  "capturedAt": "2026-09-09T02:00:03.515Z",
+  "method": "Render Web Shell, Prisma transaction with SET TRANSACTION READ ONLY; selected fields transcribed from displayed JSON",
+  "revision": "2b92c029ee9fad403afc09390d92761fa5f74ed6",
+  "control": {
+    "isEnabled": true,
+    "baselineStrategyKey": "okx-signal-v3-baseline",
+    "mode": "FIXED",
+    "minAmountUsd": 600,
+    "maxTokenAgeMs": 900000,
+    "maxDecisionLatencyMs": 30000
+  },
+  "lastHourBaseline": {
+    "total": 135,
+    "arrivedAfter30Seconds": 127,
+    "decisions": {
+      "DECISION_DEADLINE_EXCEEDED": 77,
+      "TOKEN_TOO_OLD": 44,
+      "AMOUNT_BELOW_THRESHOLD": 13,
+      "TOKEN_AGE_UNKNOWN": 1
+    }
+  },
+  "openRuns": 0,
+  "activePaperSession": {
+    "freeBalanceUsd": "700",
+    "reservedBalanceUsd": "300",
+    "inPositionsUsd": "0",
+    "maxOpenPositions": 4,
+    "openPositions": 0,
+    "dailyEntries": 0
+  },
+  "restIntervalMs": 60000,
+  "freshOver600": [
+    {
+      "symbol": "STOCKLESS",
+      "chain": "SOLANA",
+      "signalId": "cmtteymew04m1l007iddfuoag",
+      "amountUsd": "1374.57655389",
+      "providerDeliveryLatencyMs": 9676,
+      "agentDecisionLatencyMs": 20821,
+      "poolCreatedAtAtDecision": null,
+      "poolCreatedAtAtInspection": null,
+      "decisionCode": "DECISION_DEADLINE_EXCEEDED"
+    },
+    {
+      "symbol": "DONUT",
+      "chain": "ROBINHOOD",
+      "signalId": "cmttezybe0538l007s2xdco1j",
+      "amountUsd": "5108.67064585",
+      "providerDeliveryLatencyMs": 20562,
+      "agentDecisionLatencyMs": 12688,
+      "poolCreatedAtAtDecision": null,
+      "poolCreatedAtAtInspection": null,
+      "decisionCode": "DECISION_DEADLINE_EXCEEDED"
+    },
+    {
+      "symbol": "WOOD",
+      "chain": "ROBINHOOD",
+      "signalId": "cmttfj8q40r73l007xd9o6gyd",
+      "amountUsd": "1234.8977234",
+      "providerDeliveryLatencyMs": 22344,
+      "agentDecisionLatencyMs": 8335,
+      "poolCreatedAtAtDecision": null,
+      "poolCreatedAtAtInspection": null,
+      "decisionCode": "DECISION_DEADLINE_EXCEEDED"
+    },
+    {
+      "symbol": "Jacob",
+      "chain": "SOLANA",
+      "signalId": "cmttfodw910sol0072ttzmjie",
+      "amountUsd": "1377.31012647",
+      "providerDeliveryLatencyMs": 21150,
+      "agentDecisionLatencyMs": 8861,
+      "poolCreatedAtAtDecision": null,
+      "poolCreatedAtAtInspection": null,
+      "decisionCode": "DECISION_DEADLINE_EXCEEDED"
+    },
+    {
+      "symbol": "PONSKAT",
+      "chain": "ROBINHOOD",
+      "signalId": "cmttg2l4420a2l007vjcmxkm3",
+      "amountUsd": "1213.334019",
+      "providerDeliveryLatencyMs": 20385,
+      "agentDecisionLatencyMs": 10603,
+      "poolCreatedAtAtDecision": null,
+      "poolCreatedAtAtInspection": null,
+      "decisionCode": "DECISION_DEADLINE_EXCEEDED"
+    },
+    {
+      "symbol": "PONSKAT",
+      "chain": "ROBINHOOD",
+      "signalId": "cmttg2l4n20a5l007lohw1tqf",
+      "amountUsd": "2224.460205",
+      "providerDeliveryLatencyMs": 15669,
+      "agentDecisionLatencyMs": 14576,
+      "poolCreatedAtAtDecision": null,
+      "poolCreatedAtAtInspection": null,
+      "decisionCode": "DECISION_DEADLINE_EXCEEDED"
+    },
+    {
+      "symbol": "YOLO",
+      "chain": "ROBINHOOD",
+      "signalId": "cmttg2l5820a8l007g1zqzre9",
+      "amountUsd": "5512.40354188",
+      "providerDeliveryLatencyMs": 15684,
+      "agentDecisionLatencyMs": 14629,
+      "poolCreatedAtAtDecision": null,
+      "poolCreatedAtAtInspection": null,
+      "decisionCode": "DECISION_DEADLINE_EXCEEDED"
+    },
+    {
+      "symbol": "WOWCAT",
+      "chain": "SOLANA",
+      "signalId": "cmttg7qa62jtbl007y7012cxe",
+      "amountUsd": "1421.83992765",
+      "providerDeliveryLatencyMs": 22777,
+      "agentDecisionLatencyMs": 7789,
+      "poolCreatedAtAtDecision": null,
+      "poolCreatedAtAtInspection": null,
+      "decisionCode": "DECISION_DEADLINE_EXCEEDED"
+    }
+  ],
+  "wowcatGate": {
+    "tokenId": "cmttfoduz10sgl0075b6s2xbp",
+    "firstAt": 1788919051656,
+    "nextAt": 1788919062261,
+    "attempts": 0,
+    "completed": false,
+    "leaseUntil": 0
+  }
+}

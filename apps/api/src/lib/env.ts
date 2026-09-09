@@ -255,9 +255,13 @@ const schema = z.object({
   OKX_ACTIVITY_REST_FALLBACK_INTERVAL_MS: z.coerce.number().default(20_000),
   /**
    * Запасной опрос Signal вращается по одной сети за проход.
-   * Основной путь — WebSocket; минута здесь бережёт платную квоту,
-   * но за полный круг всё равно проходит не больше четырёх минут.
+   * Без подтверждённого бюджета сохраняется медленный опрос и явное
+   * ограничение свежести: пять сетей при 60 сек дают круг в пять минут.
    */
+  // Explicit owner allocation; zero keeps conservative legacy polling and reports unknown freshness.
+  OKX_SIGNAL_REST_MONTHLY_BUDGET: z.coerce.number().int().min(0).default(0),
+  OKX_SIGNAL_REST_REQUESTS_PER_SECOND: z.coerce.number().min(0).max(10).default(0),
+  OKX_SIGNAL_REST_CONSUMERS: z.coerce.number().int().min(1).max(100).default(1),
   OKX_SIGNAL_REST_FALLBACK_INTERVAL_MS: z.coerce.number().min(15_000).default(60_000),
 
   /**

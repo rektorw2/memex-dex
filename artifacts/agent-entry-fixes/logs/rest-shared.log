@@ -1,0 +1,17 @@
+
+> @memex/api@0.1.0 test
+> vitest run --run src/workers/okx-rest-scheduling.test.ts src/workers/okx-signal-source-state.test.ts src/services/signal-rest-schedule.test.ts
+
+
+ RUN  v3.2.7 /Users/myrotec/Desktop/memex-dex/apps/api
+
+ ✓ src/services/signal-rest-schedule.test.ts (10 tests) 13ms
+ ✓ src/workers/okx-signal-source-state.test.ts (9 tests) 124ms
+ ✓ src/workers/okx-rest-scheduling.test.ts (4 tests) 592ms
+   ✓ real worker, OKX HTTP adapter and transport limiter pace all five chains without startup burst  445ms
+
+ Test Files  3 passed (3)
+      Tests  23 passed (23)
+   Start at  04:40:38
+   Duration  957ms (transform 447ms, setup 0ms, collect 1.05s, tests 728ms, environment 0ms, prepare 180ms)
+

@@ -9,6 +9,8 @@
  * успеха обновляется только после подтверждённого ответа, а после
  * восстановления входы открываются сами.
  */
+import { metadataGateDatabase } from '../test-support/metadata-gate.js';
+const gate = metadataGateDatabase();
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { signalSourceVerdict } from '@memex/core';
 
@@ -25,7 +27,7 @@ vi.mock('../lib/logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), err
 vi.mock('../lib/prisma.js', () => ({
   prisma: {
     okxSignal: { findUnique: async () => null, update: async () => null },
-    $transaction: async () => { throw new Error('база в этом тесте не нужна'); },
+    $transaction: (fn: any) => gate.transaction(() => fn({ $queryRaw: gate.$queryRaw, $executeRaw: gate.$executeRaw })),
   },
 }));
 vi.mock('./hot-tokens.js', () => ({ markHot: vi.fn() }));
@@ -62,6 +64,7 @@ const fetchMock = vi.fn(async (url: string) => {
 const verdict = (now: number) => signalSourceVerdict(ingest.getOkxSignalSourceFacts(now));
 
 beforeEach(() => {
+  gate.reset();
   vi.stubGlobal('fetch', fetchMock);
   replies = [];
   budget.allow = true;

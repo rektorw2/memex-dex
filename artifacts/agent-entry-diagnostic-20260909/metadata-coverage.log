@@ -1,0 +1,20 @@
+node:net:2302
+      const error = new UVExceptionWithHostPort(rval, 'listen', address, port);
+                    ^
+
+Error: listen EPERM: operation not permitted /var/folders/r8/z_l9q7917lddj2cm3tjqggbh0000gn/T/tsx-501/92921.pipe
+    at Server.setupListenHandle [as _listen2] (node:net:2302:21)
+    at listenInCluster (node:net:2433:12)
+    at Server.listen (node:net:2575:5)
+    at file:///Users/myrotec/Desktop/memex-dex/node_modules/tsx/dist/cli.mjs:53:31472
+    at new Promise (<anonymous>)
+    at createIpcServer (file:///Users/myrotec/Desktop/memex-dex/node_modules/tsx/dist/cli.mjs:53:31450)
+    at async file:///Users/myrotec/Desktop/memex-dex/node_modules/tsx/dist/cli.mjs:55:542 {
+  code: 'EPERM',
+  errno: -1,
+  syscall: 'listen',
+  address: '/var/folders/r8/z_l9q7917lddj2cm3tjqggbh0000gn/T/tsx-501/92921.pipe',
+  port: -1
+}
+
+Node.js v26.7.0

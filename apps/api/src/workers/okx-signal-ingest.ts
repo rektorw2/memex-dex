@@ -1,12 +1,12 @@
 /**
  * Живая лента OKX Signal → история сигналов и каталог токенов.
  *
- * Основной путь — официальный WebSocket. REST вызывается один раз при
- * старте для заполнения последних событий и затем только при нездоровом
- * сокете, по одной сети за проход. Это даёт минимальную задержку без
- * превращения открытой вкладки в потребителя платной квоты OKX.
+ * Основной путь — официальный WebSocket. REST сверяет сети по общему
+ * расписанию: при здоровом WS медленно, при отказе — в пределах явно
+ * выделенного бюджета. Вкладки не запускают опрос и не расходуют квоту.
  */
 
+import { randomUUID } from 'node:crypto';
 import { Prisma as P } from '@prisma/client';
 import {
   OKX_CHAIN_INDEX,
@@ -16,6 +16,7 @@ import {
   type OkxSignal,
   type PaperSignalOrigin,
 } from '@memex/core';
+import { SignalRestSchedule, signalRestPlan, claimSharedSignalPoll, finishSharedSignalPoll } from '../services/signal-rest-schedule.js';
 import { env } from '../lib/env.js';
 import { logger } from '../lib/logger.js';
 import { prisma } from '../lib/prisma.js';
@@ -68,8 +69,9 @@ let running = false;
 let startedAt: number | null = null;
 let client: OkxWalletWebSocketClient | null = null;
 let reconciliationTimer: NodeJS.Timeout | null = null;
-let reconciliationCursor = 0;
+let restSchedule = new SignalRestSchedule();
 let reconciling = false;
+let refreshingProbes = false;
 let lastReconciliationAt = 0;
 let lastRestSuccessAt = 0;
 let lastRestErrorCode: string | null = null;
@@ -309,6 +311,18 @@ export async function ingestOkxSignal(
  * (`signalSourceVerdict`), чтобы его можно было проверить таблицей,
  * а воркер агента и интерфейс не могли разойтись в толковании.
  */
+function restPlan() {
+  return signalRestPlan({
+    plan: env.OKX_PLAN,
+    monthlyBudget: env.OKX_SIGNAL_REST_MONTHLY_BUDGET,
+    requestsPerSecond: env.OKX_SIGNAL_REST_REQUESTS_PER_SECOND,
+    consumers: env.OKX_SIGNAL_REST_CONSUMERS,
+    legacyIntervalMs: env.OKX_SIGNAL_REST_FALLBACK_INTERVAL_MS,
+  }, activeSignalChains().length);
+}
+function pollInterval() {
+  return client?.isHealthy() ? Math.max(env.OKX_SIGNAL_REST_FALLBACK_INTERVAL_MS, restPlan().intervalMs) : restPlan().intervalMs;
+}
 export function getOkxSignalSourceFacts(now = Date.now()): SignalSourceFacts {
   const stats = client?.stats() ?? null;
   return {
@@ -318,16 +332,26 @@ export function getOkxSignalSourceFacts(now = Date.now()): SignalSourceFacts {
     channelDeniedCode: stats?.channelAccessDeniedCode ?? permanentDenialCode,
     lastRestSuccessAtMs: lastRestSuccessAt === 0 ? null : lastRestSuccessAt,
     lastRestErrorCode,
-    restIntervalMs: env.OKX_SIGNAL_REST_FALLBACK_INTERVAL_MS,
+    restIntervalMs: pollInterval(),
     startedAtMs: running ? startedAt : null,
     nowMs: now,
   };
 }
 
 export function getOkxSignalIngestStatus() {
-  const interval = env.OKX_SIGNAL_REST_FALLBACK_INTERVAL_MS;
+  const interval = pollInterval();
   return {
     running,
+    restDelivery: {
+      ...restPlan(),
+      ...(client?.isHealthy() ? {
+        status: 'WS_PRIMARY',
+        message: 'REST выполняет фоновую сверку. Основная доставка — WS; её подтверждают подписка и настоящее событие.',
+      } : {}),
+      intervalMs: interval,
+      roundMs: interval * activeSignalChains().length,
+      blockedUntil: restSchedule.blockedUntil > Date.now() ? new Date(restSchedule.blockedUntil).toISOString() : null,
+    },
     transportMode,
     permanentDenialCode,
     accessMessage:
@@ -345,7 +369,7 @@ export function getOkxSignalIngestStatus() {
     nextRestReconciliationAt:
       !running || lastReconciliationAt === 0
         ? null
-        : new Date(lastReconciliationAt + interval).toISOString(),
+        : new Date(Math.max(restSchedule.nextAt, restSchedule.blockedUntil)).toISOString(),
     socket: client?.stats() ?? null,
   };
 }
@@ -439,42 +463,53 @@ async function reconciliationTick(): Promise<void> {
   if (!running || reconciling) return;
   reconciling = true;
   try {
-  const now = Date.now();
-  await refreshSignalSupportedChains(now).catch((error) => {
-    logger.debug({ code: error?.code }, 'OKX Signal: список сетей не обновлён');
-  });
-  // Узлы EVM-сетей: chainId перепроверяется раз в десять минут, не на каждый снимок.
-  await refreshEvmProbes(now).catch(() => undefined);
-  if (!isRestReconciliationDue(
-    now,
-    lastReconciliationAt,
-    env.OKX_SIGNAL_REST_FALLBACK_INTERVAL_MS,
-  )) return;
-  lastReconciliationAt = now;
-
-  const active = activeSignalChains();
-  if (active.length === 0) return;
-  const [chain] = active[reconciliationCursor % active.length]!;
-  reconciliationCursor++;
-
-  try {
-    const outcome = await fetchLatestSignalsOutcome(chain, 100);
-    if (outcome.kind !== 'ok') {
-      recordRestFailure(outcome);
-      logger.warn({ chain, kind: outcome.kind, detail: outcome.detail }, 'OKX Signal: REST reconciliation отклонена провайдером');
-      return;
+    const now = Date.now();
+    void refreshSignalSupportedChains(now).catch((error) => {
+      logger.debug({ code: error?.code }, 'OKX Signal: список сетей не обновлён');
+    });
+    // Узлы EVM-сетей: chainId перепроверяется раз в десять минут, не на каждый снимок.
+    if (!refreshingProbes) {
+      refreshingProbes = true;
+      void refreshEvmProbes(now).catch(() => undefined).finally(() => { refreshingProbes = false; });
     }
-    for (const signal of [...outcome.signals].reverse()) {
-      await ingestOkxSignal(signal, 'REST_RECONCILIATION');
+    const interval = pollInterval();
+    const selected = restSchedule.claim(activeSignalChains(), Date.now(), interval);
+    if (!selected) return;
+    const owner = randomUUID();
+    let shared;
+    try { shared = await claimSharedSignalPoll(activeSignalChains(), interval, owner); }
+    catch (error) { restSchedule.complete(Date.now(), interval, { kind: 'network' }); throw error; }
+    restSchedule.blockedUntil = Math.max(restSchedule.blockedUntil, shared.blockedUntil);
+    if (!shared.chain) { restSchedule.complete(Date.now(), interval); return; }
+    const [chain] = shared.chain;
+    lastReconciliationAt = Date.now();
+    let failure: { kind: string; retryAfterMs?: number | null } | undefined;
+
+    try {
+      const outcome = await fetchLatestSignalsOutcome(chain, 100);
+      if (outcome.kind !== 'ok') {
+        failure = outcome;
+        recordRestFailure(outcome);
+        logger.warn({ chain, kind: outcome.kind, detail: outcome.detail }, 'OKX Signal: REST reconciliation отклонена провайдером');
+        return;
+      }
+      for (const signal of [...outcome.signals].reverse()) {
+        await ingestOkxSignal(signal, 'REST_RECONCILIATION');
+      }
+      recordRestSuccess();
+    } catch (error: any) {
+      failure = { kind: 'network' };
+      lastRestErrorCode = `network:${String(error?.code ?? error?.name ?? 'REST_RECONCILIATION_FAILED')}`;
+      logger.warn(
+        { chain, code: lastRestErrorCode },
+        'OKX Signal: REST reconciliation не выполнена',
+      );
+    } finally {
+      restSchedule.complete(Date.now(), interval, failure);
+      await finishSharedSignalPoll(owner, interval, restSchedule.blockedUntil);
     }
-    recordRestSuccess();
-  } catch (error: any) {
-    lastRestErrorCode = `network:${String(error?.code ?? error?.name ?? 'REST_RECONCILIATION_FAILED')}`;
-    logger.warn(
-      { chain, code: lastRestErrorCode },
-      'OKX Signal: REST reconciliation не выполнена',
-    );
-  }
+  } catch (error) {
+    logger.warn({ error }, 'OKX Signal: общий допуск REST недоступен, запрос отложен');
   } finally { reconciling = false; }
 }
 
@@ -510,19 +545,10 @@ export function startOkxSignalIngest(): void {
   // подписку, как только OKX её назвал.
   client.start();
   void refreshSignalSupportedChains().catch(() => undefined);
-  void syncLatestOkxSignals().catch((error) => {
-    lastRestErrorCode = `network:${String(error?.code ?? error?.name ?? 'REST_BACKFILL_FAILED')}`;
-    logger.warn({ code: error?.code }, 'OKX Signal: начальная синхронизация не удалась');
-  });
-
-  /*
-   * Даже здоровый сокет не доказывает, что во время предыдущего
-   * reconnect не было разрыва. Раз в минуту сверяем одну сеть:
-   * полный круг занимает четыре минуты, providerKey убирает повторы.
-   * Это достаточно редко для квоты и не оставляет тихих дыр в истории.
-   */
-  lastReconciliationAt = Date.now();
-  reconciliationTimer = setInterval(() => void reconciliationTick(), 5_000);
+  // Startup uses the same paced path. No five-network backfill burst and no
+  // historical event gains a new timestamp: the agent enforces signaledAt.
+  void reconciliationTick();
+  reconciliationTimer = setInterval(() => void reconciliationTick(), 250);
   reconciliationTimer.unref?.();
 
   logger.info({ chains: activeSignalChains().map(([chain]) => chain) }, 'OKX Signal: живая лента запущена');
@@ -534,7 +560,7 @@ export function stopOkxSignalIngest(): void {
   client = null;
   if (reconciliationTimer) clearInterval(reconciliationTimer);
   reconciliationTimer = null;
-  reconciliationCursor = 0;
+  restSchedule = new SignalRestSchedule();
   lastReconciliationAt = 0;
   lastRestSuccessAt = 0;
   lastRestErrorCode = null;

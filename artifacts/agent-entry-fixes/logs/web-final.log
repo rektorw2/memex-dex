@@ -1,0 +1,41 @@
+
+> @memex/web@0.1.0 test
+> vitest run
+
+
+ RUN  v3.2.7 /Users/myrotec/Desktop/memex-dex/apps/web
+
+ ✓ lib/server-wakeup.test.ts (17 tests) 31ms
+ ✓ components/AuthShell.responsive.test.tsx (86 tests) 390ms
+ ✓ components/StorageResilience.test.tsx (12 tests) 170ms
+stderr | components/AccessStatusControl.test.tsx
+Error: Not implemented: navigation (except hash changes)
+    at module.exports (/Users/myrotec/Desktop/memex-dex/node_modules/jsdom/lib/jsdom/browser/not-implemented.js:9:17)
+    at navigateFetch (/Users/myrotec/Desktop/memex-dex/node_modules/jsdom/lib/jsdom/living/window/navigation.js:77:3)
+    at exports.navigate (/Users/myrotec/Desktop/memex-dex/node_modules/jsdom/lib/jsdom/living/window/navigation.js:55:3)
+    at Timeout._onTimeout (/Users/myrotec/Desktop/memex-dex/node_modules/jsdom/lib/jsdom/living/nodes/HTMLHyperlinkElementUtils-impl.js:80:7)
+    at listOnTimeout (node:internal/timers:685:17)
+    at processTimers (node:internal/timers:618:7) undefined
+
+ ✓ components/AccessStatusControl.test.tsx (34 tests) 307ms
+ ✓ app/terminal/terminal-link.test.tsx (6 tests) 361ms
+ ✓ components/terminal/controls.test.tsx (33 tests) 358ms
+ ✓ components/AccessStatusResponsive.test.tsx (31 tests) 494ms
+ ✓ app/login/wakeup-copy.contract.test.ts (8 tests) 3ms
+ ✓ components/terminal/ChartHistory.test.tsx (23 tests) 596ms
+ ✓ app/retired-calls.contract.test.ts (7 tests) 8ms
+ ✓ components/AppShell.contract.test.ts (7 tests) 10ms
+ ✓ components/AuthShell.test.tsx (12 tests) 255ms
+ ✓ components/terminal/terminal-sources.contract.test.ts (5 tests) 2ms
+ ✓ components/semi-auto.contract.test.ts (18 tests) 4ms
+ ✓ components/RouteGuard.contract.test.ts (3 tests) 2ms
+ ✓ app/login/login-form.test.tsx (42 tests) 989ms
+ ✓ components/terminal/terminal-panel.contract.test.tsx (7 tests) 53ms
+ ✓ app/agent/deposit-status.contract.test.ts (22 tests) 7ms
+ ✓ app/agent/agent-page.test.tsx (83 tests) 1865ms
+
+ Test Files  19 passed (19)
+      Tests  456 passed (456)
+   Start at  04:38:07
+   Duration  3.62s (transform 1.96s, setup 207ms, collect 7.88s, tests 5.90s, environment 6.45s, prepare 1.15s)
+
