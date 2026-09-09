@@ -87,6 +87,27 @@ vi.mock('../lib/logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
+/*
+ * Режим исполнения переключается тестом: подтверждение при реальном
+ * исполнении требует выбранного кошелька, в PAPER — нет.
+ */
+const executionMode = vi.hoisted(() => ({ value: 'paper' as 'paper' | 'live' }));
+vi.mock('../lib/env.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/env.js')>();
+  return { ...actual, env: new Proxy(actual.env, { get: (target, key) => (key === 'EXECUTION_MODE' ? executionMode.value : (target as any)[key]) }) };
+});
+const liveWallet = vi.hoisted(() => ({ ready: null as null | { ok: boolean; code: string; message: string }, error: null as null | { code: string; message: string } }));
+vi.mock('../services/live-funds.js', () => {
+  class LiveWalletSelectionError extends Error { constructor(readonly code: string, message: string) { super(message); } }
+  return {
+    LiveWalletSelectionError,
+    assertLiveWalletReady: async () => {
+      if (liveWallet.error) throw new LiveWalletSelectionError(liveWallet.error.code, liveWallet.error.message);
+      return { network: 'SOLANA', wallet: { id: 'w1', address: 'x' }, gas: liveWallet.ready ?? { ok: true, code: 'OK', message: 'ok', available: '1', feeReserve: '0.01' } };
+    },
+  };
+});
+
 vi.mock('../services/entitlement.js', () => ({
   entitlementOfRequest: async () => ({ capabilities: ['MANUAL_TRADE'] }),
   denyIfMissing: () => false,
@@ -149,6 +170,9 @@ beforeEach(async () => {
   users = new Map([['user-1', { role: 'USER' }], ['admin-1', { role: 'ADMIN' }]]);
   latch = 'HEALTHY';
   blockhashAvailable = true;
+  executionMode.value = 'paper';
+  liveWallet.ready = null;
+  liveWallet.error = null;
 
   app = Fastify();
   await app.register(jwt, { secret: SECRET });
@@ -354,6 +378,47 @@ describe('решение человека', () => {
 });
 
 // ═══════════════════════ Идемпотентность и гонки ═════════════════════════════
+
+describe('выбранный кошелёк при реальном исполнении', () => {
+  it('PAPER: подтверждение проходит без выбранного кошелька — реальных средств нет', async () => {
+    liveWallet.error = { code: 'WALLET_NOT_FOUND', message: 'не выбран' };
+    const res = await decide(confirmBody());
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('LIVE: без выбранного кошелька сети — 409 LIVE_WALLET_WALLET_NOT_FOUND, намерение не создаётся', async () => {
+    executionMode.value = 'live';
+    liveWallet.error = { code: 'WALLET_NOT_FOUND', message: 'Кошелёк для Solana не выбран' };
+    const res = await decide(confirmBody());
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ code: 'LIVE_WALLET_WALLET_NOT_FOUND' });
+    expect(intents).toHaveLength(0);
+    expect(proposals.get('p1')!.status).toBe('CREATED');
+  });
+
+  it('LIVE: кошелёк выбран, но без газа — 409 LIVE_FUNDS_NO_NATIVE_FOR_FEES', async () => {
+    executionMode.value = 'live';
+    liveWallet.ready = { ok: false, code: 'NO_NATIVE_FOR_FEES', message: 'нет SOL на комиссии' };
+    const res = await decide(confirmBody());
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ code: 'LIVE_FUNDS_NO_NATIVE_FOR_FEES' });
+    expect(intents).toHaveLength(0);
+  });
+
+  it('LIVE: кошелёк выбран и газ есть — подтверждение принимается, отправки по-прежнему нет', async () => {
+    executionMode.value = 'live';
+    const res = await decide(confirmBody());
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ submitted: false });
+  });
+
+  it('отклонение не требует кошелька даже при реальном исполнении', async () => {
+    executionMode.value = 'live';
+    liveWallet.error = { code: 'WALLET_NOT_FOUND', message: 'не выбран' };
+    const res = await decide({ decision: 'REJECT', shownFingerprint: fingerprint() });
+    expect(res.statusCode).toBe(200);
+  });
+});
 
 describe('идемпотентность', () => {
   it('повтор с тем же ключом возвращает тот же ответ', async () => {

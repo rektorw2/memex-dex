@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  exitPlanAllowed,
+  allowedExitModes,
+  isExitModeAllowed,
   PAPER_EXIT_MODES,
   PAPER_EXIT_PRESETS,
   advancePaperExitState,
@@ -176,5 +179,30 @@ describe('правки плана', () => {
     expect(() => paperExitPlan('LADDER', { legs: [{ multiple: 1.5, sellPct: 60 }, { multiple: 2, sellPct: 60 }] })).toThrow('LEGS_EXCEED_POSITION');
     expect(() => paperExitPlan('PROTECTED', { stopLossPct: 100 })).toThrow('INVALID_STOP_LOSS');
     expect(() => paperExitPlan('LADDER', { legs: [{ multiple: 2, sellPct: 10 }, { multiple: 1.5, sellPct: 10 }] })).toThrow('LEGS_NOT_ASCENDING');
+  });
+});
+
+describe('режимы по типу управления', () => {
+  it('semi-auto — только Цель 2×; auto — все пять', () => {
+    expect(allowedExitModes('semi-auto')).toEqual(['TARGET']);
+    expect(allowedExitModes('auto')).toEqual(PAPER_EXIT_MODES);
+    expect(isExitModeAllowed('semi-auto', 'LADDER')).toBe(false);
+    expect(isExitModeAllowed('auto', 'LADDER')).toBe(true);
+  });
+});
+
+describe('план и режим управления', () => {
+  it('полуавтомат принимает только неизменённый пресет «Цель 2×»', async () => {
+    const { paperExitPlan } = await import('./paper-exit.js');
+    expect(exitPlanAllowed('semi-auto', paperExitPlan('TARGET'))).toEqual({ ok: true });
+    expect(exitPlanAllowed('semi-auto', paperExitPlan('TARGET', { targetMultiple: 2 }))).toEqual({ ok: true });
+    expect(exitPlanAllowed('semi-auto', paperExitPlan('TARGET', { targetMultiple: 3, trailingPct: 50 }))).toMatchObject({ ok: false, code: 'EXIT_PRESET_MODIFIED' });
+    expect(exitPlanAllowed('semi-auto', paperExitPlan('TARGET', { stopLossPct: 35 }))).toMatchObject({ ok: false, code: 'EXIT_PRESET_MODIFIED' });
+    expect(exitPlanAllowed('semi-auto', paperExitPlan('LADDER'))).toMatchObject({ ok: false, code: 'EXIT_MODE_NOT_ALLOWED' });
+  });
+  it('авто принимает все пять режимов с правками', async () => {
+    const { paperExitPlan, PAPER_EXIT_MODES } = await import('./paper-exit.js');
+    for (const mode of PAPER_EXIT_MODES) expect(exitPlanAllowed('auto', paperExitPlan(mode))).toEqual({ ok: true });
+    expect(exitPlanAllowed('auto', paperExitPlan('TARGET', { targetMultiple: 3, trailingPct: 50 }))).toEqual({ ok: true });
   });
 });

@@ -126,6 +126,7 @@ model User {
   subscriptionPayments SubscriptionPayment[]
 
   @@index([role])
+  agentLiveWallets AgentLiveWallet[]
 }
 
 /**
@@ -2216,6 +2217,48 @@ model LiveAgentProposal {
   @@index([userId, status, createdAt])
 }
 
+/**
+ * Кошелёк, выбранный человеком для LIVE-операций агента в сети.
+ *
+ * Выбор хранится на сервере, а не в интерфейсе: подготовка LIVE-
+ * операции читает его отсюда и проверяет, что кошелёк по-прежнему
+ * принадлежит пользователю и активен. Одна запись на сеть.
+ */
+model AgentLiveWallet {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  network   Chain
+  walletId  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, network])
+}
+
+/**
+ * Пульс воркера — единственное, что API знает о воркере в другом
+ * процессе.
+ *
+ * Когда воркеры живут внутри API, `/health/agent` читает память
+ * процесса. Когда они в отдельном процессе, память ему недоступна,
+ * и без этой строки маршрут может лишь честно ответить «неизвестно».
+ * Воркер пишет сюда начало и успешное завершение прохода; API
+ * отвечает «здоров» только по свежему завершённому проходу.
+ * Одна строка на воркер.
+ */
+model WorkerHeartbeat {
+  name                String    @id
+  processId           String
+  hostname            String?
+  startedAt           DateTime
+  lastTickStartedAt   DateTime?
+  lastTickCompletedAt DateTime?
+  lastErrorCode       String?
+  consecutiveFailures Int       @default(0)
+  updatedAt           DateTime  @updatedAt
+}
+
 model SolanaTransaction {
   id                    String                 @id @default(cuid())
   proposalId            String?                @unique
@@ -3163,4 +3206,10 @@ model WebhookReceipt {
 
   @@unique([provider, eventId])
   @@index([receivedAt])
+}
+
+/** Bounded admission ledger, one row across all PAPER workers. */
+model PaperMetadataGate {
+  id Int @id
+  state Json
 }

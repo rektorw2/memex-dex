@@ -44,6 +44,9 @@ export const SIGNING_IDENTITY_MIGRATION =
 export const SOLANA_NETWORK_PROOF_MIGRATION =
   '20260905100000_add_solana_network_proof';
 export const PAPER_EXIT_PLAN_MIGRATION = '20260908100000_add_paper_exit_plan';
+export const AGENT_LIVE_WALLET_MIGRATION = '20260908130000_add_agent_live_wallet';
+export const PAPER_METADATA_GATE_MIGRATION = '20260909120000_add_paper_metadata_gate';
+export const WORKER_HEARTBEAT_MIGRATION = '20260909100000_add_worker_heartbeat';
 
 /**
  * Миграции, которые загрузчику разрешено применять.
@@ -73,6 +76,9 @@ export const KNOWN_MIGRATIONS = [
   SIGNING_IDENTITY_MIGRATION,
   SOLANA_NETWORK_PROOF_MIGRATION,
   PAPER_EXIT_PLAN_MIGRATION,
+  AGENT_LIVE_WALLET_MIGRATION,
+  WORKER_HEARTBEAT_MIGRATION,
+  PAPER_METADATA_GATE_MIGRATION,
 ] as const;
 
 export const BASE_USER_COLUMNS = ['id', 'email', 'passwordHash'] as const;
@@ -394,6 +400,14 @@ export const SOLANA_NETWORK_PROOF_TABLES = ['SolanaNetworkProof'] as const;
 export const SOLANA_NETWORK_PROOF_INDEXES = [
   'SolanaNetworkProof_network_outcome_idx',
 ] as const;
+
+/** Выбранный кошелёк для LIVE-операций агента: таблица и уникальность «одна на сеть». */
+export const AGENT_LIVE_WALLET_TABLES = ['AgentLiveWallet'] as const;
+export const AGENT_LIVE_WALLET_INDEXES = ['AgentLiveWallet_userId_network_key'] as const;
+
+/** Пульс воркера в отдельном процессе: одна таблица, индексов кроме ключа нет. */
+export const PAPER_METADATA_GATE_TABLES = ['PaperMetadataGate'] as const;
+export const WORKER_HEARTBEAT_TABLES = ['WorkerHeartbeat'] as const;
 
 export interface ProductionSchemaSnapshot {
   userColumns: string[];
@@ -836,6 +850,36 @@ export function planProductionSchemaRepair(
         partial: 'PARTIAL_PAPER_EXIT_PLAN_MIGRATION',
         historyAhead: 'PAPER_EXIT_PLAN_HISTORY_CONTRADICTS_SCHEMA',
         schemaAhead: 'PAPER_EXIT_PLAN_SCHEMA_AHEAD_OF_HISTORY',
+      },
+    },
+    {
+      name: AGENT_LIVE_WALLET_MIGRATION,
+      presence: presenceOf([
+        ...AGENT_LIVE_WALLET_TABLES.map((t) => tables.has(t)),
+        ...AGENT_LIVE_WALLET_INDEXES.map((i) => indexes.has(i)),
+      ]),
+      reasons: {
+        partial: 'PARTIAL_AGENT_LIVE_WALLET_MIGRATION',
+        historyAhead: 'AGENT_LIVE_WALLET_HISTORY_CONTRADICTS_SCHEMA',
+        schemaAhead: 'AGENT_LIVE_WALLET_SCHEMA_AHEAD_OF_HISTORY',
+      },
+    },
+    {
+      name: WORKER_HEARTBEAT_MIGRATION,
+      presence: presenceOf(WORKER_HEARTBEAT_TABLES.map((t) => tables.has(t))),
+      reasons: {
+        partial: 'PARTIAL_WORKER_HEARTBEAT_MIGRATION',
+        historyAhead: 'WORKER_HEARTBEAT_HISTORY_CONTRADICTS_SCHEMA',
+        schemaAhead: 'WORKER_HEARTBEAT_SCHEMA_AHEAD_OF_HISTORY',
+      },
+    },
+    {
+      name: PAPER_METADATA_GATE_MIGRATION,
+      presence: presenceOf(PAPER_METADATA_GATE_TABLES.map((t) => tables.has(t))),
+      reasons: {
+        partial: 'PARTIAL_PAPER_METADATA_GATE_MIGRATION',
+        historyAhead: 'PAPER_METADATA_GATE_HISTORY_CONTRADICTS_SCHEMA',
+        schemaAhead: 'PAPER_METADATA_GATE_SCHEMA_AHEAD_OF_HISTORY',
       },
     },
   ];

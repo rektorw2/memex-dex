@@ -156,8 +156,14 @@ const schema = z.object({
 
   SOLANA_RPC_URL: z.string().url().default('https://api.mainnet-beta.solana.com'),
   BNB_RPC_URL: z.string().url().default('https://bsc-dataseed.binance.org'),
-  RHC_RPC_URL: optional(z.string().url()),
-  RHC_CHAIN_ID: optional(z.coerce.number().int().positive()),
+  /*
+   * Robinhood Chain: mainnet, Arbitrum L2, chain ID 4663, газ — ETH,
+   * публичный узел rpc.mainnet.chain.robinhood.com
+   * (docs.robinhood.com/chain/connecting). Значения по умолчанию —
+   * mainnet; переопределяются переменными окружения.
+   */
+  RHC_RPC_URL: optional(z.string().url()).default('https://rpc.mainnet.chain.robinhood.com'),
+  RHC_CHAIN_ID: optional(z.coerce.number().int().positive()).default(4663),
 
   /**
    * Ключ Gemini для AI-разбора токенов. Необязателен: без него разбор

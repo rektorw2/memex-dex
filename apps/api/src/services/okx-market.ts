@@ -96,8 +96,67 @@ export function isOkxConfigured(): boolean {
   return Boolean(env.OKX_API_KEY && env.OKX_API_SECRET && env.OKX_PASSPHRASE);
 }
 
+/**
+ * Сети, которые OKX ведёт по документации Market API. Для них наличие
+ * chainIndex в таблице — достаточное основание ходить за ценами.
+ */
+const DOCUMENTED_OKX_CHAINS: ReadonlySet<ChainKey> = new Set<ChainKey>(['ETHEREUM', 'BNB', 'SOLANA', 'BASE']);
+
+/**
+ * Сети, подтверждённые живым ответом `signal/supported/chain`.
+ * `null` — ответа ещё не было. Обновляет воркер приёма сигналов.
+ */
+const CHAIN_CONFIRMATION_TTL_MS = 65 * 60_000;
+let signalChainsConfirmedAt = 0;
+let marketChainsConfirmedAt = 0;
+let confirmedSignalChainIndexes: readonly string[] | null = null;
+
+export function setOkxSignalChainIndexes(indexes: readonly string[] | null): void {
+  signalChainsConfirmedAt = Date.now();
+  confirmedSignalChainIndexes = indexes == null ? null : [...indexes];
+}
+
+export function getOkxSignalChainIndexes(): readonly string[] | null {
+  return confirmedSignalChainIndexes != null && Date.now() - signalChainsConfirmedAt > CHAIN_CONFIRMATION_TTL_MS ? [] : confirmedSignalChainIndexes;
+}
+
+/**
+ * Сети, по которым Market API отдаёт цены (`market/supported/chain`).
+ * Отдельно от сигналов: сигналы по сети не означают работающих цен.
+ */
+let confirmedMarketChainIndexes: readonly string[] | null = null;
+
+export function setOkxMarketChainIndexes(indexes: readonly string[] | null): void {
+  marketChainsConfirmedAt = Date.now();
+  confirmedMarketChainIndexes = indexes == null ? null : [...indexes];
+}
+
+export function getOkxMarketChainIndexes(): readonly string[] | null {
+  return confirmedMarketChainIndexes != null && Date.now() - marketChainsConfirmedAt > CHAIN_CONFIRMATION_TTL_MS ? [] : confirmedMarketChainIndexes;
+}
+
+export type ChainConfirmation = { status: 'missing' | 'expired' | 'valid'; succeededAt: number | null };
+export function getOkxChainConfirmation(kind: 'signal' | 'market', now = Date.now()): ChainConfirmation {
+  const indexes = kind === 'signal' ? confirmedSignalChainIndexes : confirmedMarketChainIndexes;
+  const at = kind === 'signal' ? signalChainsConfirmedAt : marketChainsConfirmedAt;
+  return { status: indexes == null ? 'missing' : now - at > CHAIN_CONFIRMATION_TTL_MS ? 'expired' : 'valid',
+    succeededAt: indexes == null ? null : at };
+}
+
+/**
+ * Можно ли ходить в OKX за этой сетью.
+ *
+ * Документированные сети — да. Остальные (Robinhood Chain) — только
+ * после того, как OKX сам назвал их chainIndex в списке поддерживаемых:
+ * иначе каждый цикл импорта тратил бы квоту на запросы, которые
+ * провайдер заведомо отклонит.
+ */
 export function isOkxSupported(chain: ChainKey): boolean {
-  return OKX_CHAIN_INDEX[chain] !== null;
+  const index = OKX_CHAIN_INDEX[chain];
+  if (index === null) return false;
+  if (DOCUMENTED_OKX_CHAINS.has(chain)) return true;
+  // Недокументированная сеть — только после того, как OKX назвал её в списке цен.
+  return getOkxMarketChainIndexes()?.includes(index) ?? false;
 }
 
 // ──────────────────────────────── Транспорт ─────────────────────────────────
@@ -120,6 +179,8 @@ interface OkxError extends Error {
   status?: number;
   /** Сколько провайдер просил подождать. Его число важнее нашего. */
   retryAfterMs?: number | null;
+  /** Код ошибки из тела ответа OKX, если HTTP-статус был 200. */
+  okxCode?: string;
 }
 
 /**
@@ -177,9 +238,17 @@ async function call<T>(method: 'GET' | 'POST', path: string, body?: unknown): Pr
   if (!json) return null;
 
   // OKX сообщает об ошибке кодом внутри тела: HTTP 200 не означает успех.
+  // Такой ответ — отказ, а не «пусто»: иначе вызывающий принял бы
+  // отклонённый ключ за спокойный рынок.
   if (json.code != null && String(json.code) !== '0') {
     logger.warn({ path, code: json.code, msg: json.msg }, 'OKX вернул ошибку');
-    return null;
+    const err: OkxError = new Error(`OKX code ${json.code}`);
+    err.okxCode = String(json.code);
+    // 5010x–5011x — ключ, подпись, парольная фраза, права: повтор бесполезен.
+    err.permanent = /^501[01]\d$/.test(err.okxCode);
+    err.status = res.status;
+    err.retryAfterMs = null;
+    throw err;
   }
 
   return json.data as T;
@@ -278,6 +347,9 @@ export interface CallOutcome<T> {
    */
   kind: 'ok' | 'empty' | 'transient' | 'rate-limit' | 'permanent' | 'payment-required' | 'budget';
   retryAfterMs: number | null;
+  /** HTTP-статус отказа и код OKX из тела — чтобы отличить 401 от 500. */
+  status?: number;
+  okxCode?: string;
 }
 
 export async function reportedCall<T>(
@@ -345,7 +417,7 @@ export async function reportedCall<T>(
     // дали бы сто одинаковых строк об одной и той же беде.
     logger.debug({ path, kind, status: err?.status }, 'OKX: запрос не удался');
 
-    return { value: null, kind, retryAfterMs: err?.retryAfterMs ?? null };
+    return { value: null, kind, retryAfterMs: err?.retryAfterMs ?? null, status: err?.status, okxCode: err?.okxCode };
   }
 }
 
@@ -462,24 +534,99 @@ export async function fetchHotTokensAllChains(
  * пользовательские запросы. Так открытая вкладка не расходует квоту
  * OKX и не создаёт параллельные проходы.
  */
-export async function fetchLatestSignals(
+/**
+ * Исход запроса сигналов — с причиной, а не «пусто».
+ *
+ * Пустой список при работающем ключе и молчащий провайдер — разные
+ * вещи: первое означает спокойный рынок, второе — что источника нет.
+ * Воркер приёма обязан их различать, иначе отказ выглядит как успех
+ * без событий, и защита «не входить без источника» не срабатывает.
+ */
+export type SignalFetchFailure = 'auth' | 'quota' | 'rate-limit' | 'budget' | 'network' | 'permanent' | 'not-configured';
+
+export type SignalFetchOutcome =
+  | { kind: 'ok'; signals: OkxSignal[] }
+  | { kind: SignalFetchFailure; detail: string; retryAfterMs: number | null };
+
+export function classifySignalOutcome(outcome: CallOutcome<unknown>): SignalFetchOutcome | null {
+  if (outcome.kind === 'ok' || outcome.kind === 'empty') return null;
+  const detail = outcome.okxCode ? `okx_${outcome.okxCode}` : outcome.status ? `http_${outcome.status}` : outcome.kind;
+  if (outcome.kind === 'budget') return { kind: 'budget', detail: 'budget', retryAfterMs: null };
+  if (outcome.kind === 'payment-required') return { kind: 'quota', detail, retryAfterMs: outcome.retryAfterMs };
+  if (outcome.kind === 'rate-limit') return { kind: 'rate-limit', detail, retryAfterMs: outcome.retryAfterMs };
+  if (outcome.status === 401 || outcome.status === 403 || (outcome.okxCode != null && /^501[01]\d$/.test(outcome.okxCode))) {
+    return { kind: 'auth', detail, retryAfterMs: null };
+  }
+  if (outcome.kind === 'permanent') return { kind: 'permanent', detail, retryAfterMs: null };
+  return { kind: 'network', detail, retryAfterMs: outcome.retryAfterMs };
+}
+
+export async function fetchLatestSignalsOutcome(
   chain: ChainKey,
   limit = 100,
-): Promise<OkxSignal[]> {
+): Promise<SignalFetchOutcome> {
   const chainIndex = OKX_CHAIN_INDEX[chain];
-  if (!chainIndex || !isOkxConfigured()) return [];
+  if (!chainIndex) return { kind: 'permanent', detail: 'chain_not_indexed', retryAfterMs: null };
+  if (!isOkxConfigured()) return { kind: 'not-configured', detail: 'not-configured', retryAfterMs: null };
 
-  const data = await safeCall<unknown>('POST', '/api/v6/dex/market/signal/list', [
+  const outcome = await reportedCall<unknown>('POST', '/api/v6/dex/market/signal/list', [
     {
       chainIndex,
       walletType: '1,2,3',
       limit: String(Math.min(100, Math.max(1, limit))),
     },
-  ]);
+  ], 'signal');
+  const failure = classifySignalOutcome(outcome);
+  if (failure) return failure;
 
+  return {
+    kind: 'ok',
+    signals: asArray(outcome.value)
+      .map((row) => parseOkxSignal(withChain(row, chainIndex)))
+      .filter((signal): signal is OkxSignal => signal !== null),
+  };
+}
+
+/** Совместимая обёртка: отказ — пустой список. Только там, где причина не нужна. */
+export async function fetchLatestSignals(
+  chain: ChainKey,
+  limit = 100,
+): Promise<OkxSignal[]> {
+  const outcome = await fetchLatestSignalsOutcome(chain, limit);
+  return outcome.kind === 'ok' ? outcome.signals : [];
+}
+
+export interface SignalSupportedChain {
+  chainIndex: string;
+  chainName: string;
+}
+
+/**
+ * Сети, по которым Signal API на этом ключе действительно отдаёт
+ * сигналы — `GET signal/supported/chain`.
+ *
+ * Это единственный способ узнать, ведёт ли OKX сигналы, скажем, по
+ * Robinhood Chain: документация примеров не даёт, а подписка на
+ * неподдержанный chainIndex молча ничего не приносит. `null` — ответ
+ * не получен (ключей нет, отказ, сеть): не «пусто», а «неизвестно».
+ */
+export async function fetchSignalSupportedChains(): Promise<SignalSupportedChain[] | null> {
+  if (!isOkxConfigured()) return null;
+  const data = await safeCall<unknown>('GET', '/api/v6/dex/market/signal/supported/chain');
+  if (data == null) return null;
   return asArray(data)
-    .map((row) => parseOkxSignal(withChain(row, chainIndex)))
-    .filter((signal): signal is OkxSignal => signal !== null);
+    .map((row: any) => ({ chainIndex: String(row?.chainIndex ?? ''), chainName: String(row?.chainName ?? '') }))
+    .filter((row) => row.chainIndex !== '');
+}
+
+/** Сети Market API (цены) — `GET market/supported/chain`. `null` — ответ не получен. */
+export async function fetchMarketSupportedChains(): Promise<SignalSupportedChain[] | null> {
+  if (!isOkxConfigured()) return null;
+  const data = await safeCall<unknown>('GET', '/api/v6/dex/market/supported/chain');
+  if (data == null) return null;
+  return asArray(data)
+    .map((row: any) => ({ chainIndex: String(row?.chainIndex ?? ''), chainName: String(row?.chainName ?? '') }))
+    .filter((row) => row.chainIndex !== '');
 }
 
 // ──────────────────────────────── Поиск ─────────────────────────────────────
@@ -542,7 +689,9 @@ export function tokenBatchBody(
 ): Array<{ chainIndex: string; tokenContractAddress: string }> {
   return tokens.flatMap((token) => {
     const chainIndex = OKX_CHAIN_INDEX[token.chain];
-    if (!chainIndex) return [];
+    // Неподтверждённая сеть не уходит в тело запроса: OKX отклонил бы
+    // весь пакет, а не одну строку.
+    if (!chainIndex || !isOkxSupported(token.chain)) return [];
 
     return [{
       chainIndex,
@@ -694,10 +843,7 @@ export async function fetchLivePrices(
      * Так описано в документации Get Price, и это отличается
      * от `price-info`, где список лежит в поле `tokens`.
      */
-    const body = batch.map((t) => ({
-      chainIndex: OKX_CHAIN_INDEX[t.chain],
-      tokenContractAddress: t.address,
-    }));
+    const body = tokenBatchBody(batch);
 
     const outcome = await reportedCall<unknown>(
       'POST',

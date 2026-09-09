@@ -106,6 +106,9 @@ export interface ConnectionStats {
   subscriptionsVerified: boolean;
   channelTransportMode: SignalTransportMode;
   channelAccessDeniedCode: string | null;
+  lastSubscriptionAt: number | null;
+  lastChannelEventAt: number | null;
+  nextAccessCheckAt: number | null;
 }
 
 interface PendingCommand {
@@ -128,6 +131,12 @@ export const ADDRESS_CHANNEL = 'address-tracker-activity';
  */
 const AUTH_FAILURE_CODES = new Set(['60005', '60006', '60007', '60009', '60022', '60024']);
 
+/** Коды из документации и подтверждённых ответов OKX; 60036 проверен на production. */
+const DOCUMENTED_WS_ERROR_CODES = new Set([
+  '60004', '60005', '60006', '60007', '60008', '60009', '60011', '60012', '60013', '60014', '60018', '60019',
+  '60020', '60021', '60022', '60023', '60024', '60025', '60026', '60027', '60028', '60029', '60030', '60031', '60036', '63999', '64008',
+]);
+
 /**
  * OKX документирует 60029 как постоянный whitelist-отказ канала.
  * В production встречался также строковый `-60029`, поэтому знак не
@@ -136,12 +145,18 @@ const AUTH_FAILURE_CODES = new Set(['60005', '60006', '60007', '60009', '60022',
  */
 export function isPermanentSignalChannelDenial(code: unknown, message: unknown): boolean {
   const normalizedCode = String(code ?? '').trim().replace(/^-/, '');
-  if (normalizedCode === '60029') return true;
+  if (normalizedCode === '60029' || normalizedCode === '60036') return true;
   const normalizedMessage = String(message ?? '').toLowerCase();
   return normalizedMessage.includes('whitelist') && normalizedMessage.includes('channel');
 }
 
+export const SIGNAL_ACCESS_RECHECK_MS = 60 * 60_000;
+
 export class OkxWalletWebSocketClient {
+  private accessTimer: NodeJS.Timeout | null = null;
+  private nextAccessCheckAt: number | null = null;
+  private lastSubscriptionAt: number | null = null;
+  private lastChannelEventAt: number | null = null;
   private socket: SocketLike | null = null;
   private state: WsState = 'disconnected';
 
@@ -201,8 +216,12 @@ export class OkxWalletWebSocketClient {
   private readonly now: () => number;
   private readonly random: () => number;
 
+  /** Сети канала сигналов; меняются, когда OKX уточняет список поддерживаемых. */
+  private signalChains: string[];
+
   constructor(private readonly opts: ClientOptions) {
     this.addresses = [...opts.addresses];
+    this.signalChains = [...new Set(opts.signalChains ?? [])].filter(Boolean);
     this.factory = opts.factory ?? defaultFactory;
     this.now = opts.now ?? (() => Date.now());
     this.random = opts.random ?? Math.random;
@@ -230,9 +249,9 @@ export class OkxWalletWebSocketClient {
       lastErrorCode: this.lastErrorCode,
       lastProviderCode: this.lastProviderCode,
       loginVerified: this.lastLoginAt != null,
-      subscriptionsVerified: this.state === 'connected',
+      subscriptionsVerified: this.state === 'connected' && this.signalAccessDeniedCode == null,
       channelTransportMode:
-        (this.opts.signalChains?.length ?? 0) === 0
+        this.signalChains.length === 0
           ? 'DISABLED'
           : this.signalAccessDeniedCode != null
             ? 'REST_ONLY'
@@ -240,7 +259,33 @@ export class OkxWalletWebSocketClient {
               ? 'DISABLED'
               : 'WEBSOCKET',
       channelAccessDeniedCode: this.signalAccessDeniedCode,
+      lastSubscriptionAt: this.lastSubscriptionAt,
+      lastChannelEventAt: this.lastChannelEventAt,
+      nextAccessCheckAt: this.nextAccessCheckAt,
     };
+  }
+
+  /**
+   * Обновить список сетей канала сигналов.
+   *
+   * Новые сети подписываются на живом соединении, не переоткрывая его:
+   * переподключение ради одной сети оставило бы окно без событий по
+   * остальным. Убранные сети остаются до следующего переподключения —
+   * лишняя подписка безвредна, а «отписаться» у канала стоило бы
+   * отдельной команды и отдельного лимита.
+   */
+  setSignalChains(next: readonly string[]): void {
+    const clean = [...new Set(next)].filter(Boolean);
+    const added = clean.filter((chainIndex) => !this.signalChains.includes(chainIndex));
+    this.signalChains = clean;
+    if (added.length === 0 || this.signalAccessDeniedCode != null) return;
+    if (this.state !== 'connected' && this.state !== 'subscribing') return;
+    this.enqueue(
+      'subscribe',
+      OKX_SIGNAL_CHANNEL,
+      added.map((chainIndex) => ({ channel: OKX_SIGNAL_CHANNEL, chainIndex })),
+    );
+    this.pump();
   }
 
   // ────────────────────────────── Жизненный цикл ────────────────────────────
@@ -417,6 +462,10 @@ export class OkxWalletWebSocketClient {
       return;
     }
 
+    if (msg?.event === 'subscribe' && msg?.code != null && String(msg.code) !== '0') {
+      msg = { ...msg, event: 'error' };
+    }
+
     // ─── Подтверждение подписки ─────────────────────────────────
     if (msg?.event === 'subscribe' || msg?.event === 'unsubscribe') {
       const channel = String(msg?.arg?.channel ?? msg?.args?.[0]?.channel ?? '');
@@ -443,6 +492,12 @@ export class OkxWalletWebSocketClient {
       const failedChannel = String(
         msg?.arg?.channel ?? msg?.args?.[0]?.channel ?? this.inFlight?.channel ?? '',
       );
+      if (!DOCUMENTED_WS_ERROR_CODES.has(this.lastErrorCode)) {
+        logger.warn(
+          { connection: this.opts.id, code: this.lastErrorCode, channel: failedChannel || 'unknown', signalChannel: failedChannel === OKX_SIGNAL_CHANNEL },
+          'OKX сокет: код ошибки не описан в документации WebSocket',
+        );
+      }
       if (
         failedChannel === OKX_SIGNAL_CHANNEL &&
         isPermanentSignalChannelDenial(this.lastErrorCode, msg?.msg)
@@ -468,6 +523,7 @@ export class OkxWalletWebSocketClient {
       const signals = parseOkxSignalMessage(msg);
 
       if (signals.length === 0) this.opts.onRejected?.('signal_parse_failed');
+      if (signals.length > 0 && this.state === 'connected') this.lastChannelEventAt = this.now();
       for (const signal of signals) this.opts.onSignal?.(signal);
       return;
     }
@@ -510,7 +566,7 @@ export class OkxWalletWebSocketClient {
       );
     }
 
-    const signalChains = [...new Set(this.opts.signalChains ?? [])].filter(Boolean);
+    const signalChains = this.signalChains;
     if (signalChains.length > 0 && this.signalAccessDeniedCode == null) {
       this.enqueue(
         'subscribe',
@@ -566,6 +622,11 @@ export class OkxWalletWebSocketClient {
     if (cmd.channel !== channel) return;
 
     this.inFlight = null;
+    if (cmd.channel === OKX_SIGNAL_CHANNEL && cmd.op === 'subscribe') {
+      this.lastSubscriptionAt = this.now();
+      this.signalAccessDeniedCode = null;
+      this.opts.onSignalTransportChange?.('WEBSOCKET', null);
+    }
 
     if (this.queue.length > 0) {
       this.pump();
@@ -601,8 +662,16 @@ export class OkxWalletWebSocketClient {
 
     logger.warn(
       { connection: this.opts.id, providerCode: normalizedCode },
-      'OKX Signal WebSocket недоступен: канал требует whitelist; включён REST_ONLY',
+      normalizedCode === '60036'
+        ? 'OKX Signal WebSocket недоступен: ключу нужна активная Market API subscription; включён REST_ONLY'
+        : 'OKX Signal WebSocket недоступен: канал требует whitelist; включён REST_ONLY',
     );
+
+    this.clearStage();
+    if (this.accessTimer) clearTimeout(this.accessTimer);
+    this.nextAccessCheckAt = this.now() + SIGNAL_ACCESS_RECHECK_MS;
+    this.accessTimer = setTimeout(() => this.retrySignalAccess(), SIGNAL_ACCESS_RECHECK_MS);
+    this.accessTimer.unref?.();
 
     const hasOtherSubscriptions = this.opts.platformFeed === true || this.addresses.length > 0;
     if (hasOtherSubscriptions) {
@@ -623,6 +692,16 @@ export class OkxWalletWebSocketClient {
       this.socket = null;
     }
     this.setState('rest_only');
+  }
+
+  /** Explicit retry after access changes; also called by the hourly probe. */
+  retrySignalAccess(): void {
+    if (this.stopped || this.signalAccessDeniedCode == null) return;
+    this.clearTimers();
+    if (this.socket) { this.detach(this.socket); this.socket.close(); this.socket = null; }
+    this.signalAccessDeniedCode = null;
+    // REST_ONLY remains effective until a real subscribe acknowledgement.
+    this.open();
   }
 
   // ─────────────────────────────── Heartbeat ────────────────────────────────
@@ -742,6 +821,9 @@ export class OkxWalletWebSocketClient {
   }
 
   private clearTimers(): void {
+    if (this.accessTimer) clearTimeout(this.accessTimer);
+    this.accessTimer = null;
+    this.nextAccessCheckAt = null;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
     this.clearStage();

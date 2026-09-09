@@ -1,0 +1,96 @@
+{
+  "fixture": true,
+  "productionData": false,
+  "results": [
+    {
+      "screen": "agent-source",
+      "width": 390,
+      "overflow": false
+    },
+    {
+      "screen": "agent-history",
+      "width": 390,
+      "overflow": false
+    },
+    {
+      "screen": "agent-live-robinhood",
+      "width": 390,
+      "overflow": false
+    },
+    {
+      "screen": "settings-semi-auto",
+      "width": 390,
+      "overflow": false
+    },
+    {
+      "screen": "settings-confirm-semi-auto",
+      "width": 390,
+      "overflow": false
+    },
+    {
+      "screen": "settings-auto",
+      "width": 390,
+      "overflow": false
+    },
+    {
+      "screen": "settings-confirm-auto",
+      "width": 390,
+      "overflow": false
+    },
+    {
+      "screen": "wallet",
+      "width": 390,
+      "overflow": false
+    },
+    {
+      "screen": "terminal-missing",
+      "width": 390,
+      "overflow": false
+    },
+    {
+      "screen": "agent-source",
+      "width": 1280,
+      "overflow": false
+    },
+    {
+      "screen": "agent-history",
+      "width": 1280,
+      "overflow": false
+    },
+    {
+      "screen": "agent-live-robinhood",
+      "width": 1280,
+      "overflow": false
+    },
+    {
+      "screen": "settings-semi-auto",
+      "width": 1280,
+      "overflow": false
+    },
+    {
+      "screen": "settings-confirm-semi-auto",
+      "width": 1280,
+      "overflow": false
+    },
+    {
+      "screen": "settings-auto",
+      "width": 1280,
+      "overflow": false
+    },
+    {
+      "screen": "settings-confirm-auto",
+      "width": 1280,
+      "overflow": false
+    },
+    {
+      "screen": "wallet",
+      "width": 1280,
+      "overflow": false
+    },
+    {
+      "screen": "terminal-missing",
+      "width": 1280,
+      "overflow": false
+    }
+  ]
+}

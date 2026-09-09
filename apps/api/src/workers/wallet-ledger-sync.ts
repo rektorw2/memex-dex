@@ -41,6 +41,7 @@ import { unwrapOkx } from '@memex/core';
 import { checkSchema } from '../lib/schema-guard.js';
 import { walletLedgerRepo, type SyncJob } from './wallet-ledger-repo.js';
 import { rebuildWallet, type HistorySource, type RebuildResult } from './wallet-ledger-core.js';
+import { registerMemoryActivityProbe } from './memory-monitor.js';
 
 const HISTORY_PATH = '/api/v6/dex/market/portfolio/dex-history';
 const TICK_MS = 5_000;
@@ -252,7 +253,20 @@ async function tick(): Promise<void> {
   }
 }
 
+/** Что пересчитывается прямо сейчас — для строки памяти в журнале. */
+const activeJobs = new Map<string, { chain: string; startedAt: number; lastTrades: number | null }>();
+let lastJobSummary: { chain: string; trades: number; ms: number; finishedAt: string } | null = null;
+registerMemoryActivityProbe('ledger', () => ({
+  running: activeJobs.size,
+  // Без адресов: только сеть и сколько секунд идёт.
+  jobs: [...activeJobs.values()].map((j) => ({ chain: j.chain, sec: Math.round((Date.now() - j.startedAt) / 1000) })),
+  last: lastJobSummary,
+}));
+
 async function runJob(job: SyncJob): Promise<void> {
+  const jobKey = `${job.chain}:${job.walletAddress}`;
+  const startedAt = Date.now();
+  activeJobs.set(jobKey, { chain: job.chain, startedAt, lastTrades: null });
   // Аренда продлевается по ходу выгрузки: у кошелька с длинной
   // историей десять страниц занимают больше срока аренды, и без
   // продления задачу перехватил бы соседний процесс прямо во время
@@ -266,6 +280,7 @@ async function runJob(job: SyncJob): Promise<void> {
 
   try {
     const r = await syncWallet(job.chain as ChainKey, job.walletAddress);
+    lastJobSummary = { chain: job.chain, trades: r.totalTrades, ms: Date.now() - startedAt, finishedAt: new Date().toISOString() };
     const outcome = await walletLedgerRepo.finish(job, { ok: true });
 
     if (r.totalTrades > 0) {
@@ -303,6 +318,7 @@ async function runJob(job: SyncJob): Promise<void> {
       .catch(() => undefined);
   } finally {
     clearInterval(heartbeat);
+    activeJobs.delete(jobKey);
   }
 }
 

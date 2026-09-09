@@ -57,6 +57,8 @@ export * from './okx-signal.js';
 export * from './paper-agent.js';
 export * from './paper-allocation.js';
 export * from './paper-exit.js';
+export * from './paper-signal-source.js';
+export * from './agent-networks.js';
 // История DEX — единственный источник точных количеств.
 export * from './okx-dex-history.js';
 
@@ -150,3 +152,4 @@ export * from './signing-identity.js';
 export * from './transaction-signing-state.js';
 export * from './email-verification.js';
 export * from './email-message.js';
+export * from './live-funds.js';

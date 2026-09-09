@@ -25,10 +25,11 @@ describe('соответствие сетей', () => {
     expect(OKX_CHAIN_INDEX.SOLANA).toBe('501');
   });
 
-  it('Robinhood Chain помечена как неподдерживаемая', () => {
-    // Не ошибка конфигурации, а факт: у OKX этой сети нет.
-    expect(OKX_CHAIN_INDEX.ROBINHOOD).toBeNull();
-    expect(isOkxChain('ROBINHOOD')).toBe(false);
+  it('Robinhood Chain адресуется EVM chain ID 4663, но её поддержка Signal API не считается доказанной', () => {
+    // Константа — адрес для запроса, а не подтверждение поддержки:
+    // подтверждение даёт живой список `signal/supported/chain`.
+    expect(OKX_CHAIN_INDEX.ROBINHOOD).toBe('4663');
+    expect(isOkxChain('ROBINHOOD')).toBe(true);
   });
 
   it('обратное соответствие работает для всех четырёх', () => {

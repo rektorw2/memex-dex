@@ -35,7 +35,14 @@ export const OKX_CHAIN_INDEX: Record<ChainKey, string | null> = {
   BNB: '56',
   BASE: '8453',
   SOLANA: '501',
-  ROBINHOOD: null,
+  /*
+   * Robinhood Chain — EVM chain ID 4663. OKX использует EVM chain ID как
+   * chainIndex (1, 56, 8453); Trade API поддерживает сеть с 13.07.2026
+   * (change log OnchainOS). Есть ли она в Signal/Market API этого ключа —
+   * подтверждает только живой ответ `signal/supported/chain`
+   * (`agentNetworkReadiness`), а не эта константа.
+   */
+  ROBINHOOD: '4663',
 };
 
 export const CHAIN_BY_INDEX: Record<string, ChainKey> = {
@@ -43,6 +50,7 @@ export const CHAIN_BY_INDEX: Record<string, ChainKey> = {
   '56': 'BNB',
   '8453': 'BASE',
   '501': 'SOLANA',
+  '4663': 'ROBINHOOD',
 };
 
 export function chainFromIndex(index: string | number | null | undefined): ChainKey | null {

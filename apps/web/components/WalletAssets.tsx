@@ -29,7 +29,18 @@ interface Asset {
   valueUsd: string | null;
 }
 
+interface NetworkFunds {
+  chain: string;
+  label: string;
+  nativeSymbol: string;
+  depositAddress: string | null;
+  native: { available: string; locked: string; spendable: string; feeReserve: string } | null;
+  tokenAssets: number;
+}
+
 interface AssetsResponse {
+  /** Сводка по сетям агента; старый сервер поля не отдаёт. */
+  networks?: NetworkFunds[];
   totalUsd: string;
   lockedUsd: string;
   availableUsd: string;
@@ -112,6 +123,8 @@ export function WalletAssets() {
           </button>
         </div>
       </div>
+
+      {data.networks && data.networks.length > 0 && <NetworksPanel networks={data.networks} />}
 
       {receiveOpen && <ReceivePanel addresses={data.depositAddresses} />}
 
@@ -206,6 +219,46 @@ export function WalletAssets() {
   );
 }
 
+/**
+ * Сети: нативный актив отдельно от токенов.
+ *
+ * Комиссию платят SOL, BNB или ETH своей сети, и «свободно» здесь —
+ * это доступное минус резерв на комиссии минус уже замороженное под
+ * операции. Та же цифра, что видит агент: двух разных ответов на
+ * вопрос «сколько можно потратить» в системе нет.
+ */
+function NetworksPanel({ networks }: { networks: NetworkFunds[] }) {
+  return (
+    <div className="panel p-4">
+      <h2 className="text-sm font-medium">Сети</h2>
+      <div className="mt-3 grid gap-2 sm:grid-cols-3">
+        {networks.map((n) => (
+          <div key={n.chain} data-network-funds={n.chain} className="bg-bg rounded-md p-3 text-xs">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-sm font-medium">{n.label}</span>
+              <span className="text-muted">{n.nativeSymbol}</span>
+            </div>
+            <p className="text-muted mt-1 truncate font-mono" title={n.depositAddress ?? undefined}>
+              {n.depositAddress ?? 'адреса нет — создайте кошелёк ниже'}
+            </p>
+            {n.chain !== 'SOLANA' && (
+              <p data-deposit-not-automatic={n.chain} className="text-warn mt-1 text-[11px] leading-snug">
+                Автозачисление депозитов не подключено: перевод на адрес не отразится в балансе.
+              </p>
+            )}
+            <dl className="mt-2 space-y-1">
+              <div className="flex justify-between gap-2"><dt className="text-muted">свободно</dt><dd className="num">{n.native ? `${qty(n.native.spendable)} ${n.nativeSymbol}` : `0 ${n.nativeSymbol}`}</dd></div>
+              {n.native && Number(n.native.locked) > 0 && <div className="flex justify-between gap-2"><dt className="text-muted">в операциях</dt><dd className="num">{qty(n.native.locked)} {n.nativeSymbol}</dd></div>}
+              <div className="flex justify-between gap-2"><dt className="text-muted">резерв на комиссии</dt><dd className="num">{n.native ? qty(n.native.feeReserve) : '—'} {n.nativeSymbol}</dd></div>
+              <div className="flex justify-between gap-2"><dt className="text-muted">токенов</dt><dd className="num">{n.tokenAssets}</dd></div>
+            </dl>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /** Адреса для пополнения. */
 function ReceivePanel({ addresses }: { addresses: Array<{ id: string; chain: string; address: string }> }) {
   const [copied, setCopied] = useState<string | null>(null);
@@ -226,11 +279,15 @@ function ReceivePanel({ addresses }: { addresses: Array<{ id: string; chain: str
             Перевод из другой сети на этот же адрес приводит к потере средств —
             вернуть их невозможно.
           </p>
+          <p className="text-warn text-xs leading-relaxed">
+            Автоматическое зачисление работает только для Solana. Для BNB Chain и
+            Robinhood Chain адрес показан, но переводы на него пока не зачисляются.
+          </p>
 
           <div className="space-y-2">
             {addresses.map((d) => (
               <div key={d.id} className="bg-bg rounded p-3">
-                <p className="text-muted mb-1 text-xs">{chainLabel(d.chain)}</p>
+                <p className="text-muted mb-1 text-xs">{chainLabel(d.chain)} · только активы этой сети</p>
                 <p className="num break-all text-xs">{d.address}</p>
                 <button
                   onClick={() => {

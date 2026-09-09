@@ -1,3 +1,4 @@
+import { PAPER_COST_MODELS, normalizeAgentNetwork, type AgentNetwork } from './agent-networks.js';
 import type { OkxWalletCategory } from './okx-wallet-type.js';
 
 /**
@@ -106,15 +107,61 @@ export function paperSignalLatencies(input: {
 }
 
 /**
- * Phase 2 принимает только Solana, но источник может назвать её по-разному.
- * `501` — официальный chainIndex OKX. Неизвестное значение не угадывается.
+ * Сеть сигнала — одна из сетей агента (Solana, BNB Chain, Robinhood
+ * Chain), как бы её ни назвал источник. Неизвестное значение не
+ * угадывается. Доступна ли сеть агенту прямо сейчас (сигналы OKX,
+ * цена, узел) — отдельный вопрос `agentNetworkReadiness`.
  */
-export function normalizePaperAgentNetwork(value: unknown): 'SOLANA' | null {
-  if (typeof value !== 'string' && typeof value !== 'number') return null;
-  const normalized = String(value).trim().toUpperCase().replace(/[\s-]+/g, '_');
-  return ['SOLANA', 'SOLANA_MAINNET', 'SOLANA_MAINNET_BETA', '501'].includes(normalized)
-    ? 'SOLANA'
-    : null;
+export function normalizePaperAgentNetwork(value: unknown): AgentNetwork | null {
+  return normalizeAgentNetwork(value);
+}
+
+/**
+ * Стратегия с моделью расходов сети сигнала.
+ *
+ * Пороги входа и цель — свойства стратегии; комиссии и сетевой сбор —
+ * свойства сети. Раньше все стратегии несли Solana-модель, и сделка в
+ * другой сети считалась бы с чужими расходами.
+ */
+export function strategyForNetwork(strategy: PaperAgentStrategy, network: AgentNetwork): PaperAgentStrategy {
+  return { ...strategy, ...PAPER_COST_MODELS[network] };
+}
+
+/** Снимок модели расходов, сохранённый в позиции при входе. */
+export interface StoredCostSnapshot {
+  costModelKey?: string | null;
+  tradeFeeBps?: number | null;
+  entrySlippageBps?: number | null;
+  exitSlippageBps?: number | null;
+  networkFeeUsdPerSide?: number | string | null;
+}
+
+/**
+ * Стратегия для сопровождения позиции — с расходами того входа, а не
+ * текущей стратегии.
+ *
+ * Позиция в BNB Chain открыта с сетевым сбором своей сети; читать при
+ * переоценке и закрытии общую стратегию (с расходами Solana) значило
+ * бы посчитать PnL по другим правилам, чем вход. Если снимка нет
+ * (позиции до появления поля) — старая стратегия, как и раньше.
+ */
+export function strategyWithStoredCosts(strategy: PaperAgentStrategy, stored: StoredCostSnapshot | null | undefined): PaperAgentStrategy {
+  if (!stored) return strategy;
+  const tradeFeeBps = stored.tradeFeeBps;
+  const entrySlippageBps = stored.entrySlippageBps;
+  const exitSlippageBps = stored.exitSlippageBps;
+  const networkFee = stored.networkFeeUsdPerSide == null ? null : Number(stored.networkFeeUsdPerSide);
+  if (tradeFeeBps == null || entrySlippageBps == null || exitSlippageBps == null || networkFee == null || !Number.isFinite(networkFee)) {
+    return strategy;
+  }
+  return {
+    ...strategy,
+    costModelKey: stored.costModelKey ?? strategy.costModelKey,
+    tradeFeeBps,
+    entrySlippageBps,
+    exitSlippageBps,
+    networkFeeUsdPerSide: networkFee,
+  };
 }
 
 export interface PaperAgentStrategy {
@@ -294,7 +341,7 @@ export function evaluatePaperSignal(
     return result('SKIPPED', 'INVALID_SIGNAL_TIMESTAMPS');
   }
 
-  if (normalizePaperAgentNetwork(signal.network) !== 'SOLANA') {
+  if (normalizePaperAgentNetwork(signal.network) == null) {
     return result('SKIPPED', 'NETWORK_NOT_SUPPORTED_PHASE_2');
   }
 

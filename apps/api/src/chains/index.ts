@@ -41,8 +41,9 @@ adapters.set(
   }),
 );
 
-// Robinhood Chain подключается только если заданы RPC и chainId —
-// иначе сеть просто не появится в списке и не сломает запуск.
+// Robinhood Chain: по умолчанию mainnet (chain ID 4663); если узел
+// намеренно отключён пустыми переменными, сеть просто не появится в
+// списке и не сломает запуск.
 if (env.RHC_RPC_URL && env.RHC_CHAIN_ID) {
   adapters.set(
     'ROBINHOOD',

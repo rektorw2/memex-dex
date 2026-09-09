@@ -5,7 +5,9 @@ const wallets = readFileSync(new URL('../modules/wallets.ts', import.meta.url), 
 const admin = readFileSync(new URL('../modules/admin.ts', import.meta.url), 'utf8');
 const solana = readFileSync(new URL('../chains/solana.ts', import.meta.url), 'utf8');
 const paperWorker = readFileSync(new URL('../workers/paper-agent.ts', import.meta.url), 'utf8');
-const workerIndex = readFileSync(new URL('../workers/index.ts', import.meta.url), 'utf8');
+// Набор воркеров живёт в общем регистре; index.ts и server.ts лишь вызывают его.
+const workerIndex = readFileSync(new URL('../workers/index.ts', import.meta.url), 'utf8')
+  + readFileSync(new URL('../workers/registry.ts', import.meta.url), 'utf8');
 const depositWorker = readFileSync(new URL('../workers/solana-deposit.ts', import.meta.url), 'utf8');
 const reconcileWorker = readFileSync(
   new URL('../workers/solana-reconciliation.ts', import.meta.url),

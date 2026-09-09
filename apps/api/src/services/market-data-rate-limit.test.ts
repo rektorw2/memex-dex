@@ -44,3 +44,15 @@ describe('равномерный лимит GeckoTerminal', () => {
     expect(released).toBe(true);
   });
 });
+
+it('metadata admission is immediate, respects provider backoff and creates no queue', async () => {
+  vi.useFakeTimers(); vi.setSystemTime(0);
+  const limiter = new PacedRateLimiter(2, 1_000);
+  expect(limiter.tryTake()).toBe(true);
+  for (let i=0;i<100;i++) expect(limiter.tryTake()).toBe(false);
+  expect(vi.getTimerCount()).toBe(0);
+  await vi.advanceTimersByTimeAsync(500); expect(limiter.tryTake()).toBe(true);
+  limiter.backoff(2_000);
+  await vi.advanceTimersByTimeAsync(1_999); expect(limiter.tryTake()).toBe(false);
+  await vi.advanceTimersByTimeAsync(1); expect(limiter.tryTake()).toBe(true);
+});

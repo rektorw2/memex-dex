@@ -1,9 +1,9 @@
 'use client';
 
 import useSWR from 'swr';
-import { Suspense, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { fetcher, fmtUsd, fmtPrice, fmtPct } from '@/lib/api';
+import { ApiError, fetcher, fmtUsd, fmtPrice, fmtPct } from '@/lib/api';
 import { useAccess } from '@/lib/access';
 import {
   shouldRequestPrivateData,
@@ -71,7 +71,57 @@ function Terminal() {
   // Поэтому выбранную карточку держим отдельно: искать её в `tokens`
   // означало бы после клика открыть график первого обычного токена.
   const [selectedGem, setSelectedGem] = useState<Token | null>(null);
-  const [tab, setTab] = useState<'market' | 'chart' | 'portfolio'>('market');
+  /*
+   * Ссылка из истории агента: токен ищется по id, а если id нет —
+   * по сети и адресу контракта. Раньше страница искала id только в
+   * списке из 60 «безопасных» токенов; сигнальные токены в нём
+   * скрыты, и ссылка молча открывала первый попавшийся график.
+   * Теперь токен подгружается отдельно, а если его нет — об этом
+   * сказано словами, а не подменой.
+   */
+  const linkChain = searchParams.get('chain');
+  const linkAddress = searchParams.get('address');
+  const linkToken = searchParams.get('token');
+  const linkActive = Boolean(linkToken || (linkChain && linkAddress));
+  /*
+   * Состояние ссылки. Пока она не разрешена (грузится или не найдена),
+   * график и торговая панель остаются пустыми: подставить первый токен
+   * рынка значило бы показать чужой график под чужим адресом.
+   */
+  const [link, setLink] = useState<{ state: 'idle' | 'loading' | 'missing'; reason: 'not-found' | 'network' | 'mismatch' | null }>(
+    () => (linkActive ? { state: 'loading', reason: null } : { state: 'idle', reason: null }),
+  );
+  const [tab, setTab] = useState<'market' | 'chart' | 'portfolio'>(linkActive ? 'chart' : 'market');
+  useEffect(() => {
+    if (!linkActive) { setLink({ state: 'idle', reason: null }); return; }
+    let cancelled = false;
+    setLink({ state: 'loading', reason: null });
+    setTab('chart');
+    const query = new URLSearchParams();
+    if (linkToken) query.set('id', linkToken);
+    if (linkChain) query.set('chain', linkChain);
+    if (linkAddress) query.set('address', linkAddress);
+    fetcher<Token & { hidden?: boolean }>(`/tokens/resolve?${query}`)
+      .then((token) => {
+        if (cancelled) return;
+        // Сервер сверяет id, сеть и адрес; здесь — та же проверка на случай старого сервера.
+        const sameAddress = !linkAddress || (token.chain === 'SOLANA' ? token.address === linkAddress : token.address.toLowerCase() === linkAddress.toLowerCase());
+        const sameChain = !linkChain || token.chain === linkChain.toUpperCase();
+        const sameId = !linkToken || token.id === linkToken;
+        if (!sameAddress || !sameChain || !sameId) { setLink({ state: 'missing', reason: 'mismatch' }); return; }
+        setSelectedGem(token);
+        setSelectedId(token.id);
+        setLink({ state: 'idle', reason: null });
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        const notFound = error instanceof ApiError && error.status === 404;
+        setLink({ state: 'missing', reason: notFound ? 'not-found' : 'network' });
+      });
+    return () => { cancelled = true; };
+  // Только при смене ссылки: клики внутри страницы управляют выбором сами.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [linkToken, linkChain, linkAddress]);
   // По умолчанию показываем только прошедшие проверку. Витрина, где
   // безопасное и сомнительное лежат вперемешку, перекладывает разбор
   // на человека — а он для того и пришёл, чтобы этого не делать.
@@ -129,11 +179,13 @@ function Terminal() {
     stale?: number;
   }>('/tokens/check-status', fetcher, { refreshInterval: 30_000 });
 
-  const active =
-    (selectedGem?.id === selectedId ? selectedGem : null) ??
-    tokens?.find((t) => t.id === selectedId) ??
-    tokens?.find((t) => !t.isQuote) ??
-    null;
+  // Пока ссылка не разрешена, активного токена нет: ни графика, ни торговли по чужому активу.
+  const active = link.state !== 'idle'
+    ? null
+    : (selectedGem?.id === selectedId ? selectedGem : null) ??
+      (Array.isArray(tokens) ? tokens.find((t) => t.id === selectedId) : undefined) ??
+      (Array.isArray(tokens) ? tokens.find((t) => !t.isQuote) : undefined) ??
+      null;
 
   const {
     chart: displayedChart,
@@ -152,7 +204,39 @@ function Terminal() {
     { refreshInterval: 15_000, shouldRetryOnError: false },
   );
 
-  const quoteToken = tokens?.find((t) => t.isQuote && t.chain === active?.chain);
+  const quoteToken = Array.isArray(tokens) ? tokens.find((t) => t.isQuote && t.chain === active?.chain) : undefined;
+
+  const linkNotice = link.state === 'idle' ? null : (
+    <div
+      role="status"
+      aria-live="polite"
+      data-chart-link={link.state}
+      data-chart-link-reason={link.reason ?? undefined}
+      className={`rounded-lg border p-3 text-sm ${link.state === 'loading' ? 'border-border bg-raised/50' : 'border-warn/30 bg-warn/10'}`}
+    >
+      {link.state === 'loading' ? (
+        <>
+          <div className="font-medium">Открываем график по ссылке…</div>
+          <p className="mt-1 text-xs text-muted">Ищем токен{linkChain ? ` в сети ${CHAIN_LABEL[linkChain.toUpperCase()] ?? linkChain}` : ''}{linkAddress ? ` по адресу ${linkAddress.slice(0, 6)}…${linkAddress.slice(-4)}` : ''}.</p>
+        </>
+      ) : (
+        <>
+          <div className="font-medium">График по ссылке недоступен</div>
+          <p className="mt-1 text-xs text-muted">
+            {link.reason === 'network'
+              ? 'Не удалось связаться с сервером. Обновите страницу или откройте ссылку позже.'
+              : link.reason === 'mismatch'
+                ? 'Ссылка указывает на другой токен, чем найден по идентификатору — чужой график не показывается.'
+                : `Токен из истории не найден в терминале${linkChain ? ` (сеть ${CHAIN_LABEL[linkChain.toUpperCase()] ?? linkChain})` : ''}.`}
+            {' '}Другой токен вместо него не подставлен.
+          </p>
+          <button type="button" onClick={() => { setLink({ state: 'idle', reason: null }); setTab('market'); }} className="mt-2 text-xs text-accent hover:text-white">
+            Открыть рынок →
+          </button>
+        </>
+      )}
+    </div>
+  );
 
   /** Выбор токена на телефоне сразу открывает график. */
   function selectToken(t: Token) {
@@ -262,6 +346,7 @@ function Terminal() {
 
           {/* График */}
           <section className="panel min-h-0 overflow-hidden">
+            {linkNotice && <div className="p-3">{linkNotice}</div>}
             <ChartPanel
               token={displayedActive}
               chart={displayedChart}
@@ -348,6 +433,7 @@ function Terminal() {
 
         {tab === 'chart' && (
           <>
+            {linkNotice}
             {displayedActive && (
               <MobileTokenHeader token={displayedActive} onBack={() => setTab('market')} />
             )}

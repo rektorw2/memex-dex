@@ -63,8 +63,8 @@ export const CHAINS: Record<string, ChainInfo> = {
   ROBINHOOD: {
     label: 'Robinhood Chain',
     nativeSymbol: 'ETH',
-    explorerToken: (a) => `https://explorer.robinhood.com/token/${a}`,
-    explorerAddress: (a) => `https://explorer.robinhood.com/address/${a}`,
+    explorerToken: (a) => `https://robinhoodchain.blockscout.com/token/${a}`,
+    explorerAddress: (a) => `https://robinhoodchain.blockscout.com/address/${a}`,
     dexScreener: (a) => `https://dexscreener.com/search?q=${a}`,
     geckoNetwork: null,
   },

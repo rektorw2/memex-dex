@@ -1,13 +1,14 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { Prisma as P } from '@prisma/client';
-import { quoteWithdrawal } from '@memex/core';
+import { addressMatchesChain, quoteWithdrawal } from '@memex/core';
 import { prisma, serializable } from '../lib/prisma.js';
 import { env } from '../lib/env.js';
 import { logger } from '../lib/logger.js';
 import * as balances from '../services/balances.js';
 import { createWallet, importWallet, listWallets } from '../services/wallet.js';
 import { entitlementOfRequest, denyIfMissing } from '../services/entitlement.js';
+import { LiveWalletSelectionError, liveWalletSelections, networkFundsFrom, selectLiveWallet } from '../services/live-funds.js';
 
 const chainSchema = z.enum(['SOLANA', 'BNB', 'ROBINHOOD', 'ETHEREUM', 'BASE']);
 
@@ -184,6 +185,14 @@ export const walletRoutes: FastifyPluginAsync = async (app) => {
       withdrawalFeeBps: env.WITHDRAWAL_FEE_BPS,
       assets,
       depositAddresses: deposits,
+      /*
+       * Сводка по сетям агента: адрес, нативный актив (комиссии) и
+       * сколько его можно направить в операцию с учётом резерва.
+       * Нативный актив здесь отделён от токенов намеренно: в BNB Chain
+       * платят BNB, в Robinhood Chain — ETH, и путать их с балансом
+       * токенов значит однажды не суметь выйти из позиции.
+       */
+      networks: networkFundsFrom(balances, deposits),
       pendingWithdrawals: pending.map((w) => ({
         id: w.id,
         chain: w.chain,
@@ -194,6 +203,38 @@ export const walletRoutes: FastifyPluginAsync = async (app) => {
         createdAt: w.createdAt,
       })),
     };
+  });
+
+  // ─────────────────────── Кошелёк для LIVE-операций агента ───────────────────────
+
+  /** Выбор по сетям: хранится на сервере, чужой или отключённый кошелёк не подставляется. */
+  app.get('/wallets/live-selection', { preHandler: [app.authenticate] }, async (req, reply) => {
+    const ent = await entitlementOfRequest(req);
+    if (denyIfMissing(ent, 'PORTFOLIO_READ', reply)) return reply;
+    return { selections: await liveWalletSelections(req.user.sub), liveExecution: env.EXECUTION_MODE === 'live' };
+  });
+
+  /**
+   * Выбрать кошелёк для сети. Проверяется принадлежность, активность
+   * и совпадение сети; тем же правилом пользуется подготовка операции.
+   * Выбор кошелька LIVE не включает и ничего не отправляет.
+   */
+  app.put('/wallets/live-selection', { preHandler: [app.authenticate] }, async (req, reply) => {
+    const ent = await entitlementOfRequest(req);
+    if (denyIfMissing(ent, 'PORTFOLIO_READ', reply)) return reply;
+    const body = z.object({ network: z.enum(['SOLANA', 'BNB', 'ROBINHOOD']), walletId: z.string().min(1).max(64) }).strict().parse(req.body);
+    try {
+      const selection = await selectLiveWallet(req.user.sub, body.network, body.walletId);
+      await prisma.auditLog.create({
+        data: { actorId: req.user.sub, action: 'agent.live-wallet.select', entity: 'AgentLiveWallet', entityId: selection.walletId, after: { network: body.network, walletId: body.walletId } as never, ip: req.ip },
+      });
+      return { ok: true, selection, note: 'Кошелёк выбран для подготовки LIVE-операций. Реальные сделки по-прежнему не отправляются.' };
+    } catch (e) {
+      if (e instanceof LiveWalletSelectionError) {
+        return reply.code(e.code === 'WALLET_NOT_FOUND' ? 404 : 400).send({ error: e.message, code: e.code });
+      }
+      throw e;
+    }
   });
 
   /**
@@ -288,6 +329,14 @@ export const walletRoutes: FastifyPluginAsync = async (app) => {
 
     if (!balance) return reply.code(404).send({ error: 'Актив не найден' });
     if (user.isFrozen) return reply.code(403).send({ error: 'Аккаунт заморожен' });
+    // Адрес проверяется на соответствие сети актива: перевод на адрес
+    // чужой сети — потеря средств без возврата.
+    if (!addressMatchesChain(balance.token.chain, body.toAddress)) {
+      return reply.code(400).send({
+        error: `Адрес не похож на адрес сети ${balance.token.chain}: проверьте сеть получателя`,
+        code: 'ADDRESS_CHAIN_MISMATCH',
+      });
+    }
 
     const quote = quoteWithdrawal({
       amount: body.amount,

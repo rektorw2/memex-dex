@@ -10,15 +10,23 @@ import { Prisma as P } from '@prisma/client';
 import {
   PAPER_AGENT_STRATEGIES,
   actionablePaperOrigins,
+  PAPER_TEST_ORIGIN,
   evaluatePaperSignal,
+  signalSourceVerdict,
+  type SignalSourceFacts,
   isActionablePaperOrigin,
   markPaperPosition,
   openPaperPosition,
   paperAgentModeVerdict,
   paperDrawdownPct,
+  normalizeAgentNetwork,
+  strategyForNetwork,
+  strategyWithStoredCosts,
+  AGENT_NETWORK_INFO,
   type PaperAgentStrategy,
 } from '@memex/core';
 import { env } from '../lib/env.js';
+import { isAgentNetworkReady, readyAgentNetworks } from '../services/agent-networks.js';
 import { logger } from '../lib/logger.js';
 import { prisma } from '../lib/prisma.js';
 import {
@@ -30,17 +38,36 @@ import {
   allocatePaperAgentRun,
   processPaperAllocationPositions,
 } from '../services/paper-agent-allocation.js';
+import { registerMemoryActivityProbe } from './memory-monitor.js';
+import { requestPaperTokenMetadata } from '../services/paper-token-metadata.js';
 
 const CONTROL_ID = 'primary';
 const RECONCILE_INTERVAL_MS = 1_000;
+/** Как часто воркер пишет пульс в базу; проход — каждую секунду, строка — раз в десять. */
+const HEARTBEAT_INTERVAL_MS = 10_000;
+export const PAPER_AGENT_WORKER_NAME = 'paper-agent';
 const SIGNAL_LOOKBACK_MS = 24 * 60 * 60 * 1_000;
 const BATCH_SIZE = 200;
+export const TOKEN_METADATA_WAIT_MS = 30_000;
 
 export interface PaperAgentRuntimeStatus {
   running: boolean;
   executionMode: 'paper' | 'live';
   refusalReason: string | null;
+  /** Начало последнего прохода — то же, что `lastTickStartedAt`; оставлено для совместимости. */
   lastTickAt: string | null;
+  /** Когда последний проход *начался*. Обновляется и у падающего воркера. */
+  lastTickStartedAt: string | null;
+  /**
+   * Когда последний проход *завершился без ошибки*. Только это поле
+   * доказывает, что агент работает: проход, начавшийся и упавший,
+   * его не двигает.
+   */
+  lastTickCompletedAt: string | null;
+  /** Сколько проходов подряд закончились ошибкой; успех обнуляет. */
+  consecutiveTickFailures: number;
+  /** Ошибки записи пульса в базу — считаются, но проход не ломают. */
+  heartbeatWriteErrors: number;
   lastErrorCode: string | null;
   lastActivityAt: string | null;
   queued: number;
@@ -48,6 +75,12 @@ export interface PaperAgentRuntimeStatus {
   processingErrors: number;
   /** Инвариант архитектуры, а не результат проверки кошелька. */
   liveExecutionReachable: false;
+  /**
+   * Почему новые входы приостановлены источником сигналов. `null` —
+   * источник доступен. Отдельно от `isEnabled`: кнопка Stop — решение
+   * человека, а это — состояние поставщика.
+   */
+  entriesPausedBySource: { code: string; message: string; transport: string } | null;
 }
 
 const runtime: PaperAgentRuntimeStatus = {
@@ -55,18 +88,66 @@ const runtime: PaperAgentRuntimeStatus = {
   executionMode: env.EXECUTION_MODE,
   refusalReason: null,
   lastTickAt: null,
+  lastTickStartedAt: null,
+  lastTickCompletedAt: null,
+  consecutiveTickFailures: 0,
+  heartbeatWriteErrors: 0,
   lastErrorCode: null,
   lastActivityAt: null,
   queued: 0,
   duplicatesSeen: 0,
   processingErrors: 0,
   liveExecutionReachable: false,
+  entriesPausedBySource: null,
 };
+
+/**
+ * Откуда брать факты об источнике сигналов.
+ *
+ * Регистрируется воркером приёма, а не импортируется отсюда: модули
+ * ссылаются друг на друга, и импорт в обе стороны сделал бы порядок
+ * загрузки частью поведения.
+ */
+let signalSourceProbe: (() => SignalSourceFacts) | null = null;
+export function setPaperSignalSourceProbe(probe: (() => SignalSourceFacts) | null): void {
+  signalSourceProbe = probe;
+}
+
+/**
+ * Доступность источника — по происхождению сигнала, а не для всех разом.
+ *
+ * Настоящий поток (WEBSOCKET_LIVE, REST_RECONCILIATION) идёт из OKX,
+ * и при отказе OKX по нему нельзя входить: сигнал есть, а источника,
+ * который подтвердил бы, что он свежий и настоящий, нет. Управляемый
+ * тестовый источник (TEST_HARNESS) в OKX не нуждается — его
+ * доступность и есть сам стенд, а допущен он только при
+ * `PAPER_TEST_SOURCE_ENABLED` и уже проверенных на старте ограничениях
+ * (PAPER, не mainnet, без исполнения и выводов). Включённый стенд не
+ * открывает настоящие сигналы при отказавшем OKX: решение принимается
+ * по происхождению каждого сигнала отдельно.
+ */
+export function paperSignalSourceState(): { code: string; message: string; transport: string } | null {
+  const source = signalSourceProbe ? signalSourceVerdict(signalSourceProbe()) : null;
+  return source && !source.available ? { code: source.code, message: source.message, transport: source.transport } : null;
+}
+
+export function originAllowedNow(origin: string | null, sourceUnavailable: boolean): boolean {
+  if (!isActionablePaperOrigin(origin, env.PAPER_TEST_SOURCE_ENABLED)) return false;
+  if (origin === PAPER_TEST_ORIGIN) return env.PAPER_TEST_SOURCE_ENABLED;
+  return !sourceUnavailable;
+}
 
 let timer: NodeJS.Timeout | null = null;
 let ticking = false;
 let acceptingEntries = false;
 const queuedSignalIds = new Set<string>();
+
+registerMemoryActivityProbe('paperAgent', () => ({
+  running: runtime.running,
+  queued: queuedSignalIds.size,
+  lastTickCompletedAt: runtime.lastTickCompletedAt,
+  consecutiveTickFailures: runtime.consecutiveTickFailures,
+}));
 
 export function paperAgentStartVerdict(mode: string): { ok: true } | { ok: false; reason: string } {
   return paperAgentModeVerdict(mode);
@@ -319,6 +400,12 @@ function loadSignal(id: string) {
   });
 }
 
+/** Подпись сети для уведомлений: ключ базы → название для человека. */
+function networkLabel(chain: string): string {
+  const network = normalizeAgentNetwork(chain);
+  return network ? AGENT_NETWORK_INFO[network].label : chain;
+}
+
 async function decideRun(
   runId: string,
   signal: NonNullable<Awaited<ReturnType<typeof loadSignal>>>,
@@ -341,10 +428,33 @@ async function decideRun(
     now.getTime(),
   );
 
+  // The deadline is anchored to persisted timestamps, so neither a restart
+  // nor duplicate delivery grants a new waiting window. Final runs are immutable.
+  if (decision.code === 'TOKEN_AGE_UNKNOWN') {
+    if ((decision.endToEndLatencyMs ?? Infinity) > strategy.maxDecisionLatencyMs) {
+      decision.code = sourcePrice != null && sourcePrice > 0
+        ? 'DECISION_DEADLINE_EXCEEDED' : 'PRICE_UNAVAILABLE_BEFORE_DEADLINE';
+    } else if ((decision.agentDecisionLatencyMs ?? Infinity) < TOKEN_METADATA_WAIT_MS) {
+      // Mark waiting, not an attempted fetch. Admission is token-wide and durable
+      // in the service; a final run cannot request metadata on redelivery.
+      const waiting = await prisma.paperAgentRun.updateMany({
+        where: { id: runId, state: 'RECEIVED' },
+        data: { decisionCode: 'WAITING_FOR_TOKEN_METADATA' },
+      });
+      if (waiting.count > 0 && signal.tokenId && signal.ingestOrigin !== PAPER_TEST_ORIGIN) {
+        const admission = await requestPaperTokenMetadata(signal.tokenId, signal.chain, signal.address,
+          Math.min(signal.signaledAt.getTime() + strategy.maxDecisionLatencyMs, signal.receivedAt.getTime() + TOKEN_METADATA_WAIT_MS));
+        logger.debug({ runId, tokenId: signal.tokenId, admission }, 'PAPER: ожидание метаданных');
+      }
+      return;
+    }
+  }
+
   const common = {
     state: decision.state,
     decisionCode: decision.code,
     decidedAt: now,
+    poolCreatedAt: signal.token?.poolCreatedAt ?? null,
     latencyMs: databaseInt(decision.endToEndLatencyMs),
     providerDeliveryLatencyMs: databaseInt(decision.providerDeliveryLatencyMs),
     agentDecisionLatencyMs: databaseInt(decision.agentDecisionLatencyMs),
@@ -469,7 +579,7 @@ async function decideRun(
         eventType: 'PAPER_BUY',
         runId,
         tokenId: signal.tokenId,
-        network: 'Solana',
+        network: networkLabel(signal.chain),
         strategyKey: strategy.key,
         strategyLabel: strategy.label,
         strategyVersion: strategy.version,
@@ -501,12 +611,15 @@ export async function processPaperAgentSignal(signalId: string): Promise<void> {
   const signal = await loadSignal(signalId);
   if (!signal) return;
 
-  // GEMS хранит все сети, но исполнитель Phase 2/3 создаёт runs только для
-  // Solana. Это одна сохранённая ingest-метрика вместо пяти одинаковых skip.
-  if (signal.chain !== 'SOLANA') {
+  // GEMS хранит все сети, но агент ведёт только свои — и только те из
+  // них, у которых подтверждена инфраструктура (сигналы OKX по сети,
+  // цена, узел). Чужая сеть и своя-но-не-готовая записываются разными
+  // кодами: в истории это разные ответы на вопрос «почему пропущено».
+  const network = normalizeAgentNetwork(signal.chain);
+  if (network == null || !isAgentNetworkReady(network)) {
     await prisma.okxSignal.updateMany({
       where: { id: signal.id },
-      data: { paperAgentIngestCode: 'FILTERED_UNSUPPORTED_NETWORK' },
+      data: { paperAgentIngestCode: network == null ? 'FILTERED_UNSUPPORTED_NETWORK' : 'NETWORK_NOT_READY' },
     });
     return;
   }
@@ -529,6 +642,13 @@ export async function processPaperAgentSignal(signalId: string): Promise<void> {
     });
     return;
   }
+  /*
+   * Настоящий сигнал при отказавшем OKX не обрабатывается, а ждёт:
+   * запись остаётся, решение примется, когда источник вернётся (или
+   * сигнал устареет по `maxDecisionLatencyMs`). Прямой вызов обязан
+   * держать то же правило, что и проход по таймеру.
+   */
+  if (!originAllowedNow(signal.ingestOrigin, paperSignalSourceState() != null)) return;
 
   const [control, strategies] = await Promise.all([
     prisma.paperAgentControl.findUnique({ where: { id: CONTROL_ID } }),
@@ -547,7 +667,9 @@ export async function processPaperAgentSignal(signalId: string): Promise<void> {
       continue;
     }
     const runId = await createRunIfMissing(signal, row);
-    if (runId) await decideRun(runId, signal, config);
+    // Модель расходов — по сети сигнала: сетевой сбор Solana и BNB Chain
+    // разный, и снимок стратегии в run должен это помнить.
+    if (runId) await decideRun(runId, signal, strategyForNetwork(config, network));
   }
 }
 
@@ -568,7 +690,9 @@ export async function processOpenPaperPositions(now = new Date()): Promise<void>
   const prices = new Map(tokens.map((token) => [token.id, numberOf(token.priceUsd)]));
 
   for (const run of runs) {
-    const config = strategyConfig(run.strategy.config);
+    // Расходы — из снимка входа в самой позиции; общая стратегия — только запасной вариант для старых записей.
+    const stored = strategyConfig(run.strategy.config);
+    const config = stored ? strategyWithStoredCosts(stored, { ...run, networkFeeUsdPerSide: run.networkFeeUsdPerSide?.toString() ?? null }) : null;
     const sourcePrice = run.tokenId ? prices.get(run.tokenId) ?? null : null;
     const entrySource = numberOf(run.entrySourcePriceUsd);
     const entryExecution = numberOf(run.entryExecutionPriceUsd);
@@ -670,7 +794,7 @@ export async function processOpenPaperPositions(now = new Date()): Promise<void>
         paper: true,
         runId: run.id,
         tokenId: run.tokenId,
-        network: 'Solana',
+        network: networkLabel(run.chain),
         strategyKey: run.strategy.key,
         strategyLabel: run.strategy.label,
         strategyVersion: run.strategy.version,
@@ -731,75 +855,17 @@ export async function processOpenPaperPositions(now = new Date()): Promise<void>
  * управляет проходами сам и таймер не запускает.
  */
 export async function runPaperAgentTickOnce(): Promise<void> {
-  runtime.lastTickAt = new Date().toISOString();
+  const startedAt = new Date().toISOString();
+  runtime.lastTickAt = startedAt;
+  runtime.lastTickStartedAt = startedAt;
   try {
-    const control = await prisma.paperAgentControl.findUnique({ where: { id: CONTROL_ID } });
-    acceptingEntries = control?.isEnabled === true;
-
-    // Stop запрещает новые входы, но открытая paper-позиция продолжает
-    // получать цену и может закрыться: статистика не исчезает из-за кнопки.
-    await processPaperAllocationPositions();
-    await processOpenPaperPositions();
-
-    if (!acceptingEntries) {
-      queuedSignalIds.clear();
-      runtime.queued = 0;
-      return;
-    }
-
-    const queued = [...queuedSignalIds].splice(0, BATCH_SIZE);
-    queued.forEach((id) => queuedSignalIds.delete(id));
-    runtime.queued = queuedSignalIds.size;
-
-    /*
-     * Ищем пропуск отдельно для каждой версии стратегии.
-     *
-     * Проверка `paperAgentRuns: none {}` была бы неверной после падения
-     * посередине сигнала: baseline уже создан, третий shadow ещё нет — у
-     * сигнала есть run, поэтому рестарт объявил бы его законченным. Условие
-     * ниже спрашивает ровно то, что нужно: отсутствует ли run этой версии.
-     */
-    // Один список на оба запроса ниже: два списка однажды разошлись бы.
-    const actionable = actionablePaperOrigins(env.PAPER_TEST_SOURCE_ENABLED);
-    const enabledStrategies = await prisma.paperAgentStrategy.findMany({
-      where: { isEnabled: true },
-      select: { id: true },
-    });
-    const missingByStrategy = await Promise.all(
-      enabledStrategies.map((strategy) =>
-        prisma.okxSignal.findMany({
-          where: {
-            signaledAt: { gte: new Date(Date.now() - SIGNAL_LOOKBACK_MS) },
-            chain: 'SOLANA',
-            ingestOrigin: { in: actionable },
-            paperAgentRuns: { none: { strategyId: strategy.id } },
-          },
-          select: { id: true },
-          orderBy: { signaledAt: 'asc' },
-          take: BATCH_SIZE,
-        }),
-      ),
-    );
-    const waiting = await prisma.paperAgentRun.findMany({
-      where: {
-        state: { in: ['WAITING_PRICE', 'WAITING_ENTRY'] },
-        chain: 'SOLANA',
-        signalOrigin: { in: actionable },
-      },
-      select: { signalId: true },
-      orderBy: { updatedAt: 'asc' },
-      take: BATCH_SIZE,
-    });
-
-    const ids = new Set([
-      ...queued,
-      ...missingByStrategy.flat().map((row) => row.id),
-      ...waiting.map((row) => row.signalId),
-    ]);
-    for (const id of ids) await processPaperAgentSignal(id);
+    await runTickBody();
     runtime.lastErrorCode = null;
+    runtime.lastTickCompletedAt = new Date().toISOString();
+    runtime.consecutiveTickFailures = 0;
   } catch (error: any) {
     runtime.processingErrors++;
+    runtime.consecutiveTickFailures++;
     runtime.lastErrorCode = error?.code ?? error?.name ?? 'PAPER_AGENT_TICK_FAILED';
     logger.warn({ code: runtime.lastErrorCode }, 'paper-agent: проход завершился ошибкой');
     await enqueuePaperAgentSystemEvent({
@@ -814,6 +880,144 @@ export async function runPaperAgentTickOnce(): Promise<void> {
         observedAt: new Date().toISOString(),
       },
     }).catch(() => undefined);
+  } finally {
+    await recordHeartbeat();
+  }
+}
+
+/** Тело прохода; любой `return` здесь — успешное завершение, любой throw — ошибка прохода. */
+async function runTickBody(): Promise<void> {
+  const control = await prisma.paperAgentControl.findUnique({ where: { id: CONTROL_ID } });
+  acceptingEntries = control?.isEnabled === true;
+
+  // Stop запрещает новые входы, но открытая paper-позиция продолжает
+  // получать цену и может закрыться: статистика не исчезает из-за кнопки.
+  await processPaperAllocationPositions();
+  await processOpenPaperPositions();
+
+  if (!acceptingEntries) {
+    queuedSignalIds.clear();
+    runtime.queued = 0;
+    return;
+  }
+
+  /*
+   * Источник сигналов недоступен — новые входы стоят, открытые
+   * позиции уже сопровождены выше. Очередь не очищается: сигналы в
+   * ней уже получены от документированного источника и станут
+   * решениями, как только он вернётся (а не устареют — это решит
+   * `maxDecisionLatencyMs` стратегии).
+   */
+  const paused = paperSignalSourceState();
+  if (paused) {
+    if (runtime.entriesPausedBySource?.code !== paused.code) {
+      logger.warn({ code: paused.code }, 'PAPER-агент: входы по сигналам OKX приостановлены — источник недоступен');
+    }
+    runtime.entriesPausedBySource = paused;
+  } else {
+    if (runtime.entriesPausedBySource) logger.info('PAPER-агент: источник сигналов восстановлен, входы возобновлены');
+    runtime.entriesPausedBySource = null;
+  }
+
+  /*
+   * Что можно обрабатывать в этом проходе: при недоступном OKX —
+   * только сигналы управляемого источника (если он включён), при
+   * доступном — весь список. Очередь разбирается всегда: настоящий
+   * сигнал при паузе `processPaperAgentSignal` придержит без run, а
+   * после восстановления его найдёт запрос «сигнал без run этой
+   * стратегии» ниже — очередь в памяти и так не переживает рестарт,
+   * источник истины здесь база.
+   */
+  const actionable = actionablePaperOrigins(env.PAPER_TEST_SOURCE_ENABLED)
+    .filter((origin) => originAllowedNow(origin, paused != null));
+  if (actionable.length === 0) return;
+
+  const queued = [...queuedSignalIds].splice(0, BATCH_SIZE);
+  queued.forEach((id) => queuedSignalIds.delete(id));
+  runtime.queued = queuedSignalIds.size;
+
+  /*
+   * Ищем пропуск отдельно для каждой версии стратегии.
+   *
+   * Проверка `paperAgentRuns: none {}` была бы неверной после падения
+   * посередине сигнала: baseline уже создан, третий shadow ещё нет — у
+   * сигнала есть run, поэтому рестарт объявил бы его законченным. Условие
+   * ниже спрашивает ровно то, что нужно: отсутствует ли run этой версии.
+   */
+  // Один список на оба запроса ниже: два списка однажды разошлись бы.
+  const readyChains = readyAgentNetworks();
+  const enabledStrategies = await prisma.paperAgentStrategy.findMany({
+    where: { isEnabled: true },
+    select: { id: true },
+  });
+  const missingByStrategy = await Promise.all(
+    enabledStrategies.map((strategy) =>
+      prisma.okxSignal.findMany({
+        where: {
+          signaledAt: { gte: new Date(Date.now() - SIGNAL_LOOKBACK_MS) },
+          chain: { in: readyChains },
+          ingestOrigin: { in: actionable },
+          paperAgentRuns: { none: { strategyId: strategy.id } },
+        },
+        select: { id: true },
+        orderBy: { signaledAt: 'asc' },
+        take: BATCH_SIZE,
+      }),
+    ),
+  );
+  const waiting = await prisma.paperAgentRun.findMany({
+    where: {
+      state: { in: ['RECEIVED', 'WAITING_PRICE', 'WAITING_ENTRY'] },
+      chain: { in: readyChains },
+      signalOrigin: { in: actionable },
+    },
+    select: { signalId: true },
+    orderBy: { updatedAt: 'asc' },
+    take: BATCH_SIZE,
+  });
+
+  const ids = new Set([
+    ...queued,
+    ...missingByStrategy.flat().map((row) => row.id),
+    ...waiting.map((row) => row.signalId),
+  ]);
+  for (const id of ids) await processPaperAgentSignal(id);
+}
+
+/**
+ * Пульс в базу — раз в `HEARTBEAT_INTERVAL_MS`, а не каждый проход.
+ *
+ * Строка одна на воркер; API в другом процессе читает её в
+ * `/health/agent`. Ошибка записи проход не ломает: считается и
+ * логируется, но агент из-за недоступной таблицы пульса не
+ * останавливается — он и без неё работал.
+ */
+let lastHeartbeatWriteAt = 0;
+let heartbeatStartedAt: string | null = null;
+async function recordHeartbeat(force = false): Promise<void> {
+  const now = Date.now();
+  if (!force && now - lastHeartbeatWriteAt < HEARTBEAT_INTERVAL_MS) return;
+  lastHeartbeatWriteAt = now;
+  const data = {
+    processId: String(process.pid),
+    hostname: typeof process.env.HOSTNAME === 'string' && process.env.HOSTNAME !== '' ? process.env.HOSTNAME : null,
+    startedAt: new Date(heartbeatStartedAt ?? new Date(now).toISOString()),
+    lastTickStartedAt: runtime.lastTickStartedAt ? new Date(runtime.lastTickStartedAt) : null,
+    lastTickCompletedAt: runtime.lastTickCompletedAt ? new Date(runtime.lastTickCompletedAt) : null,
+    lastErrorCode: runtime.lastErrorCode,
+    consecutiveFailures: runtime.consecutiveTickFailures,
+  };
+  try {
+    await prisma.workerHeartbeat.upsert({
+      where: { name: PAPER_AGENT_WORKER_NAME },
+      create: { name: PAPER_AGENT_WORKER_NAME, ...data },
+      update: data,
+    });
+  } catch (error: any) {
+    runtime.heartbeatWriteErrors++;
+    if (runtime.heartbeatWriteErrors === 1 || runtime.heartbeatWriteErrors % 100 === 0) {
+      logger.warn({ code: error?.code ?? error?.name, count: runtime.heartbeatWriteErrors }, 'paper-agent: пульс в базу не записан');
+    }
   }
 }
 
@@ -848,6 +1052,15 @@ export async function startPaperAgent(): Promise<boolean> {
   acceptingEntries = control?.isEnabled === true;
   runtime.running = true;
   runtime.refusalReason = null;
+  // Новый старт — новое наблюдение: проходы прошлого запуска здоровья
+  // не доказывают, иначе перезапущенный и сразу падающий воркер минуту
+  // выглядел бы здоровым по старой отметке.
+  runtime.lastTickStartedAt = null;
+  runtime.lastTickCompletedAt = null;
+  runtime.lastTickAt = null;
+  runtime.consecutiveTickFailures = 0;
+  heartbeatStartedAt = new Date().toISOString();
+  lastHeartbeatWriteAt = 0;
   timer = setInterval(() => void tick(), RECONCILE_INTERVAL_MS);
   timer.unref?.();
   void tick();

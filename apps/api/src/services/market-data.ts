@@ -76,6 +76,14 @@ export class PacedRateLimiter {
     return ticket;
   }
 
+  /** PAPER metadata never joins the importer's potentially long queue. */
+  tryTake(): boolean {
+    const now = Date.now();
+    if (now < Math.max(this.nextAt, this.blockedUntil)) return false;
+    this.nextAt = now + this.spacingMs;
+    return true;
+  }
+
   /** Остановить всю очередь после ответа 429. */
   backoff(ms: number): void {
     this.blockedUntil = Math.max(this.blockedUntil, Date.now() + Math.max(0, ms));
@@ -97,12 +105,15 @@ function retryAfterMs(value: string | null): number | null {
   return Number.isFinite(date) ? Math.max(0, date - Date.now()) : null;
 }
 
-async function get<T>(path: string): Promise<T | null> {
-  await limiter.take();
+export const reservePoolMetadataSlot = (): boolean => limiter.tryTake();
+type RequestOptions = { signal?: AbortSignal; reserved?: boolean };
+async function get<T>(path: string, options: RequestOptions = {}): Promise<T | null> {
+  if (options.signal?.aborted) return null;
+  if (!options.reserved) await limiter.take();
   try {
     const res = await fetch(`${API}${path}`, {
       headers: { accept: 'application/json;version=20230302' },
-      signal: AbortSignal.timeout(10_000),
+      signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(10_000)]) : AbortSignal.timeout(10_000),
     });
 
     if (res.status === 429) {
@@ -275,12 +286,14 @@ export async function fetchTopPools(chain: Chain, pages = 2): Promise<PoolToken[
 export async function fetchPoolForToken(
   chain: Chain,
   tokenAddress: string,
+  options: RequestOptions = {},
 ): Promise<PoolToken | null> {
   const network = NETWORK[chain];
   if (!network) return null;
 
   const data = await get<{ data: GeckoPool[]; included: GeckoIncluded[] }>(
     `/networks/${network}/tokens/${tokenAddress}/pools?include=base_token&page=1`,
+    options,
   );
   if (!data?.data?.length) return null;
 

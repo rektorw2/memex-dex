@@ -23,6 +23,7 @@ import {
   revokeSigningIdentity,
   IdentityRegistryError,
 } from '../services/signing-identity-registry.js';
+import { LiveWalletSelectionError, assertLiveWalletReady } from '../services/live-funds.js';
 
 /**
  * Предложения агента и намерения: чтение и решение человека.
@@ -171,6 +172,26 @@ export const liveIntentRoutes: FastifyPluginAsync = async (app) => {
 
       const ent = await entitlementOfRequest(req);
       if (denyIfMissing(ent, 'MANUAL_TRADE', reply)) return reply;
+
+      /*
+       * Подтверждение при реальном исполнении требует выбранного
+       * кошелька сети и нативного актива на комиссии — из серверного
+       * выбора, не из браузера. В PAPER-режиме реальных средств нет,
+       * и проверка не мешает подготовке. Отправки нет в обоих случаях.
+       */
+      if (body.decision === 'CONFIRM' && env.EXECUTION_MODE === 'live') {
+        const row = await prisma.liveAgentProposal.findUnique({ where: { id }, select: { userId: true, network: true } });
+        if (!row || row.userId !== userId) return reply.code(404).send(NOT_FOUND);
+        try {
+          const ready = await assertLiveWalletReady(userId, row.network);
+          if (!ready.gas.ok) {
+            return reply.code(409).send({ error: ready.gas.message, code: `LIVE_FUNDS_${ready.gas.code}` });
+          }
+        } catch (e) {
+          if (e instanceof LiveWalletSelectionError) return reply.code(409).send({ error: e.message, code: `LIVE_WALLET_${e.code}` });
+          throw e;
+        }
+      }
 
       const result = await decideProposal({
         proposalId: id,

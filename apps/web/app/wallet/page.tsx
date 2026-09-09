@@ -63,9 +63,13 @@ function WalletRow({ wallet, onChanged }: { wallet: any; onChanged: () => void }
   const chain = CHAINS[wallet.chain];
   return (
     <div className="bg-bg rounded-md p-3 flex flex-wrap items-center gap-3">
-      <div className="min-w-0 flex-1">
-        <div className="text-sm font-medium">{chainLabel(wallet.chain)}</div>
+      <div className="w-full min-w-0 sm:w-auto sm:flex-1">
+        <div className="flex items-center gap-2 text-sm font-medium">
+          <span data-wallet-chain={wallet.chain}>{chainLabel(wallet.chain)}</span>
+          {chain && <span className="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted" title="Нативный актив сети: им платятся комиссии">{chain.nativeSymbol}</span>}
+        </div>
         <div className="text-xs text-muted font-mono break-address">{wallet.address}</div>
+        <p className="mt-1 text-[11px] text-muted">Принимает только активы сети {chainLabel(wallet.chain)}.</p>
       </div>
       <button
         onClick={() => navigator.clipboard?.writeText(wallet.address)}
@@ -75,7 +79,7 @@ function WalletRow({ wallet, onChanged }: { wallet: any; onChanged: () => void }
       </button>
       {chain && (
         <a
-          href={chain.explorerToken(wallet.address)}
+          href={chain.explorerAddress(wallet.address)}
           target="_blank"
           rel="noopener noreferrer"
           className="text-xs text-muted hover:text-white"
@@ -127,7 +131,8 @@ function CreateWallet({ onDone }: { onDone: () => void }) {
         Ключ генерируется на сервере и сразу шифруется: в базу попадает только
         зашифрованное значение, а сам ключ не показывается и не выгружается.
         Для каждой сети нужен свой адрес — Solana и EVM используют разные
-        криптографические кривые.
+        криптографические кривые. Комиссии платятся нативным активом сети:
+        SOL в Solana, BNB в BNB Chain, ETH в Robinhood Chain.
       </p>
 
       <div>

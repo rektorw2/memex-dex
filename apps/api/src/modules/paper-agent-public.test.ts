@@ -29,7 +29,8 @@ function snapshot() {
 describe('публичный снимок PAPER-агента', () => {
   it('обычный пользователь видит PAPER-счёт, позиции и понятные события', () => {
     const result = publicSnapshotOf(snapshot(), false);
-    expect(result).toMatchObject({ paper: true, network: 'Solana', viewer: { isAdmin: false }, metrics24h: { capitalUtilizationPct: 10 } });
+    expect(result).toMatchObject({ paper: true, viewer: { isAdmin: false }, metrics24h: { capitalUtilizationPct: 10 } });
+    expect(result.network).toContain('Solana');
     expect(result.positions).toHaveLength(1);
     expect(result.positions[0]).toMatchObject({ tokenId: 'token-1', symbol: 'MEME', unrealizedPnlUsd: 10 });
   });

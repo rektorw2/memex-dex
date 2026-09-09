@@ -400,7 +400,7 @@ describe('OKX Signal', () => {
     c.stop();
   });
 
-  it.each(['60029', '-60029'])('%s прекращает reconnect и включает REST_ONLY', (code) => {
+  it.each(['60029', '-60029', '60036'])('%s прекращает reconnect и включает REST_ONLY', (code) => {
     const { c, transports } = makeClient({ platformFeed: false, signalChains: ['501'] });
     c.start();
     const socket = sockets[0]!;
@@ -413,12 +413,14 @@ describe('OKX Signal', () => {
 
     expect(c.getState()).toBe('rest_only');
     expect(c.stats()).toMatchObject({
-      channelTransportMode: 'REST_ONLY', channelAccessDeniedCode: '60029', reconnects: 0,
+      channelTransportMode: 'REST_ONLY', channelAccessDeniedCode: code.replace('-', ''), reconnects: 0,
     });
-    expect(transports).toEqual([{ mode: 'REST_ONLY', code: '60029' }]);
+    expect(transports).toEqual([{ mode: 'REST_ONLY', code: code.replace('-', '') }]);
     const before = sockets.length;
-    vi.advanceTimersByTime(60 * 60_000);
+    vi.advanceTimersByTime(60 * 60_000 - 1);
     expect(sockets).toHaveLength(before);
+    vi.advanceTimersByTime(1);
+    expect(sockets).toHaveLength(before + 1);
     c.stop();
   });
 
@@ -470,4 +472,33 @@ describe('остановка', () => {
     vi.advanceTimersByTime(600_000);
     expect(sockets.length).toBe(before);
   });
+});
+
+
+it('60036: подтверждённый login, REST, редкий повтор, подтверждение подписки и настоящее событие отдельно', () => {
+  const { c, signals, transports } = makeClient({ platformFeed:false, signalChains:['501'] });
+  c.start(); sockets[0]!.open(); sockets[0]!.deliver(loginOk);
+  sockets[0]!.deliver({event:'error',code:'60036',msg:'WebSocket access requires an active Market API subscription.'});
+  expect(c.stats()).toMatchObject({loginVerified:true,subscriptionsVerified:false,lastChannelEventAt:null});
+  vi.advanceTimersByTime(59*60_000);
+  expect(sockets).toHaveLength(1);
+  vi.advanceTimersByTime(60_000);
+  const recovered=sockets[1]!; recovered.open(); recovered.deliver(loginOk);
+  expect(c.stats().subscriptionsVerified).toBe(false);
+  recovered.deliver(subAck(OKX_SIGNAL_CHANNEL));
+  expect(c.stats().subscriptionsVerified).toBe(true);
+  expect(c.stats().lastChannelEventAt).toBeNull();
+  recovered.deliver({arg:{channel:OKX_SIGNAL_CHANNEL,chainIndex:'501',timestamp:String(Date.now()),token:{tokenAddress:'FN9ZSeNDdPV6bBF9DeDYxvqYK4JvFKeF7DBrhGGXJZ3Q',symbol:'GEM'},price:'1',walletType:'1',amountUsd:'1200',triggerWalletCount:'4'}});
+  expect(signals).toHaveLength(1);
+  expect(c.stats().lastChannelEventAt).toBe(Date.now());
+  expect(transports.at(-1)).toEqual({mode:'WEBSOCKET',code:null});
+  c.stop();
+  vi.advanceTimersByTime(2*60*60_000);
+  expect(sockets).toHaveLength(2);
+});
+it('отклонённое subscribe acknowledgement не подтверждает подписку', () => {
+  const {c}=makeClient({platformFeed:false,signalChains:['501']});
+  c.start();sockets[0]!.open();sockets[0]!.deliver(loginOk);
+  sockets[0]!.deliver({...subAck(OKX_SIGNAL_CHANNEL),code:'60036'});
+  expect(c.getState()).toBe('rest_only');expect(c.stats().subscriptionsVerified).toBe(false);c.stop();
 });

@@ -11,6 +11,7 @@ import { Prisma as P } from '@prisma/client';
 import {
   OKX_CHAIN_INDEX,
   isLivePaperSignalOrigin,
+  normalizeAgentNetwork,
   type ChainKey,
   type OkxSignal,
   type PaperSignalOrigin,
@@ -18,23 +19,57 @@ import {
 import { env } from '../lib/env.js';
 import { logger } from '../lib/logger.js';
 import { prisma } from '../lib/prisma.js';
-import { isOkxConfigured, fetchLatestSignals } from '../services/okx-market.js';
+import {
+  isOkxConfigured,
+  fetchLatestSignalsOutcome,
+  fetchSignalSupportedChains,
+  fetchMarketSupportedChains,
+  type SignalFetchOutcome,
+  getOkxSignalChainIndexes,
+  getOkxChainConfirmation,
+  setOkxSignalChainIndexes,
+  setOkxMarketChainIndexes,
+} from '../services/okx-market.js';
+import { isAgentNetworkReady } from '../services/agent-networks.js';
+import { refreshEvmProbes } from '../services/evm-chain-probe.js';
 import { OkxWalletWebSocketClient } from '../services/okx-ws-client.js';
 import { markHot } from './hot-tokens.js';
 import { requestCandlesSoon } from './candle-builder.js';
-import { queuePaperAgentSignal } from './paper-agent.js';
+import { queuePaperAgentSignal, setPaperSignalSourceProbe } from './paper-agent.js';
+import { type SignalSourceFacts } from '@memex/core';
 
 export type SignalIngestResult = 'created' | 'duplicate' | 'failed';
 
 const CHAINS = (Object.entries(OKX_CHAIN_INDEX) as Array<[ChainKey, string | null]>)
   .filter((entry): entry is [ChainKey, string] => entry[1] != null);
 
-const CHAIN_INDEXES = CHAINS.map(([, index]) => index);
+/**
+ * Сети, по которым действительно идёт приём: пересечение наших таблиц
+ * с живым списком OKX. Пока список не получен — только документированные
+ * сети Signal API; Robinhood Chain добавляется лишь после подтверждения.
+ */
+const DOCUMENTED_SIGNAL_CHAINS: ReadonlySet<ChainKey> = new Set<ChainKey>(['ETHEREUM', 'BNB', 'SOLANA', 'BASE']);
+
+export function activeSignalChains(): Array<[ChainKey, string]> {
+  const confirmed = getOkxSignalChainIndexes();
+  return CHAINS.filter(([chain, index]) => (confirmed ? confirmed.includes(index) : DOCUMENTED_SIGNAL_CHAINS.has(chain)));
+}
+
+/** Как часто перечитывать список сетей, когда он уже получен. */
+const SUPPORTED_CHAINS_REFRESH_MS = 60 * 60_000;
+/** Как часто пробовать, пока списка ещё нет. */
+const SUPPORTED_CHAINS_RETRY_MS = 60_000;
+const chainChecks = {
+  signal: { attemptedAt: null as number | null, inFlight: false, failed: false },
+  market: { attemptedAt: null as number | null, inFlight: false, failed: false },
+};
 
 let running = false;
+let startedAt: number | null = null;
 let client: OkxWalletWebSocketClient | null = null;
 let reconciliationTimer: NodeJS.Timeout | null = null;
 let reconciliationCursor = 0;
+let reconciling = false;
 let lastReconciliationAt = 0;
 let lastRestSuccessAt = 0;
 let lastRestErrorCode: string | null = null;
@@ -52,10 +87,23 @@ function sourceOf(origin: PaperSignalOrigin): string {
   return origin === 'WEBSOCKET_LIVE' ? 'okx_websocket' : 'okx_rest';
 }
 
+/**
+ * Пойдёт ли сигнал агенту — и если нет, почему.
+ *
+ * Сеть не агента — фильтр. Сеть агента, но не готовая (OKX не
+ * подтвердил сигналы по ней, нет цены, узел не настроен) — отдельный
+ * код: это не «чужая сеть», а «своя, но пока без инфраструктуры», и
+ * в истории они должны различаться.
+ */
 function paperAgentIngestCode(chain: string, origin: PaperSignalOrigin): string {
-  if (chain !== 'SOLANA') return 'FILTERED_UNSUPPORTED_NETWORK';
+  if (normalizeAgentNetwork(chain) == null) return 'FILTERED_UNSUPPORTED_NETWORK';
+  if (!isAgentNetworkReady(chain)) return 'NETWORK_NOT_READY';
   if (origin === 'REST_BACKFILL') return 'BACKFILL_DIAGNOSTIC_ONLY';
   return 'QUEUED_LIVE';
+}
+
+function goesToPaperAgent(chain: string, origin: PaperSignalOrigin): boolean {
+  return isAgentNetworkReady(chain) && isLivePaperSignalOrigin(origin);
 }
 
 function shouldUpgradeOrigin(previous: string | null, incoming: PaperSignalOrigin): boolean {
@@ -93,7 +141,7 @@ async function reconcileExistingSignal(
       },
     });
   }
-  if (upgraded && existing.chain === 'SOLANA' && isLivePaperSignalOrigin(origin)) {
+  if (upgraded && goesToPaperAgent(existing.chain, origin)) {
     queuePaperAgentSignal(existing.id, true);
   }
   return 'duplicate';
@@ -228,7 +276,7 @@ export async function ingestOkxSignal(
     // проверки. Сам GEMS при этом уже доступен из записи выше.
     markHot(result.tokenId);
     requestCandlesSoon(result.tokenId, '5m');
-    if (signal.chain === 'SOLANA' && isLivePaperSignalOrigin(origin)) {
+    if (goesToPaperAgent(signal.chain, origin)) {
       queuePaperAgentSignal(result.signalId);
     }
     return 'created';
@@ -254,6 +302,28 @@ export async function ingestOkxSignal(
   }
 }
 
+/**
+ * Факты о транспортах источника для решения «входить или ждать».
+ *
+ * Только факты, без вердикта: правило живёт в ядре
+ * (`signalSourceVerdict`), чтобы его можно было проверить таблицей,
+ * а воркер агента и интерфейс не могли разойтись в толковании.
+ */
+export function getOkxSignalSourceFacts(now = Date.now()): SignalSourceFacts {
+  const stats = client?.stats() ?? null;
+  return {
+    configured: isOkxConfigured(),
+    transportMode,
+    socketHealthy: client?.isHealthy() ?? false,
+    channelDeniedCode: stats?.channelAccessDeniedCode ?? permanentDenialCode,
+    lastRestSuccessAtMs: lastRestSuccessAt === 0 ? null : lastRestSuccessAt,
+    lastRestErrorCode,
+    restIntervalMs: env.OKX_SIGNAL_REST_FALLBACK_INTERVAL_MS,
+    startedAtMs: running ? startedAt : null,
+    nowMs: now,
+  };
+}
+
 export function getOkxSignalIngestStatus() {
   const interval = env.OKX_SIGNAL_REST_FALLBACK_INTERVAL_MS;
   return {
@@ -262,7 +332,9 @@ export function getOkxSignalIngestStatus() {
     permanentDenialCode,
     accessMessage:
       transportMode === 'REST_ONLY'
-        ? 'WebSocket недоступен: требуется whitelist OKX'
+        ? permanentDenialCode === '60036'
+          ? 'Ключу недоступен WebSocket по Market API subscription (60036)'
+          : 'WebSocket недоступен: требуется whitelist OKX'
         : null,
     lastSignalAt: lastSignalAt == null ? null : new Date(lastSignalAt).toISOString(),
     lastReconciliationAt:
@@ -280,13 +352,15 @@ export function getOkxSignalIngestStatus() {
 
 /** Последние сто событий каждой сети — начальное заполнение после деплоя. */
 export async function syncLatestOkxSignals(
-  chains: ChainKey[] = CHAINS.map(([chain]) => chain),
+  chains: ChainKey[] = activeSignalChains().map(([chain]) => chain),
   origin: PaperSignalOrigin = 'REST_BACKFILL',
 ) {
-  const lists = await Promise.all(chains.map((chain) => fetchLatestSignals(chain, 100)));
+  const outcomes = await Promise.all(chains.map((chain) => fetchLatestSignalsOutcome(chain, 100)));
   // Старые первыми: если один токен встречается несколько раз, в Token
   // останется цена самого свежего сигнала, а не случайного Promise.
-  const signals = lists.flat().sort((a, b) => a.signaledAt.getTime() - b.signaledAt.getTime());
+  const signals = outcomes
+    .flatMap((outcome) => (outcome.kind === 'ok' ? outcome.signals : []))
+    .sort((a, b) => a.signaledAt.getTime() - b.signaledAt.getTime());
 
   const stats = { fetched: signals.length, created: 0, duplicate: 0, failed: 0 };
   for (const signal of signals) {
@@ -294,16 +368,83 @@ export async function syncLatestOkxSignals(
     stats[result]++;
   }
 
-  lastRestSuccessAt = Date.now();
-  lastRestErrorCode = null;
-  logger.info({ ...stats, origin }, 'OKX Signal: последние события синхронизированы');
+  /*
+   * Успех — только подтверждённый ответ хотя бы по одной сети. Отказ
+   * по всем сетям записывается кодом причины и не трогает время
+   * успеха: иначе отклонённый ключ выглядел бы как спокойный рынок.
+   */
+  const failures = outcomes.filter((outcome) => outcome.kind !== 'ok');
+  if (failures.length < outcomes.length) recordRestSuccess();
+  else if (failures[0]) recordRestFailure(failures[0]);
+  logger.info({ ...stats, origin, failures: failures.map((f) => f.kind) }, 'OKX Signal: последние события синхронизированы');
   return stats;
 }
 
-async function reconciliationTick(): Promise<void> {
-  if (!running) return;
+function recordRestSuccess(now = Date.now()): void {
+  lastRestSuccessAt = now;
+  lastRestErrorCode = null;
+}
 
+/**
+ * Отказ REST по видам. `budget` — отказ нашего учёта квоты, сеть не
+ * трогали: источник не доказан мёртвым, время успеха стареет само.
+ */
+function recordRestFailure(outcome: Exclude<SignalFetchOutcome, { kind: 'ok' }>): void {
+  lastRestErrorCode = outcome.kind === 'budget' ? 'budget' : outcome.kind === 'auth' ? 'auth' : outcome.kind === 'quota' ? 'quota' : `${outcome.kind}:${outcome.detail}`;
+}
+
+/**
+ * Независимое обновление списков Signal и Market API.
+ *
+ * Спрашивается при старте и потом раз в час; пока ответа нет —
+ * раз в минуту. Именно этот ответ, а не таблица в коде, решает,
+ * подписываться ли на Robinhood Chain и считать ли её готовой.
+ */
+export async function refreshSignalSupportedChains(now = Date.now()): Promise<void> {
+  await Promise.all((['signal', 'market'] as const).map(async (kind) => {
+    const check = chainChecks[kind];
+    const confirmation = getOkxChainConfirmation(kind, now);
+    // A failed hourly refresh retries in one minute, even while the last
+    // success is still valid. Empty successful lists are valid confirmations.
+    const failed = check.failed;
+    const interval = confirmation.status === 'valid' && !failed ? SUPPORTED_CHAINS_REFRESH_MS : SUPPORTED_CHAINS_RETRY_MS;
+    const anchor = interval === SUPPORTED_CHAINS_REFRESH_MS ? confirmation.succeededAt : check.attemptedAt;
+    if (check.inFlight || (anchor != null && now - anchor < interval)) return;
+    check.inFlight = true;
+    check.attemptedAt = now;
+    check.failed = true;
+    try {
+      const rows = await (kind === 'signal' ? fetchSignalSupportedChains() : fetchMarketSupportedChains());
+      if (rows == null) {
+        logger.warn({ kind }, 'OKX: список поддерживаемых сетей не получен');
+        return;
+      }
+      check.failed = false;
+      const indexes = rows.map(row => row.chainIndex);
+      if (kind === 'market') setOkxMarketChainIndexes(indexes);
+      else {
+        const before = getOkxSignalChainIndexes();
+        setOkxSignalChainIndexes(indexes);
+        if (JSON.stringify(before) !== JSON.stringify(indexes)) {
+          client?.setSignalChains(activeSignalChains().map(([, index]) => index));
+        }
+      }
+    } catch (error) {
+      logger.warn({ kind, error }, 'OKX: проверка списка сетей не завершена');
+    } finally { check.inFlight = false; }
+  }));
+}
+
+async function reconciliationTick(): Promise<void> {
+  if (!running || reconciling) return;
+  reconciling = true;
+  try {
   const now = Date.now();
+  await refreshSignalSupportedChains(now).catch((error) => {
+    logger.debug({ code: error?.code }, 'OKX Signal: список сетей не обновлён');
+  });
+  // Узлы EVM-сетей: chainId перепроверяется раз в десять минут, не на каждый снимок.
+  await refreshEvmProbes(now).catch(() => undefined);
   if (!isRestReconciliationDue(
     now,
     lastReconciliationAt,
@@ -311,24 +452,33 @@ async function reconciliationTick(): Promise<void> {
   )) return;
   lastReconciliationAt = now;
 
-  const [chain] = CHAINS[reconciliationCursor % CHAINS.length]!;
+  const active = activeSignalChains();
+  if (active.length === 0) return;
+  const [chain] = active[reconciliationCursor % active.length]!;
   reconciliationCursor++;
 
   try {
-    const signals = await fetchLatestSignals(chain, 100);
-    for (const signal of [...signals].reverse()) {
+    const outcome = await fetchLatestSignalsOutcome(chain, 100);
+    if (outcome.kind !== 'ok') {
+      recordRestFailure(outcome);
+      logger.warn({ chain, kind: outcome.kind, detail: outcome.detail }, 'OKX Signal: REST reconciliation отклонена провайдером');
+      return;
+    }
+    for (const signal of [...outcome.signals].reverse()) {
       await ingestOkxSignal(signal, 'REST_RECONCILIATION');
     }
-    lastRestSuccessAt = Date.now();
-    lastRestErrorCode = null;
+    recordRestSuccess();
   } catch (error: any) {
-    lastRestErrorCode = String(error?.code ?? error?.name ?? 'REST_RECONCILIATION_FAILED');
+    lastRestErrorCode = `network:${String(error?.code ?? error?.name ?? 'REST_RECONCILIATION_FAILED')}`;
     logger.warn(
       { chain, code: lastRestErrorCode },
       'OKX Signal: REST reconciliation не выполнена',
     );
   }
+  } finally { reconciling = false; }
 }
+
+setPaperSignalSourceProbe(() => getOkxSignalSourceFacts());
 
 export function startOkxSignalIngest(): void {
   if (running) return;
@@ -339,11 +489,12 @@ export function startOkxSignalIngest(): void {
   }
 
   running = true;
+  startedAt = Date.now();
   client = new OkxWalletWebSocketClient({
     id: 'okx-signal',
     addresses: [],
     platformFeed: false,
-    signalChains: CHAIN_INDEXES,
+    signalChains: activeSignalChains().map(([, index]) => index),
     onEvent: () => undefined,
     onSignal: (signal) => void ingestOkxSignal(signal, 'WEBSOCKET_LIVE'),
     onSignalTransportChange: (mode, code) => {
@@ -354,10 +505,13 @@ export function startOkxSignalIngest(): void {
   });
 
   // Сначала подписываемся, затем догружаем историю. Обратный порядок
-  // оставил бы окно между REST-ответом и готовностью сокета.
+  // оставил бы окно между REST-ответом и готовностью сокета. Список
+  // сетей уточняется параллельно: подтверждённая сеть добавляется в
+  // подписку, как только OKX её назвал.
   client.start();
+  void refreshSignalSupportedChains().catch(() => undefined);
   void syncLatestOkxSignals().catch((error) => {
-    lastRestErrorCode = String(error?.code ?? error?.name ?? 'REST_BACKFILL_FAILED');
+    lastRestErrorCode = `network:${String(error?.code ?? error?.name ?? 'REST_BACKFILL_FAILED')}`;
     logger.warn({ code: error?.code }, 'OKX Signal: начальная синхронизация не удалась');
   });
 
@@ -371,7 +525,7 @@ export function startOkxSignalIngest(): void {
   reconciliationTimer = setInterval(() => void reconciliationTick(), 5_000);
   reconciliationTimer.unref?.();
 
-  logger.info({ chains: CHAIN_INDEXES.length }, 'OKX Signal: живая лента запущена');
+  logger.info({ chains: activeSignalChains().map(([chain]) => chain) }, 'OKX Signal: живая лента запущена');
 }
 
 export function stopOkxSignalIngest(): void {
@@ -387,4 +541,5 @@ export function stopOkxSignalIngest(): void {
   lastSignalAt = null;
   transportMode = 'WEBSOCKET';
   permanentDenialCode = null;
+  for (const check of Object.values(chainChecks)) { check.attemptedAt = null; check.failed = false; }
 }

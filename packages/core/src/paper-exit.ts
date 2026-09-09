@@ -398,3 +398,50 @@ export function describePaperExitPlan(plan: PaperExitPlan): string {
   if (plan.maxHoldMs != null) parts.push(`не дольше ${Math.round(plan.maxHoldMs / HOUR * 10) / 10} ч`);
   return parts.join(' · ');
 }
+
+/* ───────────────── Какие режимы доступны в каком управлении ───────────────── */
+
+export type LiveAgentControlMode = 'semi-auto' | 'auto';
+
+/**
+ * Semi-auto — человек подтверждает каждое предложение, и правило
+ * выхода у него одно: полный выход на 2× (режим TARGET как есть,
+ * без стопа — это подтверждённое решение владельца, а не догадка).
+ * Auto — все режимы. Правило одно для интерфейса и для API: интерфейс
+ * прячет лишние карточки, а сервер отклоняет прямой запрос с
+ * недоступным режимом. Смена режима управления не переписывает план
+ * уже открытых позиций: он снят при входе и лежит на позиции.
+ */
+export function allowedExitModes(controlMode: LiveAgentControlMode): readonly PaperExitMode[] {
+  return controlMode === 'auto' ? PAPER_EXIT_MODES : ['TARGET'];
+}
+
+export function isExitModeAllowed(controlMode: LiveAgentControlMode, mode: PaperExitMode): boolean {
+  return allowedExitModes(controlMode).includes(mode);
+}
+
+/**
+ * Допустим ли итоговый план в режиме управления.
+ *
+ * Имени режима недостаточно: «Цель 2×» с `targetMultiple: 3` и
+ * трейлингом — уже не «Цель 2×». Полуавтомат допускает пресет
+ * ровно в том виде, в каком он записан в `PAPER_EXIT_PRESETS`, —
+ * сравнивается сам план, а не то, как его назвали. В авто любой
+ * корректный план любого из пяти режимов.
+ */
+export function exitPlanAllowed(controlMode: LiveAgentControlMode, plan: PaperExitPlan): { ok: true } | { ok: false; code: 'EXIT_MODE_NOT_ALLOWED' | 'EXIT_PRESET_MODIFIED'; message: string } {
+  if (!isExitModeAllowed(controlMode, plan.mode)) {
+    return { ok: false, code: 'EXIT_MODE_NOT_ALLOWED', message: `Режим выхода ${plan.mode} недоступен в ${controlMode}` };
+  }
+  if (controlMode === 'auto') return { ok: true };
+  const preset = PAPER_EXIT_PRESETS[plan.mode];
+  const same = plan.targetMultiple === preset.targetMultiple
+    && plan.stopLossPct === preset.stopLossPct
+    && plan.trailingPct === preset.trailingPct
+    && JSON.stringify(plan.legs) === JSON.stringify(preset.legs)
+    && JSON.stringify(plan.timeStop) === JSON.stringify(preset.timeStop)
+    && plan.maxHoldMs === preset.maxHoldMs;
+  return same
+    ? { ok: true }
+    : { ok: false, code: 'EXIT_PRESET_MODIFIED', message: `В режиме ${controlMode} правило «Цель 2×» применяется без изменений: цель, стоп, трейлинг и ступени менять нельзя` };
+}

@@ -1,6 +1,7 @@
 import { Prisma as P, type Chain, type OrderSource } from '@prisma/client';
-import { requiredLock } from '@memex/core';
+import { normalizeAgentNetwork, requiredLock } from '@memex/core';
 import { reservesFunds } from './order-locking.js';
+import { reserveSpend } from './live-funds.js';
 import { prisma, serializable } from '../lib/prisma.js';
 import { executeOrder } from './execution.js';
 import { fanoutLeaderTrade, mirrorLeaderPendingOrder, cancelMirroredOrders } from './copytrade.js';
@@ -96,12 +97,18 @@ export async function placeOrderForUser(
     // срабатывания пользователь потратит их на другую сделку.
     // Исключение — стоп-лосс: см. order-locking.ts.
     if (reservesFunds(input.type)) {
-      await balances.lock(tx, {
-        userId,
-        tokenId: input.tokenInId,
-        amount: requiredLock({ amountIn: input.amountIn }).toString(),
-        refId: created.id,
-      });
+      const amount = requiredLock({ amountIn: input.amountIn }).toString();
+      /*
+       * В сетях агента бронь идёт через общий допуск LIVE-операций:
+       * учитывается уже замороженное и резерв нативного актива на
+       * комиссии. Ручной ордер и агент считают одну и ту же цифру —
+       * иначе двойная трата была бы вопросом времени.
+       */
+      if (normalizeAgentNetwork(input.chain)) {
+        await reserveSpend(tx, { userId, chain: input.chain, tokenId: input.tokenInId, amount, refId: created.id });
+      } else {
+        await balances.lock(tx, { userId, tokenId: input.tokenInId, amount, refId: created.id });
+      }
     }
     return created;
   });

@@ -210,11 +210,11 @@ describe('ручное управление paper-agent', () => {
     const server = await app();
     const response = await server.inject({
       method: 'PUT', url: '/admin/paper-agent/allocation',
-      payload: { mode: 'AUTOPILOT', capitalUsd: '100', exitMode: 'TRAILING', exitOverrides: { trailingPct: 40 }, confirm: true },
+      payload: { mode: 'AUTOPILOT', capitalUsd: '100', exitMode: 'TARGET', confirm: true },
     });
     expect(response.statusCode).toBe(200);
     expect(configureAllocation).toHaveBeenLastCalledWith(expect.objectContaining({
-      exitPlan: expect.objectContaining({ mode: 'TRAILING', trailingPct: 40, legs: [{ multiple: 2, sellPct: 50 }] }),
+      exitPlan: expect.objectContaining({ mode: 'TARGET', targetMultiple: 2, legs: [], trailingPct: null }),
     }), expect.anything());
     await server.close();
   });
@@ -227,6 +227,55 @@ describe('ручное управление paper-agent', () => {
     });
     expect(configureAllocation).toHaveBeenLastCalledWith(expect.objectContaining({
       exitPlan: expect.objectContaining({ mode: 'TARGET', stopLossPct: null, targetMultiple: 2 }),
+    }), expect.anything());
+    await server.close();
+  });
+
+  it('в semi-auto прямой запрос с другим режимом выхода получает 400, а Цель 2× проходит', async () => {
+    // Тестовое окружение фиксирует LIVE_AGENT_CONTROL_MODE=semi-auto.
+    const server = await app();
+    const denied = await server.inject({
+      method: 'PUT', url: '/admin/paper-agent/allocation',
+      payload: { mode: 'FIXED', capitalUsd: '100', maxOpenPositions: 4, exitMode: 'LADDER', confirm: true },
+    });
+    expect(denied.statusCode).toBe(400);
+    expect(denied.json()).toMatchObject({ code: 'EXIT_MODE_NOT_ALLOWED' });
+    expect(configureAllocation).not.toHaveBeenCalled();
+    const allowed = await server.inject({
+      method: 'PUT', url: '/admin/paper-agent/allocation',
+      payload: { mode: 'FIXED', capitalUsd: '100', maxOpenPositions: 4, exitMode: 'TARGET', confirm: true },
+    });
+    expect(allowed.statusCode).toBe(200);
+    await server.close();
+  });
+
+  it('в semi-auto «Цель 2×» с переопределённой целью, трейлингом, стопом или ступенями — обход, 400 EXIT_PRESET_MODIFIED', async () => {
+    const server = await app();
+    for (const exitOverrides of [
+      { targetMultiple: 3, trailingPct: 50 },
+      { targetMultiple: 2.5 },
+      { stopLossPct: 35 },
+      { trailingPct: 40 },
+      { legs: [{ multiple: 1.5, sellPct: 50 }] },
+      { maxHoldHours: 5 },
+    ]) {
+      const denied = await server.inject({
+        method: 'PUT', url: '/admin/paper-agent/allocation',
+        payload: { mode: 'FIXED', capitalUsd: '100', maxOpenPositions: 4, exitMode: 'TARGET', exitOverrides, confirm: true },
+      });
+      expect(denied.statusCode, JSON.stringify(exitOverrides)).toBe(400);
+      expect(denied.json()).toMatchObject({ code: 'EXIT_PRESET_MODIFIED' });
+    }
+    expect(configureAllocation).not.toHaveBeenCalled();
+    // Переопределение тем же значением, что в пресете, — не изменение.
+    const same = await server.inject({
+      method: 'PUT', url: '/admin/paper-agent/allocation',
+      payload: { mode: 'AUTOPILOT', capitalUsd: '100', riskProfile: 'BALANCED', exitMode: 'TARGET', exitOverrides: { targetMultiple: 2 }, confirm: true },
+    });
+    expect(same.statusCode).toBe(200);
+    expect(configureAllocation).toHaveBeenLastCalledWith(expect.objectContaining({
+      mode: 'AUTOPILOT',
+      exitPlan: expect.objectContaining({ mode: 'TARGET', targetMultiple: 2, stopLossPct: null, trailingPct: null }),
     }), expect.anything());
     await server.close();
   });

@@ -25,6 +25,9 @@ import {
   partialExitPaperCapitalLedger,
   policyExitPlan,
   validatePaperExitPlan,
+  strategyWithStoredCosts,
+  normalizeAgentNetwork,
+  AGENT_NETWORK_INFO,
   type PaperExitDecision,
   type PaperExitPlan,
   type PaperExitReason,
@@ -723,7 +726,7 @@ async function allocateForSession(input: {
             allocationId: allocation.id,
             allocationSessionId: session.id,
             shadow: session.kind === 'SHADOW',
-            network: 'Solana',
+            network: networkLabelOf(input.signal.chain),
             symbol: input.signal.symbol,
             address: input.signal.address,
             strategyKey: input.strategy.key,
@@ -970,6 +973,13 @@ interface OpenAllocationRow {
     tokenId: string | null;
     symbol: string;
     address: string;
+    chain: string;
+    /** Снимок модели расходов входа — им ведётся вся позиция. */
+    costModelKey: string | null;
+    tradeFeeBps: number | null;
+    entrySlippageBps: number | null;
+    exitSlippageBps: number | null;
+    networkFeeUsdPerSide: P.Decimal | null;
     strategy: { key: string; version: number; label: string; config: unknown };
   };
 }
@@ -980,10 +990,22 @@ const OPEN_ALLOCATION_INCLUDE = {
       tokenId: true,
       symbol: true,
       address: true,
+      chain: true,
+      costModelKey: true,
+      tradeFeeBps: true,
+      entrySlippageBps: true,
+      exitSlippageBps: true,
+      networkFeeUsdPerSide: true,
       strategy: { select: { key: true, version: true, label: true, config: true } },
     },
   },
 } as const;
+
+/** Подпись сети для событий: ключ базы → название. */
+function networkLabelOf(chain: string): string {
+  const network = normalizeAgentNetwork(chain);
+  return network ? AGENT_NETWORK_INFO[network].label : chain;
+}
 
 /** План позиции: снятый при входе, иначе — из политики счёта, иначе TARGET. */
 function allocationExitPlan(row: { exitPlan: unknown; policySnapshot: unknown }): PaperExitPlan {
@@ -1050,7 +1072,11 @@ export async function settlePaperAllocation(
   const entrySource = numberOf(allocation.entrySourcePriceUsd);
   const entryExecution = numberOf(allocation.entryExecutionPriceUsd);
   const quantity = numberOf(allocation.entryQuantity);
-  const rawStrategy = allocation.run.strategy.config as unknown as PaperAgentStrategy;
+  // Расходы — из снимка входа, не из текущей стратегии: см. strategyWithStoredCosts.
+  const rawStrategy = strategyWithStoredCosts(
+    allocation.run.strategy.config as unknown as PaperAgentStrategy,
+    { ...allocation.run, networkFeeUsdPerSide: allocation.run.networkFeeUsdPerSide?.toString() ?? null },
+  );
   if (
     sourcePrice == null ||
     allocatedUsd == null ||
@@ -1312,7 +1338,7 @@ export async function settlePaperAllocation(
       allocationId: fresh.id,
       allocationSessionId: session.id,
       shadow: fresh.isShadow,
-      network: 'Solana',
+      network: networkLabelOf(allocation.run.chain),
       symbol: allocation.run.symbol,
       address: allocation.run.address,
       strategyKey: allocation.run.strategy.key,

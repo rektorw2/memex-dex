@@ -20,7 +20,7 @@ describe('POST-тело OKX Market v6', () => {
     expect(body).not.toHaveProperty('tokens');
   });
 
-  it('не отправляет неподдерживаемую сеть', () => {
+  it('не отправляет сеть, которую OKX не подтвердил (Robinhood Chain до живого списка)', () => {
     expect(tokenBatchBody([{ chain: 'ROBINHOOD', address: '0xabc' }])).toEqual([]);
   });
 });

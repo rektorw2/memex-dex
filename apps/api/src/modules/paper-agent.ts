@@ -15,6 +15,10 @@ import {
   depositNetworkStatus,
   PAPER_EXIT_MODE_LABELS,
   PAPER_EXIT_PRESETS,
+  allowedExitModes,
+  exitPlanAllowed,
+  AGENT_NETWORK_INFO,
+  isExitModeAllowed,
   describePaperExitPlan,
   paperExitPlan,
   type PaperExitPlan,
@@ -22,6 +26,7 @@ import {
 import { env } from '../lib/env.js';
 import { prisma } from '../lib/prisma.js';
 import { getOkxSignalIngestStatus } from '../workers/okx-signal-ingest.js';
+import { agentNetworksReadiness, readyAgentNetworks } from '../services/agent-networks.js';
 import { readFundingSafetyState } from '../services/prisma-solana-reconciliation-repository.js';
 import { readSigningState } from '../services/signing-state.js';
 import { readSchemaReadiness } from '../services/schema-readiness.js';
@@ -424,7 +429,9 @@ export function publicSnapshotOf(snapshot: any, isAdmin: boolean) {
 
   return {
     paper: true,
-    network: 'Solana',
+    /* Сети — в phase4.networks с готовностью; здесь — готовые списком, для старых клиентов строка. */
+    network: readyAgentNetworks().map((chain) => AGENT_NETWORK_INFO[chain].label).join(', ') || 'нет готовых сетей',
+    networks: readyAgentNetworks(),
     viewer: { isAdmin },
     health: snapshot.health,
     control: {
@@ -436,6 +443,8 @@ export function publicSnapshotOf(snapshot: any, isAdmin: boolean) {
       running: snapshot.runtime.running,
       lastActivityAt: snapshot.runtime.lastActivityAt,
       queued: snapshot.runtime.queued,
+      // Причина паузы входов от источника сигналов; `null` — источник доступен.
+      entriesPausedBySource: snapshot.runtime.entriesPausedBySource ?? null,
     },
     source: {
       transportMode: snapshot.okxSignal.transportMode,
@@ -443,7 +452,16 @@ export function publicSnapshotOf(snapshot: any, isAdmin: boolean) {
       lastSignalAt: snapshot.okxSignal.lastSignalAt,
       lastRestSuccessAt: snapshot.okxSignal.lastRestSuccessAt,
       nextRestReconciliationAt: snapshot.okxSignal.nextRestReconciliationAt,
-      fallbackActive: snapshot.okxSignal.transportMode === 'REST_ONLY',
+      fallbackActive: snapshot.okxSignal.transportMode === 'REST_ONLY' || (snapshot.okxSignal.socket?.state !== 'connected' && snapshot.okxSignal.lastRestSuccessAt != null),
+      loginVerified: snapshot.okxSignal.socket?.loginVerified ?? false,
+      subscriptionsVerified: snapshot.okxSignal.socket?.subscriptionsVerified ?? false,
+      lastSubscriptionAt: snapshot.okxSignal.socket?.lastSubscriptionAt ?? null,
+      lastWsEventAt: snapshot.okxSignal.socket?.lastChannelEventAt ?? null,
+      nextAccessCheckAt: snapshot.okxSignal.socket?.nextAccessCheckAt ?? null,
+      accessMessage: snapshot.okxSignal.accessMessage ?? null,
+      lastRestErrorCode: snapshot.okxSignal.lastRestErrorCode ?? null,
+      providerDeliveryLatencyMs: lastDecision?.providerDeliveryLatencyMs ?? null,
+      agentDecisionLatencyMs: lastDecision?.agentDecisionLatencyMs ?? null,
     },
     lastDecisionAt: lastDecision?.decidedAt ?? null,
     notifications: {
@@ -822,7 +840,8 @@ export const paperAgentRoutes: FastifyPluginAsync = async (app) => {
       executionMode: env.EXECUTION_MODE,
       enabled: control.isEnabled,
       socketHealthy:
-        okxSignalStatus.socket?.state === 'connected' || okxSignalStatus.transportMode === 'REST_ONLY',
+        (okxSignalStatus.socket?.state === 'connected' || okxSignalStatus.transportMode === 'REST_ONLY')
+        && runtime.entriesPausedBySource == null,
       waitingForPrice,
       queued: runtime.queued,
       lastActivityAtMs: runtime.lastActivityAt == null ? null : Date.parse(runtime.lastActivityAt),
@@ -922,6 +941,20 @@ export const paperAgentRoutes: FastifyPluginAsync = async (app) => {
         unavailable: sections.unavailable,
         mode: 'SEMI_AUTO',
         network: 'SOLANA',
+        /*
+         * Режим управления и доступные ему правила выхода. Одно правило
+         * с сервером: интерфейс прячет лишние карточки, а PUT allocation
+         * отклоняет режим не из этого списка.
+         */
+        controlMode: env.LIVE_AGENT_CONTROL_MODE,
+        allowedExitModes: allowedExitModes(env.LIVE_AGENT_CONTROL_MODE),
+        /*
+         * Сети агента с готовностью и причинами. Готовность — по живому
+         * списку OKX Signal API, источнику цены и узлу; сама по себе
+         * связь с RPC сеть не открывает. Один список для карточек сетей,
+         * выбора кошелька и приёма сигналов.
+         */
+        networks: agentNetworksReadiness(),
         live: {
           enabled: env.LIVE_AGENT_ENABLED,
           executionEnabled: env.LIVE_EXECUTION_ENABLED,
@@ -1097,7 +1130,8 @@ export const paperAgentRoutes: FastifyPluginAsync = async (app) => {
       allocation: {
         configured: control.activeAllocationMode != null,
         execution: 'PAPER',
-        network: 'Solana',
+        network: readyAgentNetworks().map((chain) => AGENT_NETWORK_INFO[chain].label).join(', '),
+        networks: readyAgentNetworks(),
         accounts: allocationAccounts.map(serializeAccount),
         policies: allocationPolicies.map((policy) => ({
           id: policy.id,
@@ -1240,13 +1274,39 @@ export const paperAgentRoutes: FastifyPluginAsync = async (app) => {
      * который никогда не закрывается или продаёт больше позиции,
      * отклоняется как 400, а не живёт в базе до первой сделки.
      */
+    /*
+     * Semi-auto допускает только «Цель 2×». Проверка здесь, а не
+     * только в интерфейсе: прямой запрос к API обязан получить тот же
+     * отказ, что и спрятанная карточка.
+     */
+    const requestedMode = body.exitMode ?? 'TARGET';
+    if (!isExitModeAllowed(env.LIVE_AGENT_CONTROL_MODE, requestedMode)) {
+      throw Object.assign(new Error(`Режим выхода ${requestedMode} недоступен в ${env.LIVE_AGENT_CONTROL_MODE}`), {
+        statusCode: 400,
+        code: 'EXIT_MODE_NOT_ALLOWED',
+        allowed: allowedExitModes(env.LIVE_AGENT_CONTROL_MODE),
+      });
+    }
     let exitPlan: PaperExitPlan;
     try {
-      exitPlan = paperExitPlan(body.exitMode ?? 'TARGET', body.exitOverrides ?? {});
+      exitPlan = paperExitPlan(requestedMode, body.exitOverrides ?? {});
     } catch (cause) {
       throw Object.assign(new Error('Некорректный план выхода'), {
         statusCode: 400,
         code: cause instanceof Error ? cause.message : 'INVALID_EXIT_PLAN',
+      });
+    }
+    /*
+     * Проверяется итоговый план, а не имя режима: «Цель 2×» с
+     * переопределённой целью или трейлингом в полуавтомате — обход,
+     * и прямой запрос к API получает тот же отказ.
+     */
+    const planVerdict = exitPlanAllowed(env.LIVE_AGENT_CONTROL_MODE, exitPlan);
+    if (!planVerdict.ok) {
+      throw Object.assign(new Error(planVerdict.message), {
+        statusCode: 400,
+        code: planVerdict.code,
+        allowed: allowedExitModes(env.LIVE_AGENT_CONTROL_MODE),
       });
     }
     if (body.mode === 'FIXED' && body.maxOpenPositions == null) {

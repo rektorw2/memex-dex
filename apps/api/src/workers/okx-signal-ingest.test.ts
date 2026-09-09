@@ -71,9 +71,17 @@ vi.mock('../lib/logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
+const chainConfirmations = vi.hoisted(() => ({signals:null as readonly string[] | null,market:null as readonly string[] | null}));
 vi.mock('../services/okx-market.js', () => ({
   isOkxConfigured: () => true,
   fetchLatestSignals: async () => [],
+  fetchSignalSupportedChains: async () => null,
+  fetchMarketSupportedChains: async () => null,
+  getOkxSignalChainIndexes: () => chainConfirmations.signals,
+  getOkxMarketChainIndexes: () => chainConfirmations.market,
+  setOkxSignalChainIndexes: (indexes: readonly string[] | null) => {chainConfirmations.signals=indexes;},
+  setOkxMarketChainIndexes: (indexes: readonly string[] | null) => {chainConfirmations.market=indexes;},
+  isOkxSupported: (chain: string) => chain !== 'ROBINHOOD',
 }));
 
 vi.mock('../services/okx-ws-client.js', () => ({
@@ -90,9 +98,11 @@ vi.mock('./hot-tokens.js', () => ({
 
 vi.mock('./paper-agent.js', () => ({
   queuePaperAgentSignal: (id: string, duplicate = false) => queuedSignals.push({ id, duplicate }),
+  setPaperSignalSourceProbe: vi.fn(),
 }));
 
 vi.mock('./candle-builder.js', () => ({ requestCandlesSoon: vi.fn() }));
+vi.mock('../services/evm-chain-probe.js', () => ({ evmProbeState: () => ({ state: 'VERIFIED', chainId: 56, checkedAt: 1 }), refreshEvmProbes: async () => undefined }));
 
 const { ingestOkxSignal, isRestReconciliationDue } = await import('./okx-signal-ingest.js');
 
@@ -230,12 +240,36 @@ describe('импорт OKX Signal', () => {
     expect(queuedSignals).toEqual([{ id: 'signal-race', duplicate: true }]);
   });
 
-  it('оставляет не-Solana сигнал в GEMS, но не ставит его агенту', async () => {
-    const bnb = { ...signal, chain: 'BNB' as const, providerKey: 'okx-signal:bnb' };
-    expect(await ingestOkxSignal(bnb, 'WEBSOCKET_LIVE')).toBe('created');
+  it('оставляет сигнал чужой сети в GEMS, но не ставит его агенту', async () => {
+    const eth = { ...signal, chain: 'ETHEREUM' as const, providerKey: 'okx-signal:eth' };
+    expect(await ingestOkxSignal(eth, 'WEBSOCKET_LIVE')).toBe('created');
     expect(createdSignals[0]).toMatchObject({
-      chain: 'BNB', paperAgentIngestCode: 'FILTERED_UNSUPPORTED_NETWORK',
+      chain: 'ETHEREUM', paperAgentIngestCode: 'FILTERED_UNSUPPORTED_NETWORK',
     });
     expect(queuedSignals).toEqual([]);
   });
+
+  it('BNB Chain — сеть агента: сигнал идёт агенту', async () => {
+    const bnb = { ...signal, chain: 'BNB' as const, providerKey: 'okx-signal:bnb' };
+    expect(await ingestOkxSignal(bnb, 'WEBSOCKET_LIVE')).toBe('created');
+    expect(createdSignals[0]).toMatchObject({ chain: 'BNB', paperAgentIngestCode: 'QUEUED_LIVE' });
+    expect(queuedSignals).toHaveLength(1);
+  });
+
+  it('Robinhood Chain до подтверждения OKX — своя сеть, но не готовая: сигнал сохраняется, агенту не идёт', async () => {
+    const rh = { ...signal, chain: 'ROBINHOOD' as const, providerKey: 'okx-signal:rh' };
+    expect(await ingestOkxSignal(rh, 'WEBSOCKET_LIVE')).toBe('created');
+    expect(createdSignals[0]).toMatchObject({ chain: 'ROBINHOOD', paperAgentIngestCode: 'NETWORK_NOT_READY' });
+    expect(queuedSignals).toEqual([]);
+  });
+});
+
+it.each(['SOLANA','BNB','ROBINHOOD'] as const)('после подтверждения OKX принимает официальный REST сигнал сети %s', async chain => {
+  const market=await import('../services/okx-market.js');
+  market.setOkxSignalChainIndexes(['501','56','4663']);market.setOkxMarketChainIndexes(['501','56','4663']);
+  try {
+    expect(await ingestOkxSignal({...signal,chain,providerKey:'okx-signal:'+chain},'REST_RECONCILIATION')).toBe('created');
+    expect(createdSignals[0]).toMatchObject({chain,source:'okx_rest',paperAgentIngestCode:'QUEUED_LIVE'});
+    expect(queuedSignals).toHaveLength(1);
+  } finally {market.setOkxSignalChainIndexes(null);market.setOkxMarketChainIndexes(null);}
 });

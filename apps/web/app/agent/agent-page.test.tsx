@@ -6,11 +6,31 @@ import userEvent from '@testing-library/user-event';
 
 vi.mock('next/link', () => ({ default: ({ href, children, ...rest }: any) => <a href={href} {...rest}>{children}</a> }));
 
-const state = vi.hoisted(() => ({ publicData: null as any, adminData: null as any, error: null as any }));
+const walletAssetsFixture = () => ({
+  networks: [
+    { chain: 'SOLANA', label: 'Solana', nativeSymbol: 'SOL', depositAddress: 'SoLDeposit111', walletId: 'w1', native: { tokenId: 't-sol', available: '1.5', locked: '0.5', spendable: '1.49', feeReserve: '0.01' }, tokenAssets: 1 },
+    { chain: 'BNB', label: 'BNB Chain', nativeSymbol: 'BNB', depositAddress: null, walletId: null, native: null, tokenAssets: 0 },
+    { chain: 'ROBINHOOD', label: 'Robinhood Chain', nativeSymbol: 'ETH', depositAddress: '0xRhDeposit', walletId: 'w3', native: null, tokenAssets: 0 },
+  ],
+});
+const liveSelectionFixture = () => ({
+  liveExecution: false,
+  selections: [
+    { network: 'SOLANA', walletId: 'w1', address: 'SoLDeposit111', problem: null, selectedAt: '2026-09-08T10:00:00.000Z' },
+    { network: 'BNB', walletId: null, address: null, problem: null, selectedAt: null },
+    { network: 'ROBINHOOD', walletId: 'w3', address: null, problem: 'WALLET_INACTIVE', selectedAt: '2026-09-08T10:00:00.000Z' },
+  ],
+});
+const walletsFixture = () => ({ wallets: [
+  { id: 'w1', chain: 'SOLANA', address: 'SoLDeposit111', kind: 'HOT_DEPOSIT' },
+  { id: 'w1b', chain: 'SOLANA', address: 'SoLSecond222', kind: 'HOT_DEPOSIT' },
+  { id: 'w3', chain: 'ROBINHOOD', address: '0xRhDeposit', kind: 'HOT_DEPOSIT' },
+] });
+const state = vi.hoisted(() => ({ publicData: null as any, adminData: null as any, error: null as any, walletAssets: null as any, walletError: null as any, liveSelection: null as any, wallets: null as any }));
 const apiMock = vi.hoisted(() => vi.fn(async () => ({})));
 vi.mock('swr', () => ({ default: (key: string | null) => ({
-  data: key === '/paper-agent' ? state.publicData : key === '/admin/paper-agent' ? state.adminData : undefined,
-  error: key === '/paper-agent' ? state.error : null,
+  data: key === '/paper-agent' ? state.publicData : key === '/admin/paper-agent' ? state.adminData : key === '/wallets/assets' ? state.walletAssets : key === '/wallets/live-selection' ? state.liveSelection : key === '/wallets' ? state.wallets : undefined,
+  error: key === '/paper-agent' ? state.error : key === '/wallets/assets' ? state.walletError : null,
   mutate: vi.fn(async () => undefined),
 }) }));
 /*
@@ -55,6 +75,12 @@ function data(over: Record<string, unknown> = {}) {
     phase4: {
       mode: 'SEMI_AUTO', network: 'SOLANA',
       status: 'AVAILABLE', unavailable: [],
+      controlMode: 'auto', allowedExitModes: ['TARGET', 'PROTECTED', 'LADDER', 'TRAILING', 'TRAILING_PURE'],
+      networks: [
+        { chain: 'SOLANA', label: 'Solana', nativeSymbol: 'SOL', available: true, signalsConfirmed: true, signalBasis: 'live', reasons: [], costModelKey: 'solana-conservative-v1' },
+        { chain: 'BNB', label: 'BNB Chain', nativeSymbol: 'BNB', available: true, signalsConfirmed: false, signalBasis: 'docs', reasons: [], costModelKey: 'bnb-conservative-v1' },
+        { chain: 'ROBINHOOD', label: 'Robinhood Chain', nativeSymbol: 'ETH', available: false, signalsConfirmed: false, signalBasis: 'none', reasons: [{ code: 'OKX_SIGNAL_UNSUPPORTED', message: 'OKX Signal API не отдаёт сигналы по Robinhood Chain (chainIndex 4663 отсутствует в списке)' }], costModelKey: 'robinhood-conservative-v1' },
+      ],
       live: {
         enabled: false, executionEnabled: false, ready: false, blockers: ['LIVE_DISABLED'],
         stage: 'PAPER_READY', stageBlockers: ['SIGNING_DISABLED'], mainnetRequested: false,
@@ -76,7 +102,10 @@ const wallet = {
   limits: { reservePct: 30, maxOpenPositions: 4, maxPositionPct: 17.5, drawdownStopPct: 20 }, ledger: [],
 };
 
-afterEach(() => { cleanup(); state.publicData = null; state.adminData = null; state.error = null; apiMock.mockClear(); });
+afterEach(() => { cleanup(); state.publicData = null; state.adminData = null; state.error = null; state.walletAssets = walletAssetsFixture(); state.walletError = null; state.liveSelection = liveSelectionFixture(); state.wallets = walletsFixture(); apiMock.mockClear(); });
+state.walletAssets = walletAssetsFixture();
+state.liveSelection = liveSelectionFixture();
+state.wallets = walletsFixture();
 
 describe('/agent для обычного пользователя', () => {
   it('показывает честную PAPER-маркировку и Solana', () => {
@@ -103,16 +132,22 @@ describe('/agent для обычного пользователя', () => {
     expect(apiMock).not.toHaveBeenCalled();
   });
 
-  it('показывает честный funding pipeline и canonical USDC mint', () => {
+  it('LIVE-вкладка показывает кошелёк по сети и ведёт в «Кошельки», а не пополнение на месте', () => {
     state.publicData = data({ wallet }); renderLive();
-    expect(screen.getByRole('list', { name: 'Этапы пополнения' })).toBeTruthy();
-    expect(screen.getByText('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v')).toBeTruthy();
+    expect(screen.queryByRole('list', { name: 'Этапы пополнения' })).toBeNull();
+    expect(screen.queryByText(/официальным mint/)).toBeNull();
+    expect(screen.getByRole('link', { name: 'Управление кошельками →' }).getAttribute('href')).toBe('/wallet/');
+    expect(screen.getByRole('radio', { name: 'Solana' }).getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByText('SoLDeposit111')).toBeTruthy();
+    expect((screen.getByLabelText('Кошелёк для Solana') as HTMLSelectElement).value).toBe('w1');
+    expect(screen.getByText(/1,49 SOL/)).toBeTruthy();
+    expect(screen.getByText(/Это реальные средства кошелька, а не PAPER-счёт/)).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Подтверждение LIVE недоступно' }).hasAttribute('disabled')).toBe(true);
     expect(screen.getByRole('button', { name: 'LIVE kill switch недоступен' }).hasAttribute('disabled')).toBe(true);
     // Формулировка сменилась на статусную, смысл прежний: приём
     // не работает, и страница не должна обещать обратного.
     expect(screen.getByText('LIVE-пополнения ещё не подключены')).toBeTruthy();
-    expect(screen.getByText('Реальные переводы пока не принимаются.')).toBeTruthy();
+    expect(screen.getByText(/Реальные переводы пока не принимаются./)).toBeTruthy();
   });
 
   it('не показывает административную вкладку и кнопки Start/Stop', () => {
@@ -128,7 +163,7 @@ describe('/agent для обычного пользователя', () => {
 
   it('REST_ONLY называется резервным каналом, а не внутренним кодом', () => {
     state.publicData = data({ source: { transportMode: 'REST_ONLY', socketState: null, fallbackActive: true } }); render(<AgentPage />);
-    expect(screen.getByText('Резервный REST-канал')).toBeTruthy();
+    expect(screen.getByText(/Резервный REST-канал/)).toBeTruthy();
   });
 
   it('деградация объясняет переход на резервный режим', () => {
@@ -161,7 +196,12 @@ describe('/agent для обычного пользователя', () => {
       totalCostsUsd: 0.2, signalOrigin: 'OKX_SIGNAL_WEBSOCKET',
     }] });
     render(<AgentPage />); fireEvent.click(screen.getByRole('tab', { name: 'Позиции' }));
-    expect(screen.getByRole('link', { name: 'Открыть график →' }).getAttribute('href')).toBe('/terminal/?token=token-1');
+    const href = screen.getAllByRole('link', { name: 'Открыть график MEME' })[0]!.getAttribute('href') ?? '';
+    // Ссылка несёт id, сеть и адрес: одного тикера терминалу мало.
+    const params = new URLSearchParams(href.split('?')[1]);
+    expect(params.get('token')).toBe('token-1');
+    expect(params.get('chain')).toBe('SOLANA');
+    expect(params.get('address')).toBe('mint-1');
   });
 
   it('пустая история имеет отдельное состояние', () => {
@@ -178,6 +218,62 @@ describe('/agent для обычного пользователя', () => {
     render(<AgentPage />); fireEvent.click(screen.getByRole('tab', { name: 'История' }));
     expect(screen.getByText('Создан PAPER-счёт')).toBeTruthy();
     expect(screen.getByText('баланс $1,000.00')).toBeTruthy();
+  });
+});
+
+describe('сети агента и кошелёк по сети', () => {
+  it('в шапке три сети, недоступная — с причиной словами', () => {
+    state.publicData = data(); const { container } = render(<AgentPage />);
+    const chips = container.querySelectorAll('[data-agent-network]');
+    expect([...chips].map((chip) => chip.getAttribute('data-agent-network'))).toEqual(['SOLANA', 'BNB', 'ROBINHOOD']);
+    const rh = container.querySelector('[data-agent-network="ROBINHOOD"]')!;
+    expect(rh.getAttribute('data-network-available')).toBe('false');
+    expect(rh.getAttribute('title')).toContain('chainIndex 4663');
+  });
+
+  it('выбор недоступной сети называет причину, сеть без адреса ведёт создать кошелёк', () => {
+    state.publicData = data({ wallet }); const { container } = render(<AgentPage />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Подготовка LIVE' }));
+    fireEvent.click(screen.getByRole('radio', { name: /Robinhood Chain/ }));
+    expect(container.querySelector('[data-network-reason]')!.textContent).toContain('OKX Signal API не отдаёт сигналы по Robinhood Chain');
+    // Отключённый после выбора кошелёк: адрес не подставляется, проблема названа.
+    expect(container.querySelector('[data-selection-problem="WALLET_INACTIVE"]')).not.toBeNull();
+    expect(screen.queryByText('0xRhDeposit')).toBeNull();
+    expect(container.querySelector('[data-deposit-not-automatic="ROBINHOOD"]')!.textContent).toContain('не отразится в балансе');
+    fireEvent.click(screen.getByRole('radio', { name: /BNB Chain/ }));
+    expect(screen.getByRole('link', { name: 'создать в «Кошельках»' }).getAttribute('href')).toBe('/wallet/');
+    expect(container.querySelector('[data-network-reason]')).toBeNull();
+    expect(container.querySelector('[data-deposit-not-automatic="BNB"]')).not.toBeNull();
+  });
+
+  it('выбор кошелька уходит на сервер (PUT /wallets/live-selection), а не хранится только в интерфейсе', async () => {
+    state.publicData = data({ wallet }); render(<AgentPage />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Подготовка LIVE' }));
+    fireEvent.change(screen.getByLabelText('Кошелёк для Solana'), { target: { value: 'w1b' } });
+    await vi.waitFor(() => expect(apiMock).toHaveBeenCalled());
+    const [path, init] = apiMock.mock.calls[0] as unknown as [string, { method: string; body: string }];
+    expect(path).toBe('/wallets/live-selection');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(init.body)).toEqual({ network: 'SOLANA', walletId: 'w1b' });
+  });
+
+  it('Solana без предупреждения о зачислении; для EVM-сетей адрес не выдаётся за работающее пополнение', () => {
+    state.publicData = data({ wallet }); const { container } = render(<AgentPage />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Подготовка LIVE' }));
+    expect(container.querySelector('[data-deposit-not-automatic]')).toBeNull();
+  });
+
+  it('без входа кошелёк не запрашивается как ошибка страницы', () => {
+    state.publicData = data({ wallet }); state.walletAssets = undefined; state.walletError = new ApiErrorMock('нет', 401); state.liveSelection = undefined; state.wallets = undefined;
+    render(<AgentPage />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Подготовка LIVE' }));
+    expect(screen.getByText('войдите, чтобы выбрать')).toBeTruthy();
+  });
+
+  it('старый сервер без списка сетей показывает прежнюю подпись Solana', () => {
+    const base = data({ wallet }); delete (base.phase4 as any).networks;
+    state.publicData = base; render(<AgentPage />);
+    expect(screen.getAllByText('Solana').length).toBeGreaterThan(0);
   });
 });
 
@@ -202,7 +298,7 @@ describe('/agent для администратора', () => {
     const live = screen.getByRole('tab', { name: 'Подготовка LIVE' }); live.focus();
     await userEvent.setup().keyboard('{Enter}');
     expect(live.getAttribute('aria-selected')).toBe('true');
-    expect(screen.getByRole('list', { name: 'Этапы пополнения' })).toBeTruthy();
+    expect(screen.getByRole('radiogroup', { name: 'Сеть кошелька' })).toBeTruthy();
   });
 });
 
@@ -527,6 +623,17 @@ describe('правило выхода и Panic', () => {
     expect(screen.getByRole('radio', { name: /Защищённый/ }).getAttribute('aria-checked')).toBe('true');
   });
 
+  it('полуавтомат оставляет только «Цель 2×», выбранный ранее защищённый режим сбрасывается', () => {
+    adminState();
+    state.publicData.phase4.controlMode = 'semi-auto';
+    state.publicData.phase4.allowedExitModes = ['TARGET'];
+    const { container } = render(<SettingsPage />); fireEvent.click(screen.getByRole('button', { name: 'Далее' }));
+    const radios = screen.getAllByRole('radio');
+    expect(radios.map((r) => r.getAttribute('data-exit-mode'))).toEqual(['TARGET']);
+    expect(radios[0]!.getAttribute('aria-checked')).toBe('true');
+    expect(container.querySelector('[data-control-mode="semi-auto"]')!.textContent).toContain('только правило «Цель 2×»');
+  });
+
   it('выбранный режим и правки уходят вместе с распределением', async () => {
     adminState(); state.publicData.metrics24h.openPositions = 0; render(<SettingsPage />); fireEvent.click(screen.getByRole('button', { name: 'Далее' }));
     fireEvent.click(screen.getByRole('radio', { name: /Трейлинг/ }));
@@ -592,11 +699,11 @@ describe('простой обзор', () => {
     expect(row.textContent).toContain('1.50×');
     expect(row.textContent).toContain('Стоп 0.65×');
     expect(row.textContent).toContain('Цель 1.60×');
-    expect(screen.queryByRole('list', { name: 'Этапы пополнения' })).toBeNull();
+    expect(screen.queryByRole('radiogroup', { name: 'Сеть кошелька' })).toBeNull();
     expect(container.querySelector('[data-live-stage]')).toBeNull();
     expect(screen.queryByText('Путь решения')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /LIVE заблокирован/ }));
-    expect(screen.getByRole('list', { name: 'Этапы пополнения' })).toBeTruthy();
+    expect(screen.getByRole('radiogroup', { name: 'Сеть кошелька' })).toBeTruthy();
   });
 
   it('старый API без плана выхода не выдумывает стоп и цель', () => {
@@ -618,7 +725,7 @@ describe('простой обзор', () => {
     const { container } = render(<AgentPage />);
     fireEvent.click(container.querySelector('[data-compact-position] summary')!);
     expect(container.querySelector('[data-compact-position]')!.hasAttribute('open')).toBe(true);
-    expect(screen.getByRole('link', { name: 'Открыть график →' }).getAttribute('href')).toBe('/terminal/?token=token-a');
+    expect(screen.getAllByRole('link', { name: /Открыть график/ })[0]!.getAttribute('href')).toContain('token=token-a');
     fireEvent.click(screen.getByRole('button', { name: 'Подробнее →' }));
     expect(screen.getByRole('tab', { name: 'Позиции' }).getAttribute('aria-selected')).toBe('true');
   });
@@ -845,4 +952,59 @@ describe('финальная проверка карточек', () => {
     await vi.waitFor(() => expect(apiMock).toHaveBeenCalledTimes(1));
     expect(JSON.parse((apiMock.mock.calls[0] as any)[1].body)).toMatchObject({ exitMode: 'TRAILING_PURE', confirm: true });
   });
+});
+
+
+describe('история → график монеты', () => {
+  const closed = (over: Record<string, unknown> = {}) => ({
+    id: 'h1', tokenId: 'token-h', token: { id: 'token-h', symbol: 'HIS', name: 'History', logoUrl: null }, state: 'PAPER_CLOSED', decisionCode: null,
+    strategyLabel: 'Baseline', chain: 'solana', address: 'MintH', symbol: 'HIS', signaledAt: '2026-09-08T10:00:00.000Z', decidedAt: '2026-09-08T10:00:01.000Z', signalOrigin: null,
+    entryAt: '2026-09-08T10:00:01.000Z', exitAt: '2026-09-08T10:20:00.000Z', entryPriceUsd: 1, currentPriceUsd: 2, realizedPnlUsd: 90, unrealizedPnlUsd: 0, maxMultiple: 2, durationMs: 1, positionUsd: 100, totalCostsUsd: 1,
+    ...over,
+  });
+
+  it('каждая запись истории ведёт на график с id, сетью и адресом', () => {
+    state.publicData = data({ wallet, recentDecisions: [closed()] });
+    render(<AgentPage />); fireEvent.click(screen.getByRole('tab', { name: 'История' }));
+    const links = screen.getAllByRole('link', { name: 'Открыть график HIS' });
+    expect(links.length).toBeGreaterThanOrEqual(1);
+    const params = new URLSearchParams(links[0]!.getAttribute('href')!.split('?')[1]);
+    expect(params.get('token')).toBe('token-h');
+    expect(params.get('chain')).toBe('solana');
+    expect(params.get('address')).toBe('MintH');
+  });
+
+  it('запись без id ведёт по сети и адресу; без адреса — честное «Графика нет»', () => {
+    state.publicData = data({ wallet, recentDecisions: [closed({ id: 'h2', tokenId: null, token: null }), closed({ id: 'h3', tokenId: null, token: null, address: '', symbol: 'NOPE' })] });
+    const { container } = render(<AgentPage />); fireEvent.click(screen.getByRole('tab', { name: 'История' }));
+    const byAddress = screen.getAllByRole('link', { name: 'Открыть график HIS' });
+    for (const link of byAddress) expect(link.getAttribute('href')).toBe('/terminal/?chain=solana&address=MintH');
+    expect(container.querySelectorAll('[data-chart-link="none"]').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('Графика нет').length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('источник сигналов', () => {
+  it('называет источник OKX Signal в строке состояния', () => {
+    state.publicData = data({ wallet }); render(<AgentPage />);
+    expect(screen.getByText(/OKX Signal · WebSocket/)).toBeTruthy();
+  });
+
+  it('при потере источника показывает причину паузы входов и что позиции ведутся', () => {
+    state.publicData = data({ wallet, health: 'DEGRADED', runtime: { running: true, lastActivityAt: null, queued: 0, entriesPausedBySource: { code: 'REST_STALE', message: 'OKX Signal API давно не отвечал', transport: 'REST_ONLY' } } });
+    const { container } = render(<AgentPage />);
+    expect(container.querySelector('[data-entries-paused="REST_STALE"]')).toBeTruthy();
+    expect(screen.getByRole('alert').textContent).toContain('Открытые позиции продолжают сопровождаться');
+  });
+});
+
+it('объясняет 60036 и раздельно показывает login, подписку, событие, REST и две задержки', () => {
+  state.publicData = data({source:{transportMode:'REST_ONLY',socketState:'rest_only',fallbackActive:true,loginVerified:true,subscriptionsVerified:false,lastWsEventAt:null,lastRestSuccessAt:'2026-09-09T00:00:00Z',accessMessage:'Ключу недоступен WebSocket по Market API subscription (60036)',providerDeliveryLatencyMs:192540,agentDecisionLatencyMs:190}});
+  render(<AgentPage />);
+  expect(screen.getByText('Ключу недоступен WebSocket по Market API subscription (60036)')).toBeTruthy();
+  expect(screen.getByText('Вход WS: подтверждён')).toBeTruthy();
+  expect(screen.getByText('Подписка WS: не подтверждена')).toBeTruthy();
+  expect(screen.getByText('Событие WS: не получено')).toBeTruthy();
+  expect(screen.getByText('Доставка последнего решения: 192540 мс')).toBeTruthy();
+  expect(screen.getByText('Решение агента после получения: 190 мс')).toBeTruthy();
 });

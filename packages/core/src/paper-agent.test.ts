@@ -176,7 +176,8 @@ describe('paper agent — решение', () => {
     },
   );
 
-  it.each(['BASE', 'BNB', 'ETHEREUM', '8453', '56', '1', '', 'unknown', null])(
+  // BNB Chain и Robinhood Chain — сети агента; Base и Ethereum — нет.
+  it.each(['BASE', 'ETHEREUM', '8453', '1', '', 'unknown', null])(
     'пропускает неподдерживаемую сеть %s',
     (network) => {
       expect(evaluatePaperSignal(baseline, signal({ network }), NOW).code).toBe(

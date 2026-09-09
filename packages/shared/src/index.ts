@@ -43,9 +43,11 @@ export const CHAINS: Record<Chain, ChainMeta> = {
     // Arbitrum Orbit L2, mainnet с 1 июля 2026.
     label: 'Robinhood Chain',
     nativeSymbol: 'ETH',
-    chainId: null, // задаётся через RHC_CHAIN_ID — сеть молодая, значение уточняется
+    // Chain ID 4663, RPC rpc.mainnet.chain.robinhood.com, обозреватель — Blockscout
+    // (docs.robinhood.com/chain/connecting).
+    chainId: 4663,
     nativeDecimals: 18,
-    explorerTx: (s) => `https://explorer.robinhood.com/tx/${s}`,
+    explorerTx: (s) => `https://robinhoodchain.blockscout.com/tx/${s}`,
   },
   ETHEREUM: {
     label: 'Ethereum',

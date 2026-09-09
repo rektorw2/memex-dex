@@ -59,6 +59,13 @@ import {
   SOLANA_NETWORK_PROOF_TABLES,
   SOLANA_NETWORK_PROOF_INDEXES,
   PAPER_EXIT_PLAN_MIGRATION,
+  AGENT_LIVE_WALLET_MIGRATION,
+  AGENT_LIVE_WALLET_TABLES,
+  AGENT_LIVE_WALLET_INDEXES,
+  WORKER_HEARTBEAT_MIGRATION,
+  PAPER_METADATA_GATE_MIGRATION,
+  WORKER_HEARTBEAT_TABLES,
+  PAPER_METADATA_GATE_TABLES,
   PAPER_EXIT_PLAN_COLUMNS,
   planProductionSchemaRepair,
   type ProductionSchemaSnapshot,
@@ -174,6 +181,9 @@ function readySnapshot(): ProductionSchemaSnapshot {
     ...TRANSACTION_INTENT_TABLES,
     ...SIGNING_IDENTITY_TABLES,
     ...SOLANA_NETWORK_PROOF_TABLES,
+    ...AGENT_LIVE_WALLET_TABLES,
+    ...WORKER_HEARTBEAT_TABLES,
+    ...PAPER_METADATA_GATE_TABLES,
   );
   s.indexes = [
     ...PHASE4_RECONCILIATION_INDEXES,
@@ -181,6 +191,7 @@ function readySnapshot(): ProductionSchemaSnapshot {
     ...INTENT_LIFECYCLE_INDEXES,
     ...SIGNING_IDENTITY_INDEXES,
     ...SOLANA_NETWORK_PROOF_INDEXES,
+    ...AGENT_LIVE_WALLET_INDEXES,
   ];
   s.appliedMigrations = [...KNOWN_MIGRATIONS];
   return s;
@@ -226,6 +237,16 @@ function dropSchemaOf(s: ProductionSchemaSnapshot, migration: string): void {
       s.paperAgentAllocationColumns = s.paperAgentAllocationColumns.filter(
         (c) => !PAPER_EXIT_PLAN_COLUMNS.includes(c as never),
       );
+      return;
+    case AGENT_LIVE_WALLET_MIGRATION:
+      withoutTables(AGENT_LIVE_WALLET_TABLES);
+      withoutIndexes(AGENT_LIVE_WALLET_INDEXES);
+      return;
+    case PAPER_METADATA_GATE_MIGRATION:
+      withoutTables(PAPER_METADATA_GATE_TABLES);
+      return;
+    case WORKER_HEARTBEAT_MIGRATION:
+      withoutTables(WORKER_HEARTBEAT_TABLES);
       return;
     default:
       throw new Error(`нет правила очистки для ${migration}`);
@@ -296,8 +317,10 @@ describe('переход с прежней схемы', () => {
     if (plan.action !== 'apply-migrations') throw new Error('ожидался apply-migrations');
     expect(plan.pending).toContain(SOLANA_NETWORK_PROOF_MIGRATION);
     expect(plan.pending).toContain(PAPER_EXIT_PLAN_MIGRATION);
-    expect(plan.pending.at(-1), 'план выхода применяется последним').toBe(
-      PAPER_EXIT_PLAN_MIGRATION,
+    expect(plan.pending).toContain(AGENT_LIVE_WALLET_MIGRATION);
+    expect(plan.pending).toContain(WORKER_HEARTBEAT_MIGRATION);
+    expect(plan.pending.at(-1), 'метаданные применяются последними').toBe(
+      PAPER_METADATA_GATE_MIGRATION,
     );
   });
 
@@ -614,6 +637,9 @@ const LATE_PHASE4 = [
   SIGNING_IDENTITY_MIGRATION,
   SOLANA_NETWORK_PROOF_MIGRATION,
   PAPER_EXIT_PLAN_MIGRATION,
+  AGENT_LIVE_WALLET_MIGRATION,
+  WORKER_HEARTBEAT_MIGRATION,
+  PAPER_METADATA_GATE_MIGRATION,
 ] as const;
 
 /**
@@ -637,6 +663,9 @@ function beforeLatePhase4(): ProductionSchemaSnapshot {
         'SigningAttempt',
         'SigningIdentity',
         ...SOLANA_NETWORK_PROOF_TABLES,
+        ...AGENT_LIVE_WALLET_TABLES,
+        ...WORKER_HEARTBEAT_TABLES,
+        ...PAPER_METADATA_GATE_TABLES,
       ].includes(t),
   );
   s.solanaDepositEventColumns = [];
@@ -780,7 +809,9 @@ describe('матрица покрывает и новую миграцию', () 
      */
     expect([...LATE_PHASE4]).toContain(SOLANA_NETWORK_PROOF_MIGRATION);
     expect([...LATE_PHASE4]).toContain(PAPER_EXIT_PLAN_MIGRATION);
-    expect(LATE_PHASE4.length, 'поздних миграций Phase 4').toBe(6);
+    expect([...LATE_PHASE4]).toContain(AGENT_LIVE_WALLET_MIGRATION);
+    expect([...LATE_PHASE4]).toContain(WORKER_HEARTBEAT_MIGRATION);
+    expect(LATE_PHASE4.length, 'поздних миграций Phase 4').toBe(9);
   });
 
   it('частично применённая миграция доказательства останавливает запуск', () => {
@@ -798,6 +829,18 @@ describe('матрица покрывает и новую миграцию', () 
       action: 'refuse',
       reason: 'PARTIAL_SOLANA_NETWORK_PROOF_MIGRATION',
     });
+  });
+
+  it('частично применённый кошелёк LIVE (таблица без уникальности «одна на сеть») останавливает запуск', () => {
+    const s = readySnapshot();
+    s.indexes = s.indexes.filter((index) => !AGENT_LIVE_WALLET_INDEXES.includes(index as never));
+    expect(planProductionSchemaRepair(s)).toEqual({ action: 'refuse', reason: 'PARTIAL_AGENT_LIVE_WALLET_MIGRATION' });
+  });
+
+  it('пульс воркера: таблица есть, а в истории её нет — схема опередила историю', () => {
+    const s = readySnapshot();
+    s.appliedMigrations = (s.appliedMigrations ?? []).filter((name) => name !== WORKER_HEARTBEAT_MIGRATION);
+    expect(planProductionSchemaRepair(s)).toEqual({ action: 'refuse', reason: 'WORKER_HEARTBEAT_SCHEMA_AHEAD_OF_HISTORY' });
   });
 
   it('частично применённый план выхода останавливает запуск', () => {

@@ -1,0 +1,62 @@
+{
+  "checkedAtUtc": "2026-09-09T00:11:37.239270+00:00",
+  "head": "619e631",
+  "status": "READY_FOR_LOCAL_REVIEW",
+  "productionCheckedThisIteration": false,
+  "committed": false,
+  "pushed": false,
+  "deployed": false,
+  "productionSettingsChanged": false,
+  "liveExecutionEnabled": false,
+  "paperFullyReady": false,
+  "checks": {
+    "core": 2072,
+    "api": 1842,
+    "web": 455,
+    "total": 4369,
+    "e2e": 91,
+    "observerSyntheticRegressions": 12,
+    "types": "PASS",
+    "coreBuild": "PASS",
+    "prismaGenerate": "PASS",
+    "staticBuild": "PASS",
+    "dockerApiBuild": "PASS",
+    "rollbackWithDataPreserved": "PASS",
+    "uiWidths": [
+      390,
+      1280
+    ],
+    "uiScreenshots": 18,
+    "uiUsesFixtures": true,
+    "diffCheck": "PASS"
+  },
+  "metadata": {
+    "maxWaitMs": 30000,
+    "deadlineAnchoredTo": "persisted signal timestamps",
+    "state": "RECEIVED / WAITING_FOR_TOKEN_METADATA",
+    "onDemandDateSource": "existing GeckoTerminal pool_created_at adapter",
+    "unknownDatesRemainFailClosed": true,
+    "historicalRunsRewritten": false
+  },
+  "ws": {
+    "denialCode": "60036",
+    "meaning": "WebSocket access requires an active Market API subscription.",
+    "retryMs": 3600000,
+    "restPreserved": true,
+    "realProductionRecoveryConfirmed": false
+  },
+  "migrations": [
+    "20260908130000_add_agent_live_wallet",
+    "20260909100000_add_worker_heartbeat"
+  ],
+  "newMigrationsThisIteration": [],
+  "renderBlueprintPlan": "1c-2g",
+  "blueprintApplied": false,
+  "remainingProductionGates": [
+    "verify Market API subscription binding to actual Render key/project",
+    "confirm real WS subscribe acknowledgement and event after access restoration",
+    "confirm valid PAPER entry, management and exit",
+    "complete real continuous observation >=24h"
+  ],
+  "rollbackScope": "API schema compatibility with workers disabled; do not run old worker against open new-network positions"
+}

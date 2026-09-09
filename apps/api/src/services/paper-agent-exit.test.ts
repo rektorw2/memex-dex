@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { PAPER_AGENT_STRATEGIES, PAPER_EXIT_PRESETS, fixedAllocationPolicy } from '@memex/core';
+import { PAPER_AGENT_STRATEGIES, strategyForNetwork, PAPER_EXIT_PRESETS, fixedAllocationPolicy } from '@memex/core';
 
 /*
  * Сопровождение позиции по плану выхода — на памяти вместо базы.
@@ -70,12 +70,14 @@ const D = (value: number | string) => ({ toString: () => String(value), toNumber
 const strategy = PAPER_AGENT_STRATEGIES[0]!;
 const ENTRY_AT = new Date('2026-09-08T10:00:00.000Z');
 
-function openPosition(mode: keyof typeof PAPER_EXIT_PRESETS) {
+function openPosition(mode: keyof typeof PAPER_EXIT_PRESETS, network: 'SOLANA' | 'BNB' | 'ROBINHOOD' = 'SOLANA') {
   const policy = { ...fixedAllocationPolicy({ capitalUsd: 1_000, maxOpenPositions: 4, reservePct: 30 }), exitPlan: PAPER_EXIT_PRESETS[mode] };
   const allocated = 100;
-  const feeRate = strategy.tradeFeeBps / 10_000;
-  const entryFee = allocated * feeRate + strategy.networkFeeUsdPerSide;
-  const executionPrice = 1 * (1 + strategy.entrySlippageBps / 10_000);
+  // Вход считается по модели расходов сети; в run сохраняется её снимок.
+  const entryStrategy = strategyForNetwork(strategy, network);
+  const feeRate = entryStrategy.tradeFeeBps / 10_000;
+  const entryFee = allocated * feeRate + entryStrategy.networkFeeUsdPerSide;
+  const executionPrice = 1 * (1 + entryStrategy.entrySlippageBps / 10_000);
   const quantity = (allocated - entryFee) / executionPrice;
   store.session = {
     id: 'active', kind: 'ACTIVE', status: 'ACTIVE', ledgerVersion: 3, closedAt: null,
@@ -91,7 +93,13 @@ function openPosition(mode: keyof typeof PAPER_EXIT_PRESETS) {
     peakSourcePriceUsd: D(1), maxMultiple: D(1), maxDrawdownPct: D(0),
     realizedPnlUsd: null, tradingFeesUsd: null, slippageUsd: null, networkCostsUsd: null,
     exitPlan: PAPER_EXIT_PRESETS[mode], exitState: null, exitReason: null,
-    run: { tokenId: 'token', symbol: 'GEM', address: 'Mint', strategy: { key: strategy.key, version: strategy.version, label: strategy.label, config: strategy } },
+    run: {
+      tokenId: 'token', symbol: 'GEM', address: 'Mint', chain: network,
+      costModelKey: entryStrategy.costModelKey, tradeFeeBps: entryStrategy.tradeFeeBps, entrySlippageBps: entryStrategy.entrySlippageBps,
+      exitSlippageBps: entryStrategy.exitSlippageBps, networkFeeUsdPerSide: D(entryStrategy.networkFeeUsdPerSide),
+      // «После рестарта»: общая стратегия читается с расходами Solana — позиция обязана вестись по снимку.
+      strategy: { key: strategy.key, version: strategy.version, label: strategy.label, config: strategy },
+    },
   };
   store.run = { state: 'PAPER_OPEN' };
   store.ledger = [];
@@ -188,6 +196,37 @@ describe('план выхода на счёте', () => {
     expect((await settlePaperAllocation(store.allocation as any, 0.5, at(1))).outcome).toBe('CONFLICT');
     expect(store.allocation.state).toBe('OPEN');
     expect(store.ledger).toHaveLength(0);
+  });
+});
+
+describe('снимок расходов позиции по сетям', () => {
+  it.each(['SOLANA', 'BNB', 'ROBINHOOD'] as const)('%s: частичная продажа и закрытие считают комиссии по снимку входа, а не по общей стратегии', async (network) => {
+    const { allocated } = openPosition('LADDER', network);
+    const fee = strategyForNetwork(strategy, network).networkFeeUsdPerSide;
+    const partial = await settlePaperAllocation(store.allocation as any, 1.6, at(5));
+    expect(partial).toMatchObject({ outcome: 'PARTIAL' });
+    // Сетевые расходы: вход целиком + доля выхода (40% остатка) — по сбору сети, не Solana.
+    expect(num(store.allocation.networkCostsUsd)).toBeCloseTo(fee * 1.4, 8);
+    const sellEvent = store.outbox.find((event) => event.eventType === 'PAPER_SELL');
+    expect(sellEvent!.payload.network).toBe({ SOLANA: 'Solana', BNB: 'BNB Chain', ROBINHOOD: 'Robinhood Chain' }[network]);
+    await settlePaperAllocation(store.allocation as any, 2.0, at(6));
+    const closed = await settlePaperAllocation(store.allocation as any, 1.2, at(8));
+    expect(closed.outcome).toBe('CLOSED');
+    // Вход (один сбор по долям) + три продажи, каждая — отдельная транзакция со своим сбором сети.
+    expect(num(store.allocation.networkCostsUsd)).toBeCloseTo(fee * 4, 8);
+    const result = store.outbox.find((event) => event.eventType === 'TRADE_RESULT');
+    expect(result!.payload.network).toBe({ SOLANA: 'Solana', BNB: 'BNB Chain', ROBINHOOD: 'Robinhood Chain' }[network]);
+    const s = store.session;
+    expect(num(s.equityUsd)).toBeCloseTo(num(s.freeBalanceUsd) + num(s.reservedBalanceUsd) + num(s.inPositionsUsd) + num(s.unrealizedPnlUsd), 6);
+    expect(allocated).toBe(100);
+  });
+
+  it('позиция без снимка (открыта до появления поля) ведётся по общей стратегии', async () => {
+    openPosition('TARGET', 'BNB');
+    store.allocation.run = { ...store.allocation.run, costModelKey: null, tradeFeeBps: null, entrySlippageBps: null, exitSlippageBps: null, networkFeeUsdPerSide: null };
+    const closed = await settlePaperAllocation(store.allocation as any, 2.0, at(5));
+    expect(closed.outcome).toBe('CLOSED');
+    expect(num(store.allocation.networkCostsUsd)).toBeCloseTo(strategy.networkFeeUsdPerSide * 2, 8);
   });
 });
 

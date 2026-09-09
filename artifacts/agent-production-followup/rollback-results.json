@@ -1,0 +1,53 @@
+{
+  "database": "isolated PostgreSQL 17 clone of local E2E database",
+  "initialDataHash": "90051803e781f366eb29841d2de066d8f831e04374b00b1aab998c16b4928198",
+  "stages": [
+    {
+      "stage": "new-before",
+      "image": "memex-followup:new",
+      "health": {
+        "status": 200,
+        "body": {
+          "ok": true,
+          "mode": "paper",
+          "ts": "2026-09-09T00:06:38.422Z"
+        }
+      },
+      "dataHash": "90051803e781f366eb29841d2de066d8f831e04374b00b1aab998c16b4928198",
+      "allDataPreserved": true,
+      "schemaReady": true
+    },
+    {
+      "stage": "rollback",
+      "image": "memex-followup:619e631",
+      "health": {
+        "status": 200,
+        "body": {
+          "ok": true,
+          "mode": "paper",
+          "ts": "2026-09-09T00:06:39.710Z"
+        }
+      },
+      "dataHash": "90051803e781f366eb29841d2de066d8f831e04374b00b1aab998c16b4928198",
+      "allDataPreserved": true,
+      "schemaReady": true
+    },
+    {
+      "stage": "new-after",
+      "image": "memex-followup:new",
+      "health": {
+        "status": 200,
+        "body": {
+          "ok": true,
+          "mode": "paper",
+          "ts": "2026-09-09T00:06:40.932Z"
+        }
+      },
+      "dataHash": "90051803e781f366eb29841d2de066d8f831e04374b00b1aab998c16b4928198",
+      "allDataPreserved": true,
+      "schemaReady": true
+    }
+  ],
+  "deletedMigrationHistory": false,
+  "droppedAddedTables": false
+}

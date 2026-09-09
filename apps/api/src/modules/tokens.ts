@@ -1382,6 +1382,60 @@ export const tokenRoutes: FastifyPluginAsync = async (app) => {
     }));
   });
 
+  /**
+   * Токен для графика по ссылке из истории агента.
+   *
+   * Ссылка несёт три признака — id, сеть и адрес контракта — и любой
+   * из них достаточен, чтобы найти токен: id может отсутствовать у
+   * старой записи, а сеть с адресом однозначно определяют токен.
+   * Одного тикера здесь нет намеренно: под одним тикером живут
+   * десятки контрактов.
+   *
+   * Скрытые токены (сигналы OKX создаются скрытыми из витрины)
+   * возвращаются, но помечены: человек пришёл по ссылке из своей
+   * же истории и должен увидеть тот же токен, а не первый попавшийся.
+   */
+  app.get('/tokens/resolve', async (req, reply) => {
+    const query = z
+      .object({
+        id: z.string().min(1).max(120).optional(),
+        chain: z.enum(['SOLANA', 'BNB', 'ROBINHOOD', 'ETHEREUM', 'BASE']).optional(),
+        address: z.string().min(3).max(120).optional(),
+      })
+      .parse(req.query);
+    /*
+     * Ссылка обязана вести ровно на тот токен: если переданы и id, и
+     * сеть с адресом, они должны совпасть — иначе это чужой график.
+     * Регистр адреса: у EVM он не значим, у Solana значим (base58),
+     * и «почти тот же» mint — другой токен.
+     */
+    const sameAddress = (chain: string, a: string, b: string) => (chain === 'SOLANA' ? a === b : a.toLowerCase() === b.toLowerCase());
+    const byId = query.id ? await prisma.token.findUnique({ where: { id: query.id } }) : null;
+    if (byId && ((query.chain && byId.chain !== query.chain) || (query.address && !sameAddress(byId.chain, byId.address, query.address)))) {
+      return reply.code(404).send({ error: 'Токен по ссылке не совпадает с сетью или адресом', code: 'TOKEN_LINK_MISMATCH' });
+    }
+    const byAddress = !byId && query.chain && query.address
+      ? (query.chain === 'SOLANA'
+          ? await prisma.token.findUnique({ where: { chain_address: { chain: 'SOLANA', address: query.address } } })
+          : await prisma.token.findFirst({ where: { chain: query.chain, address: { equals: query.address, mode: 'insensitive' } } }))
+      : null;
+    const t = byId ?? byAddress;
+    if (!t) return reply.code(404).send({ error: 'Токен не найден', code: 'TOKEN_NOT_FOUND' });
+    markHot(t.id);
+    return {
+      ...t,
+      priceUsd: t.priceUsd?.toString() ?? null,
+      priceChange24h: t.priceChange24h?.toString() ?? null,
+      liquidityUsd: t.liquidityUsd?.toString() ?? null,
+      volume24hUsd: t.volume24hUsd?.toString() ?? null,
+      fdvUsd: t.fdvUsd?.toString() ?? null,
+      hasChart: t.poolAddress != null,
+      hidden: t.isHidden,
+      ...checkStatusOf(t),
+      ...priceFreshness(t.priceUpdatedAt),
+    };
+  });
+
   app.get('/tokens/:id', async (req, reply) => {
     const { id } = z.object({ id: z.string() }).parse(req.params);
     const t = await prisma.token.findUnique({ where: { id } });

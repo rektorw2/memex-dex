@@ -12,6 +12,9 @@ import {
   SIGNING_IDENTITY_MIGRATION,
   SOLANA_NETWORK_PROOF_MIGRATION,
   PAPER_EXIT_PLAN_MIGRATION,
+  AGENT_LIVE_WALLET_MIGRATION,
+  WORKER_HEARTBEAT_MIGRATION,
+  PAPER_METADATA_GATE_MIGRATION,
   BASELINE_MIGRATION,
   planProductionSchemaRepair,
 } from './production-schema-repair.js';
@@ -168,14 +171,22 @@ describe('загрузчик на настоящей схеме', () => {
     expect([...KNOWN_MIGRATIONS], 'каталог знает о плане выхода').toContain(
       PAPER_EXIT_PLAN_MIGRATION,
     );
-    expect(KNOWN_MIGRATIONS.at(-1), 'он последний в каталоге').toBe(
-      PAPER_EXIT_PLAN_MIGRATION,
+    expect([...KNOWN_MIGRATIONS], 'каталог знает о кошельке LIVE').toContain(
+      AGENT_LIVE_WALLET_MIGRATION,
+    );
+    expect([...KNOWN_MIGRATIONS], 'каталог знает о пульсе воркера').toContain(
+      WORKER_HEARTBEAT_MIGRATION,
+    );
+    expect(KNOWN_MIGRATIONS.at(-1), 'метаданные последние в каталоге').toBe(
+      PAPER_METADATA_GATE_MIGRATION,
     );
     expect(applied, 'сценарий применил доказательство проверки сети').toContain(
       SOLANA_NETWORK_PROOF_MIGRATION,
     );
-    expect(applied.at(-1), 'и применил план выхода последним — перед ready').toBe(
-      PAPER_EXIT_PLAN_MIGRATION,
+    expect(applied, 'применил план выхода').toContain(PAPER_EXIT_PLAN_MIGRATION);
+    expect(applied, 'применил кошелёк LIVE').toContain(AGENT_LIVE_WALLET_MIGRATION);
+    expect(applied.at(-1), 'применил метаданные последними перед ready').toBe(
+      PAPER_METADATA_GATE_MIGRATION,
     );
     expect(applied, 'применено ровно то и в том порядке, что в каталоге').toEqual(IN_ORDER);
 
@@ -334,6 +345,10 @@ const LATE_PHASE4 = [
   { migration: SIGNING_IDENTITY_MIGRATION, prefix: 'SIGNING_IDENTITY' },
   { migration: SOLANA_NETWORK_PROOF_MIGRATION, prefix: 'SOLANA_NETWORK_PROOF' },
   { migration: PAPER_EXIT_PLAN_MIGRATION, prefix: 'PAPER_EXIT_PLAN' },
+  { migration: AGENT_LIVE_WALLET_MIGRATION, prefix: 'AGENT_LIVE_WALLET' },
+  // Одна таблица без индексов: один CREATE TABLE не бывает применён наполовину.
+  { migration: WORKER_HEARTBEAT_MIGRATION, prefix: 'WORKER_HEARTBEAT', atomic: true },
+  { migration: PAPER_METADATA_GATE_MIGRATION, prefix: 'PAPER_METADATA_GATE', atomic: true },
 ] as const;
 
 describe('матрица поздних миграций не отстала от каталога', () => {
@@ -347,7 +362,9 @@ describe('матрица поздних миграций не отстала о�
 
     expect(covered).toContain(SOLANA_NETWORK_PROOF_MIGRATION);
     expect(covered).toContain(PAPER_EXIT_PLAN_MIGRATION);
-    expect(covered, 'поздних миграций Phase 4').toHaveLength(6);
+    expect(covered).toContain(AGENT_LIVE_WALLET_MIGRATION);
+    expect(covered).toContain(WORKER_HEARTBEAT_MIGRATION);
+    expect(covered, 'поздних миграций Phase 4').toHaveLength(9);
     expect(covered, 'дубликатов нет').toEqual([...new Set(covered)]);
 
     // Опечатка в имени превратила бы `applyBefore` в применение
@@ -358,10 +375,9 @@ describe('матрица поздних миграций не отстала о�
   });
 });
 
-describe.each(LATE_PHASE4)('поздняя миграция $migration на настоящем Postgres', ({
-  migration,
-  prefix,
-}) => {
+describe.each(LATE_PHASE4)('поздняя миграция $migration на настоящем Postgres', (row) => {
+  const { migration, prefix } = row;
+  const atomic = 'atomic' in row && row.atomic === true;
   it('полностью отсутствующая попадает в pending', async () => {
     const db = await PGlite.create();
     await applyBefore(db, migration);
@@ -430,6 +446,15 @@ describe.each(LATE_PHASE4)('поздняя миграция $migration на на
     await applyBefore(db, migration);
 
     const parts = statementsOf(sqlOf(migration));
+    if (atomic) {
+      // Единственный оператор либо выполнился целиком, либо нет:
+      // «половины» у такой миграции не существует, и планировщик
+      // после отката видит её просто отсутствующей.
+      expect(parts.length, 'атомарная миграция — ровно один оператор').toBe(1);
+      expect(await planOf(db)).toMatchObject({ action: 'apply-migrations' });
+      await db.close();
+      return;
+    }
     expect(parts.length, 'миграция из одного оператора не может быть частичной').toBeGreaterThan(1);
     for (const part of parts.slice(0, -1)) await db.exec(`${part};`);
 

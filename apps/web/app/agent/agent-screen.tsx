@@ -5,7 +5,7 @@ import { SemiAutoProposals } from '@/components/SemiAutoProposals';
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import useSWR from 'swr';
 import { ApiError, api, errorMessage, fetcher } from '@/lib/api';
-import { agentFailureVerdict, paperExitPlan, type AgentFailureKind } from '@memex/core';
+import { agentFailureVerdict, paperExitPlan, type AgentFailureKind, type AgentNetworkReadiness } from '@memex/core';
 import { EXIT_MODE_COPY, ExitModeCard } from '@/components/agent/ExitModeCard';
 
 type MaybeNumber = number | null;
@@ -72,6 +72,8 @@ interface LedgerEvent {
     signalScore: number | null;
     tokenId: string | null;
     symbol: string;
+    chain?: string | null;
+    address?: string | null;
     token: { id: string; symbol: string; name: string; logoUrl: string | null } | null;
   };
 }
@@ -112,6 +114,15 @@ interface Phase4Status {
   unavailable?: string[];
   mode: 'SEMI_AUTO';
   network: 'SOLANA';
+  /*
+   * Режим управления и разрешённые правила выхода. Могут отсутствовать
+   * (старый сервер) — тогда показываются все правила, а сервер сам
+   * отклонит недопустимое.
+   */
+  controlMode?: 'semi-auto' | 'auto';
+  allowedExitModes?: ExitMode[];
+  /** Сети агента с готовностью и причинами; отсутствует у старого сервера. */
+  networks?: AgentNetworkReadiness[];
   live: {
     enabled: boolean;
     executionEnabled: boolean;
@@ -166,7 +177,7 @@ interface PublicAgentData {
   viewer: { isAdmin: boolean };
   health: 'OFF' | 'STANDBY' | 'ACTIVE' | 'DEGRADED' | 'REFUSED';
   control: { isEnabled: boolean; activeAllocationMode: 'FIXED' | 'AUTOPILOT' | null; learningModeEnabled: boolean };
-  runtime: { running: boolean; lastActivityAt: string | null; queued: number };
+  runtime: { running: boolean; lastActivityAt: string | null; queued: number; entriesPausedBySource?: { code: string; message: string; transport: string } | null };
   source: {
     transportMode: 'WEBSOCKET' | 'REST_ONLY' | 'DISABLED';
     socketState: string | null;
@@ -174,6 +185,15 @@ interface PublicAgentData {
     lastRestSuccessAt: string | null;
     nextRestReconciliationAt: string | null;
     fallbackActive: boolean;
+    loginVerified?: boolean;
+    subscriptionsVerified?: boolean;
+    lastSubscriptionAt?: number | null;
+    lastWsEventAt?: number | null;
+    nextAccessCheckAt?: number | null;
+    accessMessage?: string | null;
+    lastRestErrorCode?: string | null;
+    providerDeliveryLatencyMs?: number | null;
+    agentDecisionLatencyMs?: number | null;
   };
   lastDecisionAt: string | null;
   notifications: { unread: number; telegramEnabled: boolean };
@@ -356,20 +376,35 @@ function AgentHero({ data, status }: { data: PublicAgentData; status: (typeof ST
   const shown = useAnimatedNumber(equity ?? 0);
 
   return <header data-agent-hero className="agent-card panel p-4 sm:p-5" style={{ '--i': 0 } as CSSProperties}>
-    <div className="flex items-center gap-2">
+    <div className="flex flex-wrap items-center gap-2">
       <h1 className="text-lg font-semibold sm:text-2xl">Агент memex</h1>
       <span className="rounded border border-accent/30 px-1.5 py-0.5 text-[10px] font-semibold text-accent">PAPER</span>
-      <span className="text-[10px] text-muted">Solana</span>
+      <NetworkChips networks={data.phase4?.networks} />
       {data.viewer.isAdmin && <Link href="/agent/settings" className="ml-auto inline-flex min-h-11 items-center text-xs text-muted hover:text-white">Настройки →</Link>}
     </div>
     <div role="status" className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted" aria-label="Состояние агента">
       <span className={`inline-flex items-center gap-1.5 font-medium ${status.tone}`} title={status.detail}><span className="h-1.5 w-1.5 rounded-full bg-current" />{status.label}</span>
-      <span>·</span><span>{data.source.transportMode === 'DISABLED' ? 'Нет сигналов' : data.source.fallbackActive || data.source.transportMode === 'REST_ONLY' ? 'Резервный REST-канал' : 'WebSocket'}</span>
+      <span>·</span><span title="Источник сигналов — только официальный OKX Signal API">OKX Signal · {data.source.fallbackActive || data.source.transportMode === 'REST_ONLY' ? 'Резервный REST-канал' : data.source.transportMode === 'DISABLED' ? 'нет связи' : 'WebSocket'}</span>
       <span>·</span><span>{data.metrics24h.uniqueSignals} сигналов/24ч</span>
       <span>·</span><span>{positionCount(data.metrics24h.openPositions)}</span>
       <span>·</span><span>выход: {data.wallet?.exitPlan?.label ?? 'Цель 2×'}</span>
     </div>
-    {data.health === 'DEGRADED' && <p className="mt-1 text-xs text-warn">{status.detail}</p>}
+    <details className="mt-2 text-xs text-muted" data-signal-diagnostics>
+      <summary className="min-h-8 cursor-pointer">Связь с OKX и задержки</summary>
+      {data.source.accessMessage && <p className="mt-1 text-warn">{data.source.accessMessage}</p>}
+      <div className="mt-1 grid gap-1 sm:grid-cols-2">
+        <span>Вход WS: {data.source.loginVerified ? 'подтверждён' : 'не подтверждён'}</span>
+        <span>Подписка WS: {data.source.subscriptionsVerified ? 'подтверждена' : 'не подтверждена'}</span>
+        <span>Событие WS: {data.source.lastWsEventAt ? new Date(data.source.lastWsEventAt).toLocaleString('ru-RU') : 'не получено'}</span>
+        <span>REST: {data.source.lastRestErrorCode ? `ошибка (${data.source.lastRestErrorCode})` : data.source.lastRestSuccessAt ? `ответ ${new Date(data.source.lastRestSuccessAt).toLocaleString('ru-RU')}` : 'ответ ещё не получен'}</span>
+        <span>Доставка последнего решения: {data.source.providerDeliveryLatencyMs == null ? '—' : `${data.source.providerDeliveryLatencyMs} мс`}</span>
+        <span>Решение агента после получения: {data.source.agentDecisionLatencyMs == null ? '—' : `${data.source.agentDecisionLatencyMs} мс`}</span>
+        {data.source.nextAccessCheckAt && <span>Повтор доступа WS: {new Date(data.source.nextAccessCheckAt).toLocaleString('ru-RU')}</span>}
+      </div>
+    </details>
+    {data.runtime.entriesPausedBySource
+      ? <p role="alert" data-entries-paused={data.runtime.entriesPausedBySource.code} className="mt-2 rounded-md border border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn">Новые входы приостановлены: {data.runtime.entriesPausedBySource.message}. Открытые позиции продолжают сопровождаться.</p>
+      : data.health === 'DEGRADED' && <p className="mt-1 text-xs text-warn">{status.detail}</p>}
     <div className="mt-4 flex flex-wrap items-end justify-between gap-x-4 gap-y-1" data-agent-capital>
       <div><div className="text-[11px] text-muted">Виртуальный капитал</div><div className="num mt-1 text-3xl font-semibold sm:text-4xl">{equity == null ? '—' : money(shown)}</div></div>
       {equity != null && <div className="pb-1 text-right"><div className="text-[11px] text-muted">За всё время</div><div className={`num mt-1 text-sm ${pnlClass(pnl)}`}>{money(pnl)} <span className="opacity-70">({pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(2)}%)</span></div></div>}
@@ -776,8 +811,161 @@ function LiveStage({ live }: { live: Phase4Status['live'] }) {
   );
 }
 
+/**
+ * Сети агента в шапке: готовые — обычным цветом, остальные — с причиной
+ * в подсказке. Список приходит с сервера; старый сервер его не отдаёт,
+ * и тогда показывается прежняя подпись.
+ */
+function NetworkChips({ networks }: { networks?: AgentNetworkReadiness[] }) {
+  if (!networks?.length) return <span className="text-[10px] text-muted">Solana</span>;
+  return <span className="order-last flex basis-full flex-wrap items-center gap-1 sm:order-none sm:basis-auto" aria-label="Сети агента">
+    {networks.map((network) => (
+      <span
+        key={network.chain}
+        data-agent-network={network.chain}
+        data-network-available={network.available ? 'true' : 'false'}
+        title={network.available ? `${network.label}: сигналы ${network.signalBasis === 'live' ? 'подтверждены OKX' : 'по документации OKX'}` : network.reasons.map((reason) => reason.message).join('; ')}
+        className={`rounded border px-1.5 py-0.5 text-[10px] ${network.available ? 'border-border text-muted' : 'border-border/60 text-muted/50 line-through decoration-muted/40'}`}
+      >
+        {network.label}
+      </span>
+    ))}
+  </span>;
+}
+
+interface NetworkFunds {
+  chain: string;
+  label: string;
+  nativeSymbol: string;
+  depositAddress: string | null;
+  native: { available: string; locked: string; spendable: string; feeReserve: string } | null;
+  tokenAssets: number;
+}
+
+function amount(value: string | null | undefined, symbol: string): string {
+  const n = Number(value);
+  if (value == null || !Number.isFinite(n)) return '—';
+  return `${n.toLocaleString('ru-RU', { maximumFractionDigits: 6 })} ${symbol}`;
+}
+
+interface LiveWalletSelection {
+  network: string;
+  walletId: string | null;
+  address: string | null;
+  problem: string | null;
+  selectedAt: string | null;
+}
+
+const SELECTION_PROBLEM: Record<string, string> = {
+  WALLET_NOT_FOUND: 'выбранный кошелёк больше не найден — выберите заново',
+  WALLET_INACTIVE: 'выбранный кошелёк отключён — выберите другой',
+  WALLET_WRONG_NETWORK: 'выбранный кошелёк из другой сети — выберите заново',
+};
+
+/** Сети, где зачисление депозитов автоматическое. Остальные — адрес есть, зачисления нет. */
+const AUTO_DEPOSIT_NETWORKS = new Set(['SOLANA']);
+
+/**
+ * Кошелёк для LIVE: сеть, выбранный кошелёк, свободный нативный актив.
+ *
+ * Выбор хранится на сервере (`/wallets/live-selection`): подготовка
+ * LIVE-операции читает его оттуда и проверяет принадлежность
+ * кошелька. Пополнение и вывод здесь не делаются — только в разделе
+ * «Кошельки». Подключённый кошелёк LIVE не включает.
+ */
+function LiveWalletCard({ networks }: { networks?: AgentNetworkReadiness[] }) {
+  const { data, error } = useSWR<{ networks?: NetworkFunds[] }>('/wallets/assets', fetcher, { shouldRetryOnError: false });
+  const { data: selection, mutate: reloadSelection } = useSWR<{ selections: LiveWalletSelection[]; liveExecution: boolean }>('/wallets/live-selection', fetcher, { shouldRetryOnError: false });
+  const { data: walletList } = useSWR<{ wallets: Array<{ id: string; chain: string; address: string; kind: string }> }>('/wallets', fetcher, { shouldRetryOnError: false });
+  const list = networks?.length ? networks : null;
+  const [chain, setChain] = useState<string>(() => list?.find((n) => n.available)?.chain ?? 'SOLANA');
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const readiness = list?.find((n) => n.chain === chain) ?? null;
+  const funds = data?.networks?.find((n) => n.chain === chain) ?? null;
+  const selected = selection?.selections.find((n) => n.network === chain) ?? null;
+  const candidates = (walletList?.wallets ?? []).filter((w) => w.chain === chain && w.kind === 'HOT_DEPOSIT');
+  const unauthorized = error instanceof ApiError && (error.status === 401 || error.status === 403);
+  const nativeSymbol = readiness?.nativeSymbol ?? funds?.nativeSymbol ?? '';
+
+  async function choose(walletId: string) {
+    if (!walletId) return;
+    setSaving(true); setSaveError(null);
+    try {
+      await api('/wallets/live-selection', { method: 'PUT', body: JSON.stringify({ network: chain, walletId }) });
+      await reloadSelection();
+    } catch (e) {
+      setSaveError(errorMessage(e, 'Не удалось выбрать кошелёк'));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return <div className="mt-5 rounded-lg border border-border p-3" data-live-wallet={chain}>
+    <div className="flex flex-wrap items-baseline justify-between gap-2">
+      <p className="text-xs font-semibold tracking-wider text-muted">КОШЕЛЁК ДЛЯ LIVE</p>
+      <Link href="/wallet/" className="text-xs text-accent hover:text-white">Управление кошельками →</Link>
+    </div>
+    <div className="mt-3 flex flex-wrap gap-2" role="radiogroup" aria-label="Сеть кошелька">
+      {(list ?? [{ chain: 'SOLANA', label: 'Solana', available: true, reasons: [] } as unknown as AgentNetworkReadiness]).map((network) => (
+        <button
+          key={network.chain}
+          type="button"
+          role="radio"
+          aria-checked={chain === network.chain}
+          data-wallet-network={network.chain}
+          onClick={() => { setChain(network.chain); setSaveError(null); }}
+          className={`rounded-lg border px-3 py-1.5 text-xs transition-colors ${chain === network.chain ? 'border-accent bg-accent/10 text-white' : 'border-border text-muted hover:border-accent/40'}`}
+        >
+          {network.label}{!network.available && <span className="ml-1 text-warn" aria-hidden>·</span>}
+        </button>
+      ))}
+    </div>
+    {readiness && !readiness.available && (
+      <p data-network-reason className="mt-2 text-xs text-warn">
+        {readiness.label} агенту пока недоступна: {readiness.reasons.map((reason) => reason.message).join('; ')}.
+      </p>
+    )}
+    <dl className="mt-3 space-y-1.5 text-sm">
+      <div className="flex justify-between gap-3">
+        <dt className="text-muted">Кошелёк</dt>
+        <dd className="min-w-0 text-right text-xs">
+          {unauthorized ? 'войдите, чтобы выбрать' : !selection || !walletList ? '…' : candidates.length === 0 ? (
+            <span className="text-muted">нет — <Link href="/wallet/" className="text-accent">создать в «Кошельках»</Link></span>
+          ) : (
+            <select
+              aria-label={`Кошелёк для ${readiness?.label ?? chain}`}
+              data-live-wallet-select
+              className="input py-1 text-xs"
+              disabled={saving}
+              value={selected?.walletId && candidates.some((w) => w.id === selected.walletId) ? selected.walletId : ''}
+              onChange={(event) => void choose(event.target.value)}
+            >
+              <option value="">— выберите —</option>
+              {candidates.map((w) => <option key={w.id} value={w.id}>{w.address.slice(0, 8)}…{w.address.slice(-6)}</option>)}
+            </select>
+          )}
+        </dd>
+      </div>
+      {selected?.problem && <p data-selection-problem={selected.problem} className="text-xs text-warn">{SELECTION_PROBLEM[selected.problem] ?? 'выбор кошелька требует внимания'}</p>}
+      {saveError && <p role="alert" className="text-xs text-down">{saveError}</p>}
+      <div className="flex justify-between gap-3"><dt className="text-muted">Адрес</dt><dd className="num min-w-0 break-all text-right text-xs">{unauthorized ? '—' : selected?.address ?? <span className="text-muted">кошелёк не выбран</span>}</dd></div>
+      <div className="flex justify-between gap-3"><dt className="text-muted">Свободно {nativeSymbol}</dt><dd className="num">{unauthorized || !data ? '—' : amount(funds?.native?.spendable ?? '0', nativeSymbol)}</dd></div>
+      {funds?.native && Number(funds.native.locked) > 0 && <div className="flex justify-between gap-3"><dt className="text-muted">В операциях</dt><dd className="num text-muted">{amount(funds.native.locked, funds.nativeSymbol)}</dd></div>}
+      <div className="flex justify-between gap-3"><dt className="text-muted">Резерв на комиссии</dt><dd className="num text-muted">{amount(funds?.native?.feeReserve ?? null, nativeSymbol)}</dd></div>
+    </dl>
+    {!AUTO_DEPOSIT_NETWORKS.has(chain) && (
+      <p data-deposit-not-automatic={chain} className="mt-3 rounded-lg border border-warn/20 bg-warn/5 p-2 text-xs leading-relaxed text-muted">
+        Автоматического зачисления депозитов в {readiness?.label ?? chain} пока нет: перевод на этот адрес не отразится в балансе. Показанный адрес — не работающее пополнение.
+      </p>
+    )}
+    <p className="mt-3 text-xs leading-relaxed text-muted">
+      Это реальные средства кошелька, а не PAPER-счёт. Выбор кошелька не включает LIVE: реальные сделки не отправляются.
+    </p>
+  </div>;
+}
+
 function Phase4Foundation({ status }: { status: Phase4Status }) {
-  const usdc = status.funding.assets.find((asset) => asset.symbol === 'USDC');
   // Нет поля или незнакомое значение — показываем «ещё не подключено».
   // Любой другой выбор по умолчанию обещал бы работающие пополнения.
   /*
@@ -792,14 +980,14 @@ function Phase4Foundation({ status }: { status: Phase4Status }) {
     ? DEPOSIT_STATUS.UNAVAILABLE
     : DEPOSIT_STATUS[status.depositNetwork?.status as keyof typeof DEPOSIT_STATUS] ??
       DEPOSIT_STATUS.NOT_CONNECTED;
-  const steps = ['Ожидаем перевод', 'Обнаружен', 'Подтверждения', 'Финальность', 'Зачисление'];
+  const readyNetworks = status.networks?.filter((network) => network.available).map((network) => network.label) ?? ['Solana'];
   return <section className="mt-4 grid gap-4 xl:grid-cols-[1.2fr_.8fr]" aria-label="Подготовка LIVE">
     <article className="agent-card panel p-4 sm:p-5" style={{ '--i': 2 } as CSSProperties}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-xs font-semibold tracking-wider text-muted">ПОПОЛНЕНИЕ SOLANA</p>
+          <p className="text-xs font-semibold tracking-wider text-muted">ПРИЁМ ДЕПОЗИТОВ</p>
           <h2 className="mt-1 font-semibold">{deposit.title}</h2>
-          <p className="mt-1 text-xs text-muted">{deposit.note}</p>
+          <p className="mt-1 text-xs text-muted">{deposit.note} Пополнение и вывод — в разделе «Кошельки».</p>
         </div>
         <span
           role="status"
@@ -812,9 +1000,7 @@ function Phase4Foundation({ status }: { status: Phase4Status }) {
           {deposit.badge}
         </span>
       </div>
-      <div className="agent-steps mt-5 grid grid-cols-5 gap-1" role="list" aria-label="Этапы пополнения">
-        {steps.map((step, index) => <div key={step} role="listitem" className="relative min-w-0 text-center"><div className="relative z-10 mx-auto grid h-7 w-7 place-items-center rounded-full border border-border bg-raised text-[11px] text-muted">{index + 1}</div><div className="mt-2 break-words text-[10px] leading-tight text-muted sm:text-xs">{step}</div></div>)}
-      </div>
+      <LiveWalletCard networks={status.networks} />
       <div className="mt-5 rounded-lg border border-border p-3" aria-label="Подготовка подписи">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <p className="text-xs font-semibold tracking-wider text-muted">ПОДГОТОВКА ПОДПИСИ</p>
@@ -855,14 +1041,10 @@ function Phase4Foundation({ status }: { status: Phase4Status }) {
           Отправка ещё не подключена.
         </p>
       </div>
-
-      <div className="mt-5 rounded-lg border border-warn/20 bg-warn/5 p-3 text-xs leading-relaxed text-muted">
-        Отправлять можно будет только в сети Solana. USDC принимается только с официальным mint <span className="num break-all text-white">{usdc?.mint ?? '—'}</span>. Поддельный mint и сумма ниже {usdc?.minAmount ?? '—'} USDC отклоняются.
-      </div>
     </article>
     <article className="agent-card panel p-4 sm:p-5" style={{ '--i': 3 } as CSSProperties}>
-      <p className="text-xs font-semibold tracking-wider text-muted">SEMI-AUTO</p><h2 className="mt-1 font-semibold">Подтверждение до исполнения</h2>
-      <dl className="mt-4 space-y-2 text-sm"><div className="flex justify-between gap-3"><dt className="text-muted">Сеть</dt><dd>Solana · devnet</dd></div><div className="flex justify-between gap-3"><dt className="text-muted">Сумма и комиссии</dt><dd className="text-muted">появятся в предложении</dd></div><div className="flex justify-between gap-3"><dt className="text-muted">Compliance</dt><dd className="text-warn">не настроен</dd></div></dl>
+      <p className="text-xs font-semibold tracking-wider text-muted">{status.controlMode === 'auto' ? 'АВТО' : 'SEMI-AUTO'}</p><h2 className="mt-1 font-semibold">{status.controlMode === 'auto' ? 'Исполнение по правилам без подтверждения' : 'Подтверждение до исполнения'}</h2>
+      <dl className="mt-4 space-y-2 text-sm"><div className="flex justify-between gap-3"><dt className="text-muted">Сети</dt><dd className="text-right">{readyNetworks.join(', ') || 'нет готовых'} · devnet</dd></div><div className="flex justify-between gap-3"><dt className="text-muted">Правила выхода</dt><dd className="text-right">{status.allowedExitModes ? (status.allowedExitModes.length === 1 ? 'только «Цель 2×»' : 'все пять') : '—'}</dd></div><div className="flex justify-between gap-3"><dt className="text-muted">Сумма и комиссии</dt><dd className="text-muted">появятся в предложении</dd></div><div className="flex justify-between gap-3"><dt className="text-muted">Compliance</dt><dd className="text-warn">не настроен</dd></div></dl>
       <LiveStage live={status.live} />
       <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
         <button type="button" disabled className="inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-border bg-raised px-4 text-sm text-muted"><LockIcon /> Подтверждение LIVE недоступно</button>
@@ -881,7 +1063,7 @@ function Positions({ rows }: { rows: AgentRun[] }) {
 function History({ rows, ledger }: { rows: AgentRun[]; ledger: LedgerEvent[] }) {
   if (!rows.length && !ledger.length) return <StateCard title="История пока пуста">Решения и изменения PAPER-счёта появятся после первых сигналов.</StateCard>;
   return <section className="panel agent-list divide-y divide-border overflow-hidden">
-    {rows.slice(0, 40).map((run) => <div key={`run:${run.id}`} className="agent-row flex flex-wrap items-center gap-3 p-4"><TokenMark run={run} /><div className="min-w-0 flex-1"><div className="text-sm font-medium">{EVENT_LABELS[run.state] ?? humanDecision(run.decisionCode)}{run.state === 'SKIPPED' && <span className="text-muted"> · {humanDecision(run.decisionCode)}</span>}{run.allocation?.exit?.exitReason ? <span className="text-muted"> · {exitReasonLabel(run.allocation.exit.exitReason)}</span> : null}</div><div className="mt-1 text-xs text-muted">{timestamp(run.decidedAt ?? run.signaledAt)} · {run.strategyLabel}</div></div><div className={`num text-sm ${pnlClass(run.realizedPnlUsd ?? run.unrealizedPnlUsd)}`}>{money(run.realizedPnlUsd ?? run.unrealizedPnlUsd)}</div></div>)}
+    {rows.slice(0, 40).map((run) => <div key={`run:${run.id}`} className="agent-row flex flex-wrap items-center gap-3 p-4"><TokenMark run={run} /><div className="min-w-0 flex-1"><div className="text-sm font-medium">{EVENT_LABELS[run.state] ?? humanDecision(run.decisionCode)}{run.state === 'SKIPPED' && <span className="text-muted"> · {humanDecision(run.decisionCode)}</span>}{run.allocation?.exit?.exitReason ? <span className="text-muted"> · {exitReasonLabel(run.allocation.exit.exitReason)}</span> : null}</div><div className="mt-1 text-xs text-muted">{timestamp(run.decidedAt ?? run.signaledAt)} · {run.strategyLabel}</div></div><div className={`num text-sm ${pnlClass(run.realizedPnlUsd ?? run.unrealizedPnlUsd)}`}>{money(run.realizedPnlUsd ?? run.unrealizedPnlUsd)}</div><ChartLink target={{ tokenId: run.tokenId, chain: run.chain, address: run.address }} symbol={run.token?.symbol ?? run.symbol} compact /></div>)}
     {ledger.slice(0, Math.max(0, 40 - rows.length)).map((event) => <LedgerRow key={`ledger:${event.id}`} event={event} />)}
   </section>;
 }
@@ -915,6 +1097,32 @@ const EXIT_MODES = EXIT_MODE_COPY;
 
 function exitReasonLabel(code: string) { return EXIT_REASON_LABELS[code] ?? 'Другая причина выхода'; }
 
+/**
+ * Ссылка на график монеты.
+ *
+ * Несёт id токена, сеть и адрес контракта — любой из них достаточен
+ * терминалу, чтобы найти именно этот токен. Одного тикера мало: под
+ * одним тикером живут десятки контрактов. Если нет ни id, ни адреса —
+ * графика нет, и это сказано словами, а не пустым местом.
+ */
+function chartHref(target: { tokenId?: string | null; chain?: string | null; address?: string | null }): string | null {
+  const query = new URLSearchParams();
+  if (target.tokenId) query.set('token', target.tokenId);
+  if (target.chain) query.set('chain', target.chain);
+  if (target.address) query.set('address', target.address);
+  if (!target.tokenId && !(target.chain && target.address)) return null;
+  return `/terminal/?${query}`;
+}
+
+function ChartLink({ target, symbol, compact = false }: { target: { tokenId?: string | null; chain?: string | null; address?: string | null }; symbol?: string | null; compact?: boolean }) {
+  const href = chartHref(target);
+  if (!href) return <span data-chart-link="none" className="inline-flex min-h-9 items-center rounded-md border border-border px-2.5 text-xs text-muted" title="У этой записи нет идентификатора токена и адреса контракта">Графика нет</span>;
+  return <Link href={href} data-chart-link="open" aria-label={`Открыть график ${symbol ?? 'токена'}`} className={`inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-md border border-accent/40 bg-accent/10 px-2.5 text-xs font-medium text-accent transition-colors hover:border-accent hover:bg-accent/20 hover:text-white ${compact ? '' : 'sm:min-h-10 sm:px-3 sm:text-sm'}`}>
+    <svg aria-hidden viewBox="0 0 16 16" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M2 12l3.5-4 3 2.5L14 4" /><path d="M10 4h4v4" /></svg>
+    {compact ? 'График' : 'Открыть график'}
+  </Link>;
+}
+
 function LedgerRow({ event }: { event: LedgerEvent }) {
   const tokenId = event.allocation?.token?.id ?? event.allocation?.tokenId;
   const symbol = event.allocation?.token?.symbol ?? event.allocation?.symbol;
@@ -926,7 +1134,7 @@ function LedgerRow({ event }: { event: LedgerEvent }) {
     </div>
     <div className="flex items-center gap-3">
       <div className="num text-right text-sm"><div>{money(event.amountUsd)}</div><div className="text-xs text-muted">баланс {money(event.equityAfterUsd)}</div></div>
-      {tokenId && <Link href={`/terminal/?token=${encodeURIComponent(tokenId)}`} className="inline-flex min-h-11 items-center text-sm font-medium text-accent hover:text-white" aria-label={`Открыть график ${symbol ?? 'токена'}`}>График →</Link>}
+      {(tokenId || event.allocation?.address) && <ChartLink target={{ tokenId, chain: event.allocation?.chain, address: event.allocation?.address }} symbol={symbol} compact />}
     </div>
   </div>;
 }
@@ -973,7 +1181,7 @@ function RunCard({ run, index = 0 }: { run: AgentRun; index?: number }) {
       </div>
     )}
     <div className="mt-3 grid grid-cols-2 gap-3"><Metric label="Позиция" value={money(run.positionUsd)} tone="neutral" /><Metric label="Максимум" value={run.maxMultiple == null ? '—' : `${run.maxMultiple.toFixed(2)}×`} tone="neutral" /></div>
-    {run.tokenId && <Link href={`/terminal/?token=${encodeURIComponent(run.tokenId)}`} className="mt-3 inline-flex min-h-11 items-center text-sm font-medium text-accent hover:text-white">Открыть график →</Link>}
+    <div className="mt-3"><ChartLink target={{ tokenId: run.tokenId, chain: run.chain, address: run.address }} symbol={run.token?.symbol ?? run.symbol} /></div>
   </article>;
 }
 
@@ -1108,6 +1316,17 @@ function AdminSettings(props: {
   try { plan = paperExitPlan(exitMode, overrides); }
   catch { exitError = 'Проверьте стоп и время удержания'; }
   const exitLabel = EXIT_MODES.find((item) => item.key === exitMode)!.label;
+  /*
+   * Полуавтомат ведёт только «Цель 2×»: остальные карточки не
+   * показываются, и сервер отклонит их независимо от интерфейса.
+   * Уже выбранный, но теперь недопустимый режим сбрасывается на первый
+   * допустимый, чтобы форма не отправляла то, что не пройдёт.
+   */
+  const allowed = data.phase4?.allowedExitModes;
+  const visibleModes = allowed ? EXIT_MODES.filter((item) => allowed.includes(item.key)) : EXIT_MODES;
+  useEffect(() => {
+    if (allowed && !allowed.includes(exitMode) && visibleModes[0]) setExitMode(visibleModes[0].key);
+  }, [allowed?.join(',')]);
   const profileLabel = { CONSERVATIVE: 'Conservative', BALANCED: 'Balanced', AGGRESSIVE: 'Aggressive' }[profile];
   const summary = `${money(capitalNumber)}, ${mode === 'FIXED' ? `Fixed: до ${positions} позиций` : `Autopilot ${profileLabel}`}, ${exitLabel}: ${plan?.legs.map((leg) => `${leg.sellPct}% на ${leg.multiple}×`).join(', ') || (plan?.targetMultiple ? `выход на ${plan.targetMultiple}×` : '')}${plan?.stopLossPct != null ? `, стоп −${plan.stopLossPct}%` : plan?.trailingPct != null ? `, трейлинг −${plan.trailingPct}% с момента входа` : ', без стопа'}`;
   return <div className="space-y-4">
@@ -1135,8 +1354,13 @@ function AdminSettings(props: {
       {step === 2 && (    <div aria-label="Правило выхода">
       <div className="flex flex-wrap items-baseline justify-between gap-2"><h2 className="font-semibold">Правило выхода</h2><span className="text-xs text-muted">сейчас: {data.wallet?.exitPlan?.label ?? 'Цель 2×'}</span></div>
       <p className="mt-1 text-sm text-muted">Применяется к позициям, открытым после настройки. Уже открытые ведутся по своему плану до конца.</p>
+      {data.phase4?.controlMode === 'semi-auto' && (
+        <p data-control-mode="semi-auto" className="mt-2 rounded-lg border border-border bg-raised px-3 py-2 text-xs text-muted">
+          Полуавтомат: доступно только правило «Цель 2×» — полный выход на 2× без стопа. Остальные правила открываются в режиме авто.
+        </p>
+      )}
       <div className="mt-4 grid gap-3" role="radiogroup" aria-label="Режим выхода">
-        {EXIT_MODES.map((item, index) => (
+        {visibleModes.map((item, index) => (
           <ExitModeCard
             key={item.key}
             copy={item}
@@ -1153,7 +1377,7 @@ function AdminSettings(props: {
               const delta = event.key === 'ArrowDown' || event.key === 'ArrowRight' ? 1 : event.key === 'ArrowUp' || event.key === 'ArrowLeft' ? -1 : 0;
               if (!delta) return;
               event.preventDefault();
-              const next = EXIT_MODES[(index + delta + EXIT_MODES.length) % EXIT_MODES.length]!;
+              const next = visibleModes[(index + delta + visibleModes.length) % visibleModes.length]!;
               setExitMode(next.key);
               (event.currentTarget.closest('[role="radiogroup"]')?.querySelector(`[data-exit-mode="${next.key}"]`) as HTMLButtonElement | null)?.focus();
             }}
@@ -1233,7 +1457,8 @@ function EquityChart({ ledger, fallback }: { ledger: LedgerEvent[]; fallback: Ma
 
 function TokenMark({ run }: { run: AgentRun }) {
   const symbol = run.token?.symbol ?? run.symbol ?? '?';
-  return run.tokenId ? <Link href={`/terminal/?token=${encodeURIComponent(run.tokenId)}`} aria-label={`Открыть график ${symbol}`} className="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-full bg-accent/15 font-semibold text-accent">{run.token?.logoUrl ? <img src={run.token.logoUrl} alt="" className="h-full w-full object-cover" /> : symbol.slice(0, 2)}</Link> : <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-border text-xs text-muted">{symbol.slice(0, 2)}</span>;
+  const href = chartHref({ tokenId: run.tokenId, chain: run.chain, address: run.address });
+  return href ? <Link href={href} aria-label={`Открыть график ${symbol}`} className="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-full bg-accent/15 font-semibold text-accent">{run.token?.logoUrl ? <img src={run.token.logoUrl} alt="" className="h-full w-full object-cover" /> : symbol.slice(0, 2)}</Link> : <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-border text-xs text-muted">{symbol.slice(0, 2)}</span>;
 }
 
 function Metric({ label, value, tone }: { label: string; value: string; tone: 'up' | 'down' | 'neutral' }) { return <div className="agent-metric rounded-lg border border-border bg-raised/60 p-3"><div className="text-xs text-muted">{label}</div><div className={`num mt-1 text-sm font-semibold ${tone === 'up' ? 'text-up' : tone === 'down' ? 'text-down' : ''}`}>{value}</div></div>; }
@@ -1345,6 +1570,7 @@ function humanDecision(code: string | null, short = false) {
     WAITING_PRICE: ['Ожидается цена', 'Нет цены'], NO_PRICE: ['Цена недоступна', 'Нет цены'],
     POOL_TOO_OLD: ['Пул слишком старый', 'Старый пул'], STALE_SIGNAL: ['Сигнал устарел', 'Устарел'],
     AMOUNT_BELOW_THRESHOLD: ['Объём сигнала слишком мал', 'Мало средств'],
+    WAITING_FOR_TOKEN_METADATA: ['Ожидается дата создания пула (до 30 с)', 'Ожидание метаданных'],
     TOKEN_AGE_UNKNOWN: ['Возраст пула неизвестен', 'Возраст неизвестен'], TOKEN_TOO_OLD: ['Пул слишком старый', 'Старый пул'],
     WAITING_FOR_PRICE: ['Ожидается цена', 'Нет цены'], WAITING_FOR_ENTRY_DELAY: ['Ожидается время входа', 'Ожидание'],
     PRICE_UNAVAILABLE_BEFORE_DEADLINE: ['Цена не получена вовремя', 'Нет цены'],

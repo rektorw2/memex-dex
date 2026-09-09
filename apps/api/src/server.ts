@@ -127,6 +127,133 @@ export async function buildServer() {
     return { ok: true, mode: env.EXECUTION_MODE, ts: new Date().toISOString() };
   });
 
+  /**
+   * Живость агента — отдельно от живости процесса и отдельно от
+   * источника сигналов.
+   *
+   * `/health` отвечает `ok`, пока жива база; воркер при этом может
+   * стоять. Здесь три состояния — `healthy / unhealthy / unknown` — и
+   * HTTP 200 только за первое. Здоровье доказывает *успешно
+   * завершённый* проход, а не начатый: воркер, падающий на каждом
+   * проходе, начинает их исправно. Воркер в другом процессе виден
+   * только через строку пульса в базе; нет строки — `unknown`, и это
+   * тоже 503: отсутствие наблюдения не успех.
+   *
+   * Источник сигналов — отдельное поле: недоступный OKX останавливает
+   * новые входы, но процесс агента жив и сопровождает позиции.
+   * Секретов и адресов нет.
+   */
+  app.get('/health/agent', async (_req, reply) => {
+    const { getPaperAgentRuntimeStatus, PAPER_AGENT_WORKER_NAME } = await import('./workers/paper-agent.js');
+    const { getOkxSignalIngestStatus, getOkxSignalSourceFacts } = await import('./workers/okx-signal-ingest.js');
+    const { signalSourceVerdict } = await import('@memex/core');
+    const { agentHealthVerdict, AGENT_HEALTH_STALE_AFTER_MS } = await import('./lib/agent-health.js');
+    const { memorySample } = await import('./workers/memory-monitor.js');
+    const runtime = getPaperAgentRuntimeStatus();
+    const now = Date.now();
+
+    // Пульс читается только для воркера в другом процессе: у встроенного
+    // память точнее строки, обновляемой раз в десять секунд.
+    let heartbeat: import('./lib/agent-health.js').HeartbeatObservation | null | undefined;
+    let heartbeatError: string | null = null;
+    if (!env.RUN_WORKERS_IN_API) {
+      try {
+        const row = await prisma.workerHeartbeat.findUnique({ where: { name: PAPER_AGENT_WORKER_NAME } });
+        heartbeat = row ? {
+          processId: row.processId,
+          startedAt: row.startedAt.toISOString(),
+          lastTickStartedAt: row.lastTickStartedAt?.toISOString() ?? null,
+          lastTickCompletedAt: row.lastTickCompletedAt?.toISOString() ?? null,
+          lastErrorCode: row.lastErrorCode,
+          consecutiveFailures: row.consecutiveFailures,
+          updatedAt: row.updatedAt.toISOString(),
+        } : null;
+      } catch (error: any) {
+        heartbeatError = error?.code ?? error?.name ?? 'HEARTBEAT_READ_FAILED';
+      }
+    }
+
+    const verdict = agentHealthVerdict({
+      workersInApi: env.RUN_WORKERS_IN_API,
+      now,
+      staleAfterMs: AGENT_HEALTH_STALE_AFTER_MS,
+      inProcess: {
+        running: runtime.running,
+        refusalReason: runtime.refusalReason,
+        lastTickStartedAt: runtime.lastTickStartedAt,
+        lastTickCompletedAt: runtime.lastTickCompletedAt,
+        consecutiveTickFailures: runtime.consecutiveTickFailures,
+        lastErrorCode: runtime.lastErrorCode,
+      },
+      heartbeat,
+      heartbeatError,
+    });
+
+    const source = signalSourceVerdict(getOkxSignalSourceFacts());
+    const ingest = getOkxSignalIngestStatus();
+    const ageMs = (iso: string | null) => (iso ? Math.max(0, now - new Date(iso).getTime()) : null);
+
+    return reply.code(verdict.httpStatus).send({
+      ok: verdict.state === 'healthy',
+      state: verdict.state,
+      reason: verdict.reason,
+      message: verdict.message,
+      observedVia: verdict.observedVia,
+      workersInApi: env.RUN_WORKERS_IN_API,
+      staleAfterMs: AGENT_HEALTH_STALE_AFTER_MS,
+      // Память этого процесса — для наблюдения за сутки без доступа к Render.
+      process: memorySample(),
+      agent: env.RUN_WORKERS_IN_API
+        ? {
+            running: runtime.running,
+            refusalReason: runtime.refusalReason,
+            lastTickStartedAt: runtime.lastTickStartedAt,
+            lastTickStartedAgeMs: ageMs(runtime.lastTickStartedAt),
+            lastTickCompletedAt: runtime.lastTickCompletedAt,
+            lastTickCompletedAgeMs: ageMs(runtime.lastTickCompletedAt),
+            consecutiveTickFailures: runtime.consecutiveTickFailures,
+            lastActivityAt: runtime.lastActivityAt,
+            queued: runtime.queued,
+            processingErrors: runtime.processingErrors,
+            heartbeatWriteErrors: runtime.heartbeatWriteErrors,
+            lastErrorCode: runtime.lastErrorCode,
+            entriesPausedBySource: runtime.entriesPausedBySource,
+          }
+        : {
+            // В этом процессе воркера нет; его локальные поля ничего не значат.
+            running: null,
+            heartbeat: heartbeat
+              ? {
+                  processId: heartbeat.processId,
+                  startedAt: heartbeat.startedAt,
+                  lastTickStartedAt: heartbeat.lastTickStartedAt,
+                  lastTickStartedAgeMs: ageMs(heartbeat.lastTickStartedAt),
+                  lastTickCompletedAt: heartbeat.lastTickCompletedAt,
+                  lastTickCompletedAgeMs: ageMs(heartbeat.lastTickCompletedAt),
+                  consecutiveFailures: heartbeat.consecutiveFailures,
+                  lastErrorCode: heartbeat.lastErrorCode,
+                  updatedAt: heartbeat.updatedAt,
+                  updatedAgeMs: ageMs(heartbeat.updatedAt),
+                }
+              : null,
+            heartbeatError,
+          },
+      // Состояние источника — отдельно от живости процесса.
+      source: {
+        state: source.available ? 'available' : 'unavailable',
+        available: source.available,
+        code: source.code,
+        transport: source.transport,
+        message: source.message,
+        lastSignalAt: ingest.lastSignalAt,
+        lastSignalAgeMs: ageMs(ingest.lastSignalAt),
+        lastRestSuccessAt: ingest.lastRestSuccessAt,
+        lastRestSuccessAgeMs: ageMs(ingest.lastRestSuccessAt),
+      },
+      ts: new Date(now).toISOString(),
+    });
+  });
+
   await app.register(authRoutes, { prefix: '/api/v1' });
   await app.register(accessRoutes, { prefix: '/api' });
   await app.register(automationRoutes, { prefix: '/api/v1' });
@@ -160,27 +287,14 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // динамический: при выключенном флаге модули даже не загружаются.
   let stopWorkers: (() => void) | null = null;
   if (env.RUN_WORKERS_IN_API) {
-    const [limit, price, copy, importer, candles, radar, tracker, wallets, scam] = await Promise.all([
-      import('./workers/limit-watcher.js'),
-      import('./workers/price-updater.js'),
-      import('./workers/copy-executor.js'),
-      import('./workers/token-importer.js'),
-      import('./workers/candle-builder.js'),
-      import('./workers/radar-scanner.js'),
-      import('./workers/radar-tracker.js'),
-      import('./workers/wallet-tracker.js'),
-      import('./workers/scam-checker.js'),
-    ]);
-
-    price.startPriceUpdater();
-    limit.startLimitWatcher();
-    copy.startCopyExecutor();
-    importer.startTokenImporter();
-    candles.startCandleBuilder();
-    radar.startRadarScanner();
-    tracker.startRadarTracker();
-    wallets.startWalletTracker();
-    scam.startScamChecker();
+    /*
+     * Набор воркеров — тот же, что у отдельного процесса
+     * (`workers/registry.ts`): раньше два списка разошлись, и в бою
+     * (Render, воркеры внутри API) не запускалось то, что стояло в
+     * standalone. Финансовые воркеры включаются только своими флагами.
+     */
+    const { startBaseWorkers, startSchemaWorkers, stopWorkers: stopAll, describeWorkers } = await import('./workers/registry.js');
+    const baseWorkers = await startBaseWorkers();
 
     /**
      * Всё, что пишет в таблицы кошельков, запускается только после
@@ -197,39 +311,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
      */
     const { guardSchemaOnStartup } = await import('./lib/schema-guard.js');
     const schemaReady = await guardSchemaOnStartup();
-
-    let stopSchemaWorkers: (() => void) | null = null;
-
+    let schemaWorkers: Awaited<ReturnType<typeof startSchemaWorkers>> = [];
     if (schemaReady) {
-      const [pool, ledger, discovery, walletRisk, okxSignal, paperAgent, paperNotifications] = await Promise.all([
-        import('./services/okx-ws-pool.js'),
-        import('./workers/wallet-ledger-sync.js'),
-        import('./workers/wallet-discovery.js'),
-        import('./workers/radar-risk.js'),
-        import('./workers/okx-signal-ingest.js'),
-        import('./workers/paper-agent.js'),
-        import('./workers/paper-agent-notifications.js'),
-      ]);
-
-      pool.startActivityIngest();
-      ledger.startLedgerSync();
-      discovery.startWalletDiscovery();
-      walletRisk.startRadarRisk();
-      // Сначала готовим потребителя, затем открываем Signal WebSocket:
-      // первое событие не должно попасть в зазор между двумя стартами.
-      await paperAgent.startPaperAgent();
-      paperNotifications.startPaperAgentNotifications();
-      okxSignal.startOkxSignalIngest();
-
-      stopSchemaWorkers = () => {
-        pool.stopActivityIngest();
-        ledger.stopLedgerSync();
-        discovery.stopWalletDiscovery();
-        walletRisk.stopRadarRisk();
-        okxSignal.stopOkxSignalIngest();
-        paperAgent.stopPaperAgent();
-        paperNotifications.stopPaperAgentNotifications();
-      };
+      schemaWorkers = await startSchemaWorkers();
+      app.log.info(describeWorkers([...baseWorkers, ...schemaWorkers]), 'воркеры запущены внутри API');
     } else {
       // Остальное API продолжает работать: недоступность одной
       // подсистемы не повод гасить страницы, которые к ней
@@ -238,16 +323,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     }
 
     stopWorkers = () => {
-      price.stopPriceUpdater();
-      limit.stopLimitWatcher();
-      copy.stopCopyExecutor();
-      importer.stopTokenImporter();
-      candles.stopCandleBuilder();
-      radar.stopRadarScanner();
-      tracker.stopRadarTracker();
-      wallets.stopWalletTracker();
-      scam.stopScamChecker();
-      stopSchemaWorkers?.();
+      stopAll(schemaWorkers);
+      stopAll(baseWorkers);
     };
 
     app.log.warn(

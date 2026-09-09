@@ -96,7 +96,7 @@ const SCENARIOS: Record<
 
   NETWORK_NOT_SUPPORTED_PHASE_2: {
     strategy: baseline,
-    signal: signal({ network: 'BSC' }),
+    signal: signal({ network: 'ETHEREUM' }),
     expectedState: 'SKIPPED',
   },
 
