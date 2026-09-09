@@ -1,0 +1,78 @@
+
+> @memex/api@0.1.0 test
+> vitest run src/workers/price-updater.test.ts src/health-agent.route.test.ts src/workers/registry.test.ts
+
+
+ RUN  v3.2.7 /Users/myrotec/Desktop/memex-dex/apps/api
+
+ ✓ src/workers/registry.test.ts (3 tests) 37ms
+ ✓ src/workers/price-updater.test.ts (23 tests) 9ms
+{"level":30,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","req":{"method":"GET","url":"/health/agent","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","res":{"statusCode":503},"responseTime":8.839958000000024,"msg":"request completed"}
+{"level":30,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","restoredEnabledState":false,"msg":"paper-agent: восстановил выбранное администратором PAPER-состояние"}
+{"level":30,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","req":{"method":"GET","url":"/health/agent","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","res":{"statusCode":200},"responseTime":0.5584579999999733,"msg":"request completed"}
+{"level":30,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","restoredEnabledState":false,"msg":"paper-agent: восстановил выбранное администратором PAPER-состояние"}
+{"level":30,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","req":{"method":"GET","url":"/health/agent","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","res":{"statusCode":200},"responseTime":0.5740410000000793,"msg":"request completed"}
+{"level":30,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-2","req":{"method":"GET","url":"/health/agent","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-2","res":{"statusCode":503},"responseTime":0.3923330000000078,"msg":"request completed"}
+{"level":30,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","restoredEnabledState":false,"msg":"paper-agent: восстановил выбранное администратором PAPER-состояние"}
+{"level":30,"time":1788948061000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","req":{"method":"GET","url":"/health/agent","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788948061000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","res":{"statusCode":503},"responseTime":0.670917000000145,"msg":"request completed"}
+{"level":30,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","restoredEnabledState":false,"msg":"paper-agent: восстановил выбранное администратором PAPER-состояние"}
+{"level":40,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","code":"[REDACTED]","msg":"paper-agent: проход завершился ошибкой"}
+{"level":40,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","code":"[REDACTED]","msg":"paper-agent: проход завершился ошибкой"}
+{"level":40,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","code":"[REDACTED]","msg":"paper-agent: проход завершился ошибкой"}
+{"level":40,"time":1788948061000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","code":"[REDACTED]","msg":"paper-agent: проход завершился ошибкой"}
+{"level":30,"time":1788948061000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","req":{"method":"GET","url":"/health/agent","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788948061000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","res":{"statusCode":503},"responseTime":0.46920799999998053,"msg":"request completed"}
+{"level":30,"time":1788948061000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-2","req":{"method":"GET","url":"/health/agent","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788948061000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-2","res":{"statusCode":200},"responseTime":0.2676249999999527,"msg":"request completed"}
+{"level":30,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","restoredEnabledState":false,"msg":"paper-agent: восстановил выбранное администратором PAPER-состояние"}
+{"level":40,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","code":"[REDACTED]","msg":"paper-agent: проход завершился ошибкой"}
+{"level":40,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","code":"[REDACTED]","msg":"paper-agent: проход завершился ошибкой"}
+{"level":30,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","req":{"method":"GET","url":"/health/agent","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","res":{"statusCode":503},"responseTime":0.4496670000000904,"msg":"request completed"}
+{"level":30,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","restoredEnabledState":false,"msg":"paper-agent: восстановил выбранное администратором PAPER-состояние"}
+{"level":30,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","req":{"method":"GET","url":"/health/agent","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","res":{"statusCode":200},"responseTime":0.5480000000000018,"msg":"request completed"}
+{"level":30,"time":1788948005000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","restoredEnabledState":false,"msg":"paper-agent: восстановил выбранное администратором PAPER-состояние"}
+{"level":40,"time":1788948005000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","code":"[REDACTED]","msg":"paper-agent: проход завершился ошибкой"}
+{"level":40,"time":1788948005000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","code":"[REDACTED]","msg":"paper-agent: проход завершился ошибкой"}
+{"level":30,"time":1788948005000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-2","req":{"method":"GET","url":"/health/agent","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788948005000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-2","res":{"statusCode":503},"responseTime":0.5017920000000231,"msg":"request completed"}
+{"level":30,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","restoredEnabledState":false,"msg":"paper-agent: восстановил выбранное администратором PAPER-состояние"}
+{"level":40,"time":1788948011000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","code":"[REDACTED]","count":1,"msg":"paper-agent: пульс в базу не записан"}
+{"level":30,"time":1788948011000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","req":{"method":"GET","url":"/health/agent","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788948011000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","res":{"statusCode":200},"responseTime":0.3939170000001013,"msg":"request completed"}
+{"level":30,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","restoredEnabledState":false,"msg":"paper-agent: восстановил выбранное администратором PAPER-состояние"}
+{"level":30,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","req":{"method":"GET","url":"/health/agent","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","res":{"statusCode":503},"responseTime":0.4267080000001897,"msg":"request completed"}
+{"level":30,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","req":{"method":"GET","url":"/health/agent","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","res":{"statusCode":503},"responseTime":0.506708000000117,"msg":"request completed"}
+{"level":30,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","req":{"method":"GET","url":"/health/agent","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","res":{"statusCode":200},"responseTime":0.511833999999908,"msg":"request completed"}
+{"level":30,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","req":{"method":"GET","url":"/health/agent","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","res":{"statusCode":503},"responseTime":0.4377079999999296,"msg":"request completed"}
+{"level":30,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","req":{"method":"GET","url":"/health/agent","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","res":{"statusCode":503},"responseTime":0.5182090000000699,"msg":"request completed"}
+{"level":30,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","req":{"method":"GET","url":"/health","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","res":{"statusCode":200},"responseTime":0.34387500000002547,"msg":"request completed"}
+{"level":30,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-2","req":{"method":"GET","url":"/health/agent","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-2","res":{"statusCode":503},"responseTime":0.33408299999996416,"msg":"request completed"}
+{"level":30,"time":1788948000000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","restoredEnabledState":false,"msg":"paper-agent: восстановил выбранное администратором PAPER-состояние"}
+{"level":40,"time":1788949201000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","code":"[REDACTED]","msg":"paper-agent: проход завершился ошибкой"}
+{"level":40,"time":1788949202000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","code":"[REDACTED]","msg":"paper-agent: проход завершился ошибкой"}
+{"level":40,"time":1788949203000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","code":"[REDACTED]","msg":"paper-agent: проход завершился ошибкой"}
+{"level":40,"time":1788949204000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","code":"[REDACTED]","msg":"paper-agent: проход завершился ошибкой"}
+{"level":40,"time":1788949205000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","code":"[REDACTED]","msg":"paper-agent: проход завершился ошибкой"}
+{"level":30,"time":1788949210000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","req":{"method":"GET","url":"/health/agent","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788949210000,"pid":40283,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","res":{"statusCode":200},"responseTime":0.44391700000005585,"msg":"request completed"}
+ ✓ src/health-agent.route.test.ts (15 tests) 315ms
+
+ Test Files  3 passed (3)
+      Tests  41 passed (41)
+   Start at  22:50:24
+   Duration  2.10s (transform 999ms, setup 0ms, collect 2.13s, tests 361ms, environment 0ms, prepare 197ms)
+

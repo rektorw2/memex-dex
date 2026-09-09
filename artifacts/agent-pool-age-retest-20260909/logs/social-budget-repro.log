@@ -1,0 +1,68 @@
+
+> @memex/api@0.1.0 test
+> vitest run src/services/metadata-adapter-integration.test.ts
+
+
+ RUN  v3.2.7 /Users/myrotec/Desktop/memex-dex/apps/api
+
+ ❯ src/services/metadata-adapter-integration.test.ts (14 tests | 2 failed) 766ms
+   ✓ real Robinhood adapter makes HTTP request, validates pool identity and saves only pool creation date  368ms
+   ✓ missing or invalid provider date (null) is explicitly unavailable, no observation-date fallback 31ms
+   ✓ missing or invalid provider date (invalid) is explicitly unavailable, no observation-date fallback 26ms
+   ✓ missing or invalid provider date (2099-01-01) is explicitly unavailable, no observation-date fallback 24ms
+   ✓ missing or invalid provider date (1970-01-01) is explicitly unavailable, no observation-date fallback 29ms
+   ✓ an unrelated pool cannot supply the requested token age 25ms
+   ✓ WOWCAT: priority waits out the original 429 then wins a slot before the original deadline, attempts=0 is free 26ms
+   ✓ Retry-After beyond the deadline is never bypassed by another token or repeated attempts 31ms
+   ✓ continuous background traffic leaves bounded slots for several urgent tokens without a burst 26ms
+   ✓ two process instances share deduplication and restart lease recovery with real adapters 44ms
+   ✓ failed capacity claims have a fixed cardinality bound, and expired pending rows are pruned 32ms
+   ✓ a provider 429 is retained across module restart and a second real adapter instance 46ms
+   × social research cannot bypass a shared Gecko 429 while metadata waits for capacity 30ms
+     → expected "spy" to be called 1 times, but got 2 times
+   × 429 from social research blocks urgent metadata across a module restart 27ms
+     → expected 'accepted' to be 'waiting_capacity' // Object.is equality
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/services/metadata-adapter-integration.test.ts > social research cannot bypass a shared Gecko 429 while metadata waits for capacity
+AssertionError: expected "spy" to be called 1 times, but got 2 times
+ ❯ src/services/metadata-adapter-integration.test.ts:119:22
+    117|   const pending = socials.fetchSocialFacts('SOLANA', 'mint');
+    118|   await flush();
+    119|   expect(mocks.http).toHaveBeenCalledTimes(1);
+       |                      ^
+    120|   mocks.http.mockResolvedValue(new Response(JSON.stringify({ data: { a…
+    121|   await vi.advanceTimersByTimeAsync(60_000);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  src/services/metadata-adapter-integration.test.ts > 429 from social research blocks urgent metadata across a module restart
+AssertionError: expected 'accepted' to be 'waiting_capacity' // Object.is equality
+
+Expected: "waiting_capacity"
+Received: "accepted"
+
+ ❯ src/services/metadata-adapter-integration.test.ts:132:66
+    130|   vi.resetModules();
+    131|   const { requestPaperTokenMetadata: request } = await import('./paper…
+    132|   expect(await request('t', 'ROBINHOOD', address, NOW + 30_000)).toBe(…
+       |                                                                  ^
+    133|   expect(mocks.http).toHaveBeenCalledTimes(1);
+    134|   expect((gate.snapshot() as any).provider.blockedUntil).toBe(NOW + 12…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 12 passed (14)
+   Start at  23:04:55
+   Duration  1.00s (transform 253ms, setup 0ms, collect 40ms, tests 766ms, environment 0ms, prepare 44ms)
+
+npm error Lifecycle script `test` failed with error:
+npm error code 1
+npm error path /Users/myrotec/Desktop/memex-dex/apps/api
+npm error workspace @memex/api@0.1.0
+npm error location /Users/myrotec/Desktop/memex-dex/apps/api
+npm error command failed
+npm error command sh -c vitest run src/services/metadata-adapter-integration.test.ts

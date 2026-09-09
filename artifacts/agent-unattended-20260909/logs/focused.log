@@ -1,0 +1,133 @@
+
+> @memex/api@0.1.0 test
+> vitest run src/workers/price-updater.test.ts src/health-agent.route.test.ts src/workers/registry.test.ts
+
+
+ RUN  v3.2.7 /Users/myrotec/Desktop/memex-dex/apps/api
+
+ ✓ src/workers/registry.test.ts (3 tests) 32ms
+ ✓ src/workers/price-updater.test.ts (23 tests) 9ms
+{"level":30,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","restoredEnabledState":false,"msg":"paper-agent: восстановил выбранное администратором PAPER-состояние"}
+{"level":30,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","req":{"method":"GET","url":"/health/agent","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","res":{"statusCode":503},"responseTime":9.682999999999993,"msg":"request completed"}
+ ❯ src/health-agent.route.test.ts (15 tests | 2 failed) 249ms
+   × воркер внутри API (RUN_WORKERS_IN_API=true) > таймер продолжает проходы 20 минут без HTTP-запросов и сам восстанавливается после ошибки базы 101ms
+     → expected '2026-09-09T10:00:00.000Z' to be '2026-09-09T10:20:00.000Z' // Object.is equality
+   × воркер внутри API (RUN_WORKERS_IN_API=true) > воркер не запускался — 503 unhealthy, а не 200 с ok=false 34ms
+     → expected '2026-09-09T10:00:00.000Z' to be null
+   ✓ воркер внутри API (RUN_WORKERS_IN_API=true) > запущен и проход завершился — 200 healthy; начатый и завершённый проход показаны раздельно 11ms
+   ✓ воркер внутри API (RUN_WORKERS_IN_API=true) > остановлен после работы — 503 unhealthy, хотя последний проход был успешным 8ms
+   ✓ воркер внутри API (RUN_WORKERS_IN_API=true) > просроченный проход (воркер завис на запросе к базе) — 503 unhealthy при running=true 8ms
+   ✓ воркер внутри API (RUN_WORKERS_IN_API=true) > постоянно падающий воркер: проходы начинаются, ни один не завершается — 503, счётчик и код ошибки 12ms
+   ✓ воркер внутри API (RUN_WORKERS_IN_API=true) > падает с первого прохода — 503 unhealthy, не «стартует» 8ms
+   ✓ воркер внутри API (RUN_WORKERS_IN_API=true) > перезапуск не наследует отметку прошлого запуска: сразу падающий воркер не выглядит здоровым 9ms
+   ✓ воркер внутри API (RUN_WORKERS_IN_API=true) > пульс пишется в базу и ошибка записи проход не ломает 12ms
+   ✓ воркер в отдельном процессе (RUN_WORKERS_IN_API=false) > пульса нет — 503 unknown, а не ok=true; локальная память воркера не используется 7ms
+   ✓ воркер в отдельном процессе (RUN_WORKERS_IN_API=false) > пульс не читается (таблицы нет) — 503 unknown с кодом ошибки 7ms
+   ✓ воркер в отдельном процессе (RUN_WORKERS_IN_API=false) > свежий пульс с завершённым проходом — 200 healthy по пульсу 8ms
+   ✓ воркер в отдельном процессе (RUN_WORKERS_IN_API=false) > пульс умершего процесса — 503 unhealthy 9ms
+   ✓ воркер в отдельном процессе (RUN_WORKERS_IN_API=false) > пульс свежий, но процесс падает на каждом проходе — 503 unhealthy 7ms
+   ✓ /health не подменяет /health/agent > процесс и база отвечают ok, пока агент стоит 7ms
+{"level":30,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","restoredEnabledState":false,"msg":"paper-agent: восстановил выбранное администратором PAPER-состояние"}
+{"level":30,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","req":{"method":"GET","url":"/health/agent","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","res":{"statusCode":200},"responseTime":0.7564590000001772,"msg":"request completed"}
+{"level":30,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","restoredEnabledState":false,"msg":"paper-agent: восстановил выбранное администратором PAPER-состояние"}
+{"level":30,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","req":{"method":"GET","url":"/health/agent","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","res":{"statusCode":200},"responseTime":0.4227920000000722,"msg":"request completed"}
+{"level":30,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-2","req":{"method":"GET","url":"/health/agent","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-2","res":{"statusCode":503},"responseTime":0.24395800000002055,"msg":"request completed"}
+{"level":30,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","restoredEnabledState":false,"msg":"paper-agent: восстановил выбранное администратором PAPER-состояние"}
+{"level":30,"time":1788948061000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","req":{"method":"GET","url":"/health/agent","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788948061000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","res":{"statusCode":503},"responseTime":0.4078750000001037,"msg":"request completed"}
+{"level":30,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","restoredEnabledState":false,"msg":"paper-agent: восстановил выбранное администратором PAPER-состояние"}
+{"level":40,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","code":"[REDACTED]","msg":"paper-agent: проход завершился ошибкой"}
+{"level":40,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","code":"[REDACTED]","msg":"paper-agent: проход завершился ошибкой"}
+{"level":40,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","code":"[REDACTED]","msg":"paper-agent: проход завершился ошибкой"}
+{"level":40,"time":1788948061000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","code":"[REDACTED]","msg":"paper-agent: проход завершился ошибкой"}
+{"level":30,"time":1788948061000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","req":{"method":"GET","url":"/health/agent","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788948061000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","res":{"statusCode":503},"responseTime":0.43316699999991215,"msg":"request completed"}
+{"level":30,"time":1788948061000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-2","req":{"method":"GET","url":"/health/agent","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788948061000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-2","res":{"statusCode":200},"responseTime":0.2315409999998792,"msg":"request completed"}
+{"level":30,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","restoredEnabledState":false,"msg":"paper-agent: восстановил выбранное администратором PAPER-состояние"}
+{"level":40,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","code":"[REDACTED]","msg":"paper-agent: проход завершился ошибкой"}
+{"level":40,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","code":"[REDACTED]","msg":"paper-agent: проход завершился ошибкой"}
+{"level":30,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","req":{"method":"GET","url":"/health/agent","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","res":{"statusCode":503},"responseTime":0.526915999999801,"msg":"request completed"}
+{"level":30,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","restoredEnabledState":false,"msg":"paper-agent: восстановил выбранное администратором PAPER-состояние"}
+{"level":30,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","req":{"method":"GET","url":"/health/agent","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","res":{"statusCode":200},"responseTime":0.5391670000001341,"msg":"request completed"}
+{"level":30,"time":1788948005000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","restoredEnabledState":false,"msg":"paper-agent: восстановил выбранное администратором PAPER-состояние"}
+{"level":40,"time":1788948005000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","code":"[REDACTED]","msg":"paper-agent: проход завершился ошибкой"}
+{"level":40,"time":1788948005000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","code":"[REDACTED]","msg":"paper-agent: проход завершился ошибкой"}
+{"level":30,"time":1788948005000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-2","req":{"method":"GET","url":"/health/agent","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788948005000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-2","res":{"statusCode":503},"responseTime":0.451584000000139,"msg":"request completed"}
+{"level":30,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","restoredEnabledState":false,"msg":"paper-agent: восстановил выбранное администратором PAPER-состояние"}
+{"level":40,"time":1788948011000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","code":"[REDACTED]","count":1,"msg":"paper-agent: пульс в базу не записан"}
+{"level":30,"time":1788948011000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","req":{"method":"GET","url":"/health/agent","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788948011000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","res":{"statusCode":200},"responseTime":0.49579099999982645,"msg":"request completed"}
+{"level":30,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","restoredEnabledState":false,"msg":"paper-agent: восстановил выбранное администратором PAPER-состояние"}
+{"level":30,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","req":{"method":"GET","url":"/health/agent","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","res":{"statusCode":503},"responseTime":0.37016600000015387,"msg":"request completed"}
+{"level":30,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","req":{"method":"GET","url":"/health/agent","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","res":{"statusCode":503},"responseTime":0.49675000000002,"msg":"request completed"}
+{"level":30,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","req":{"method":"GET","url":"/health/agent","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","res":{"statusCode":200},"responseTime":0.565375000000131,"msg":"request completed"}
+{"level":30,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","req":{"method":"GET","url":"/health/agent","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","res":{"statusCode":503},"responseTime":0.4809579999998732,"msg":"request completed"}
+{"level":30,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","req":{"method":"GET","url":"/health/agent","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","res":{"statusCode":503},"responseTime":0.4392080000000078,"msg":"request completed"}
+{"level":30,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","req":{"method":"GET","url":"/health","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-1","res":{"statusCode":200},"responseTime":0.1980829999999969,"msg":"request completed"}
+{"level":30,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-2","req":{"method":"GET","url":"/health/agent","host":"localhost:80","remoteAddress":"127.0.0.1"},"msg":"incoming request"}
+{"level":30,"time":1788948000000,"pid":40045,"hostname":"myrotecs-MacBook-Pro.local","reqId":"req-2","res":{"statusCode":503},"responseTime":0.25091599999996106,"msg":"request completed"}
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/health-agent.route.test.ts > воркер внутри API (RUN_WORKERS_IN_API=true) > таймер продолжает проходы 20 минут без HTTP-запросов и сам восстанавливается после ошибки базы
+AssertionError: expected '2026-09-09T10:00:00.000Z' to be '2026-09-09T10:20:00.000Z' // Object.is equality
+
+Expected: "2026-09-09T10:20:00.000Z"
+Received: "2026-09-09T10:00:00.000Z"
+
+ ❯ src/health-agent.route.test.ts:105:38
+    103|     const idle = agent.getPaperAgentRuntimeStatus();
+    104|     expect(idle.running).toBe(true);
+    105|     expect(idle.lastTickCompletedAt).toBe(new Date(NOW + 20 * 60_000).…
+       |                                      ^
+    106|     expect(heartbeatStore.writes.length).toBeGreaterThanOrEqual(120);
+    107| 
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  src/health-agent.route.test.ts > воркер внутри API (RUN_WORKERS_IN_API=true) > воркер не запускался — 503 unhealthy, а не 200 с ok=false
+AssertionError: expected '2026-09-09T10:00:00.000Z' to be null
+
+- Expected: 
+null
+
++ Received: 
+"2026-09-09T10:00:00.000Z"
+
+ ❯ src/health-agent.route.test.ts:123:44
+    121|     expect(body).toMatchObject({ ok: false, state: 'unhealthy', reason…
+    122|     expect(body.agent.running).toBe(false);
+    123|     expect(body.agent.lastTickCompletedAt).toBeNull();
+       |                                            ^
+    124|   });
+    125| 
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed | 2 passed (3)
+      Tests  2 failed | 39 passed (41)
+   Start at  22:49:39
+   Duration  1.97s (transform 962ms, setup 0ms, collect 2.05s, tests 290ms, environment 0ms, prepare 229ms)
+
+npm error Lifecycle script `test` failed with error:
+npm error code 1
+npm error path /Users/myrotec/Desktop/memex-dex/apps/api
+npm error workspace @memex/api@0.1.0
+npm error location /Users/myrotec/Desktop/memex-dex/apps/api
+npm error command failed
+npm error command sh -c vitest run src/workers/price-updater.test.ts src/health-agent.route.test.ts src/workers/registry.test.ts

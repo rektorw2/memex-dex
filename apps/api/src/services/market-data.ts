@@ -51,7 +51,7 @@ function retryAfterMs(value: string | null): number | null {
 export const reservePoolMetadataSlot = (deadlineAt: number): Promise<boolean> => limiter.tryTake(deadlineAt);
 export type PoolMetadataFailure = 'UNSUPPORTED_NETWORK' | 'RATE_LIMITED' | 'HTTP_ERROR' | 'NETWORK_ERROR' | 'DEADLINE' | 'POOL_NOT_FOUND' | 'POOL_DATE_UNAVAILABLE';
 type RequestOptions = { signal?: AbortSignal; reserved?: boolean; onUnavailable?: (reason: PoolMetadataFailure) => void };
-async function get<T>(path: string, options: RequestOptions = {}): Promise<T | null> {
+export async function fetchGeckoJson<T>(path: string, options: RequestOptions = {}): Promise<T | null> {
   if (options.signal?.aborted) { options.onUnavailable?.('DEADLINE'); return null; }
   try {
     if (!options.reserved) await limiter.take();
@@ -172,7 +172,7 @@ export async function fetchPools(
   const sep = base.includes('?') ? '&' : '?';
 
   for (let page = 1; page <= pages; page++) {
-    const data = await get<{ data: GeckoPool[]; included: GeckoIncluded[] }>(
+    const data = await fetchGeckoJson<{ data: GeckoPool[]; included: GeckoIncluded[] }>(
       `${base}${sep}page=${page}&include=base_token,quote_token`,
     );
     if (!data?.data?.length) break;
@@ -239,7 +239,7 @@ export async function fetchPoolForToken(
   const network = NETWORK[chain];
   if (!network) { options.onUnavailable?.('UNSUPPORTED_NETWORK'); return null; }
 
-  const data = await get<{ data: GeckoPool[]; included: GeckoIncluded[] }>(
+  const data = await fetchGeckoJson<{ data: GeckoPool[]; included: GeckoIncluded[] }>(
     `/networks/${network}/tokens/${tokenAddress}/pools?include=base_token,quote_token&page=1`,
     options,
   );
@@ -315,7 +315,7 @@ export async function fetchOhlcv(
   const tf = TIMEFRAME[interval];
   if (!network || !tf) return [];
 
-  const data = await get<{ data: { attributes: { ohlcv_list: number[][] } } }>(
+  const data = await fetchGeckoJson<{ data: { attributes: { ohlcv_list: number[][] } } }>(
     `/networks/${network}/pools/${poolAddress}/ohlcv/${tf.unit}` +
       `?aggregate=${tf.aggregate}&limit=${Math.min(limit, 1000)}&currency=usd`,
   );
@@ -372,7 +372,7 @@ export async function fetchPoolTrades(
   const network = NETWORK[chain];
   if (!network) return [];
 
-  const data = await get<{
+  const data = await fetchGeckoJson<{
     data: Array<{
       attributes: {
         block_timestamp?: string;

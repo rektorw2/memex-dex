@@ -1,0 +1,26 @@
+{
+  "base": "2b0060e74764f517864ac3396487dc50d5e4da3e",
+  "scope": "Files added or changed in this pool-age check; earlier unattended changes preserved separately",
+  "files": [
+    {
+      "path": "apps/api/src/services/market-data.ts",
+      "sha256": "01e3a75677acd7bd89b3ca6b2e52fd514480fdbc3a7e4a25712c426fa41de571"
+    },
+    {
+      "path": "apps/api/src/services/token-intel.ts",
+      "sha256": "933f6809bf85a5326cb395d5db78c43010a29d5dbda8cd7ef61763c01e1f74bb"
+    },
+    {
+      "path": "apps/api/src/services/metadata-adapter-integration.test.ts",
+      "sha256": "0110c43b65ff51a7bf9aea2a4cfde53cd611916bf78b7ef650f54716b42f492e"
+    },
+    {
+      "path": "apps/api/src/e2e/pool-age-production-replay.e2e.test.ts",
+      "sha256": "37d9a8a3e3f8d0c7cb7ad421d1e4a16275ca5f377428d71e9c5ddcac6de824dd"
+    },
+    {
+      "path": "apps/api/src/test-support/fixtures/stepz-gecko-pools.json",
+      "sha256": "7f9cfa5d5eff62fae0d70fa1fb82e750621aa2c53948ef54d4b177ecc98c5ef6"
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+HTTP/2 200 
+date: Wed, 09 Sep 2026 21:02:05 GMT
+content-type: application/json; charset=utf-8
+server: cloudflare
+vary: Accept-Encoding
+vary: Accept, Origin
+x-frame-options: SAMEORIGIN
+x-xss-protection: 1; mode=block
+x-content-type-options: nosniff
+x-download-options: noopen
+x-permitted-cross-domain-policies: none
+referrer-policy: strict-origin-when-cross-origin
+cache-control: max-age=30, public, must-revalidate, s-maxage=60
+etag: W/"9122e8287ee885c081767552c11d4bad"
+x-request-id: 69cb1acf-e86b-45cb-9603-5032172f6b86
+x-runtime: 0.104280
+x-content-digest: ace0d82c8a842b91286fe5efc0df92ad1ed7d481
+x-rack-cache: stale, invalid, ignore, store
+strict-transport-security: max-age=15724800; includeSubdomains
+speculation-rules: "/cdn-cgi/speculation"
+cf-cache-status: MISS
+set-cookie: _cfuvid=Mr8ca3x56UVo6grAcBYBNpDz5LL25vMpu2hWQEi79pU-1788987724.7255254-1.0.1.1-NH4w7JPSgqobXnzOFUgGZ6Dh_kGtlfP1wF3o_n93iRc; HttpOnly; SameSite=None; Secure; Path=/; Domain=geckoterminal.com
+cf-ray: a38921bf792e4be1-MXP
+alt-svc: h3=":443"; ma=86400
+

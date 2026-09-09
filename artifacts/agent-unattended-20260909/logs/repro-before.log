@@ -1,0 +1,67 @@
+
+> @memex/api@0.1.0 test
+> vitest run src/workers/price-updater.test.ts
+
+
+ RUN  v3.2.7 /Users/myrotec/Desktop/memex-dex/apps/api
+
+ ❯ src/workers/price-updater.test.ts (23 tests | 1 failed) 16ms
+   ✓ холодный круг охватывает витрину > не требует isVerified 1ms
+   ✓ холодный круг охватывает витрину > берёт видимые торгуемые токены 0ms
+   ✓ холодный круг охватывает витрину > идёт по кругу, а не по одному и тому же срезу 1ms
+   ✓ холодный круг охватывает витрину > короткая страница замыкает круг 0ms
+   ✓ источники цен > сначала пакетный запрос 1ms
+   ✓ источники цен > поштучно дозапрашивается только то, чего пакет не знает 0ms
+   ✓ источники цен > недоступная цена не пишется 0ms
+   ✓ источники цен > нулевая и отрицательная цена не пишутся 0ms
+   ✓ источники цен > сбой источника не роняет проход 0ms
+   ✓ запись не затирает более свежее > условие свежести стоит в самом запросе 0ms
+   ✓ запись не затирает более свежее > отклонённая запись не считается обновлением 0ms
+   ✓ запись не затирает более свежее > время наблюдения одно на весь проход 0ms
+   ✓ запись не затирает более свежее > возраст цены пишется отдельно от metricsUpdated 0ms
+   ✓ запись не затирает более свежее > та же свежая цена продлевает ATH событий GEMS 1ms
+   × горячий цикл > обновляет цену открытой PAPER-позиции без посетителей и после очистки памяти горячих токенов 6ms
+     → expected +0 to be 1 // Object.is equality
+   ✓ горячий цикл > один токен в PAPER и открытой карточке запрашивается один раз 0ms
+   ✓ горячий цикл > пустой список никого не трогает 0ms
+   ✓ горячий цикл > берёт открытые карточки 0ms
+   ✓ горячий цикл > не превращает отсутствующую пакетную цену в RPC-залп каждую секунду 0ms
+   ✓ общий backoff провайдера > 429 соблюдает Retry-After и останавливает оба цикла 1ms
+   ✓ общий backoff провайдера > частичный успех записывается перед отступом 0ms
+   ✓ общий backoff провайдера > одна отсутствующая цена не включает backoff 0ms
+   ✓ общий backoff провайдера > успешный проход после паузы сбрасывает рост задержки 0ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/workers/price-updater.test.ts > горячий цикл > обновляет цену открытой PAPER-позиции без посетителей и после очистки памяти горячих токенов
+AssertionError: expected +0 to be 1 // Object.is equality
+
+- Expected
++ Received
+
+- 1
++ 0
+
+ ❯ src/workers/price-updater.test.ts:344:28
+    342|     const result = await updateHotPrices();
+    343| 
+    344|     expect(result.written).toBe(1);
+       |                            ^
+    345|     expect(priceInfoCalls).toBe(1);
+    346|     expect(findManyArgs[0]).toMatchObject({ where: { id: { in: ['paper…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 22 passed (23)
+   Start at  22:48:06
+   Duration  901ms (transform 350ms, setup 0ms, collect 593ms, tests 16ms, environment 0ms, prepare 55ms)
+
+npm error Lifecycle script `test` failed with error:
+npm error code 1
+npm error path /Users/myrotec/Desktop/memex-dex/apps/api
+npm error workspace @memex/api@0.1.0
+npm error location /Users/myrotec/Desktop/memex-dex/apps/api
+npm error command failed
+npm error command sh -c vitest run src/workers/price-updater.test.ts

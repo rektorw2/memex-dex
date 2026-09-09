@@ -262,3 +262,28 @@ describe('/health не подменяет /health/agent', () => {
     expect((await health()).http).toBe(503);
   });
 });
+
+describe('автономный таймер без посетителей', () => {
+  it('таймер продолжает проходы 20 минут без HTTP-запросов и сам восстанавливается после ошибки базы', async () => {
+    vi.useRealTimers();
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
+    vi.setSystemTime(NOW);
+    await agent.startPaperAgent();
+    // Ни health(), ни ручного runPaperAgentTickOnce в период простоя.
+    await vi.advanceTimersByTimeAsync(20 * 60_000);
+    const idle = agent.getPaperAgentRuntimeStatus();
+    expect(idle.running).toBe(true);
+    expect(idle.lastTickCompletedAt).toBe(new Date(NOW + 20 * 60_000).toISOString());
+    expect(heartbeatStore.writes.length).toBeGreaterThanOrEqual(120);
+
+    control.lookup = 'throw';
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(agent.getPaperAgentRuntimeStatus().consecutiveTickFailures).toBeGreaterThan(0);
+    control.lookup = 'ok';
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(agent.getPaperAgentRuntimeStatus().consecutiveTickFailures).toBe(0);
+    expect(agent.getPaperAgentRuntimeStatus().lastTickCompletedAt).toBe(new Date(NOW + 1_210_000).toISOString());
+    expect((await health()).http).toBe(200);
+  });
+
+});

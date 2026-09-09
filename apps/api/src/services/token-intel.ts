@@ -1,5 +1,6 @@
 import type { Chain } from '@prisma/client';
 import { logger } from '../lib/logger.js';
+import { fetchGeckoJson } from './market-data.js';
 
 /**
  * Сбор проверяемых фактов о токене из бесплатных открытых источников.
@@ -17,7 +18,6 @@ import { logger } from '../lib/logger.js';
  */
 
 const GOPLUS = 'https://api.gopluslabs.io/api/v1';
-const GECKO = 'https://api.geckoterminal.com/api/v2';
 
 /** Идентификаторы сетей в GoPlus. Solana обслуживается отдельным маршрутом. */
 const GOPLUS_CHAIN: Record<Chain, string | null> = {
@@ -176,7 +176,9 @@ export async function fetchSocialFacts(
   const network = GECKO_NETWORK[chain];
   if (!network) return empty;
 
-  const data = await getJson<any>(`${GECKO}/networks/${network}/tokens/${address}/info`);
+  // Social enrichment shares the same provider budget and Retry-After as
+  // urgent pool metadata; it must not consume unaccounted Gecko capacity.
+  const data = await fetchGeckoJson<any>(`/networks/${network}/tokens/${address}/info`);
   const a = data?.data?.attributes;
   if (!a) return empty;
 

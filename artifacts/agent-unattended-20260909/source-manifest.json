@@ -1,0 +1,21 @@
+{
+  "base": "2b0060e74764f517864ac3396487dc50d5e4da3e",
+  "files": [
+    {
+      "path": "apps/api/src/workers/price-updater.ts",
+      "sha256": "b6389edf1439e61c7e9dffa82ad0f7d88ddbf69642c9ce791ae8295c8255ff4e"
+    },
+    {
+      "path": "apps/api/src/workers/price-updater.test.ts",
+      "sha256": "e347ff74130f7680fc738bbc9e32a4b648c9552d837066a892ee724429ff8292"
+    },
+    {
+      "path": "apps/api/src/health-agent.route.test.ts",
+      "sha256": "1d54a82b6201751084b5a6921cf27a7cf98ce1b5a782f5e8ceb3339a1c192c49"
+    },
+    {
+      "path": "apps/api/src/e2e/unattended-agent.e2e.test.ts",
+      "sha256": "e3d0e1da895e04e7b0d3eb0fbe2c311c4515c9f97869bd9f3c101f7e0cd19f22"
+    }
+  ]
+}

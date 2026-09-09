@@ -1,0 +1,13 @@
+{
+  "source": "Render Compute UI, observed during this check",
+  "service": "memex-api",
+  "serviceId": "srv-d9rp4c8n74is73fa19ig",
+  "selectedPlan": "1c-2g",
+  "cpu": 1,
+  "ramGb": 2,
+  "instances": 1,
+  "autoscaling": "Off",
+  "deployedCommit": "2b0060e74764f517864ac3396487dc50d5e4da3e",
+  "documentation": "https://render.com/docs/faq",
+  "documentationClaim": "Paid compute plans do not spin down."
+}

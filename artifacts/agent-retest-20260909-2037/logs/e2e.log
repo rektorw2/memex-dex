@@ -1,0 +1,144 @@
+
+> memex-dex@0.1.0 test:e2e
+> npm run test:e2e -w @memex/api
+
+
+> @memex/api@0.1.0 pretest:e2e
+> tsc -p ../../packages/core/tsconfig.json
+
+
+> @memex/api@0.1.0 test:e2e
+> vitest run --config vitest.e2e.config.ts
+
+
+ RUN  v3.2.7 /Users/myrotec/Desktop/memex-dex/apps/api
+
+ ✓ src/e2e/schema-transition.e2e.test.ts (10 tests) 12993ms
+   ✓ база отстала на поздние миграции Phase 4 > планировщик требует ровно их  1366ms
+   ✓ база отстала на поздние миграции Phase 4 > объектов поздних миграций в схеме нет  817ms
+   ✓ база отстала на поздние миграции Phase 4 > ранние миграции при этом применены  778ms
+   ✓ настоящий migrate deploy доводит схему > применяет все поздние миграции и создаёт объекты  1420ms
+   ✓ настоящий migrate deploy доводит схему > после применения планировщик отвечает ready  1465ms
+   ✓ настоящий migrate deploy доводит схему > повторный deploy идемпотентен и не дублирует историю  2043ms
+   ✓ противоречия останавливают запуск > история без схемы — отказ  815ms
+   ✓ противоречия останавливают запуск > схема без истории — отказ  1420ms
+   ✓ противоречия останавливают запуск > частично применённая миграция — отказ  1415ms
+   ✓ противоречия останавливают запуск > незнакомая миграция в каталоге — отказ даже на готовой схеме  1451ms
+{"level":40,"time":1788609600000,"pid":38746,"hostname":"myrotecs-MacBook-Pro.local","code":"[REDACTED]","msg":"PAPER-агент: входы по сигналам OKX приостановлены — источник недоступен"}
+ ✓ src/e2e/paper-scenarios.e2e.test.ts (19 tests) 6258ms
+   ✓ 1. Прибыльная позиция > открывается, растёт, закрывается и переносит результат в realized  561ms
+   ✓ 2. Убыточная позиция > падение цены даёт отрицательный нереализованный результат  322ms
+   ✓ 7. Предел экспозиции > вход разрешён, пока есть экспозиция, и отклонён, когда она исчерпана  1075ms
+   ✓ 8. Предел числа открытых позиций > предел переживает перезапуск  390ms
+   ✓ 9. Суточный предел входов > счётчик переживает перезапуск  363ms
+   ✓ 10. Остановка по просадке > до порога вход возможен, после — нет  355ms
+   ✓ 10. Остановка по просадке > остановка переживает перезапуск  451ms
+stdout | src/e2e/idempotency.e2e.test.ts > повторная доставка одного и того же сигнала > одинаковый providerKey не создаёт второго сигнала
+prisma:error 
+Invalid `prisma.okxSignal.create()` invocation in
+/Users/myrotec/Desktop/memex-dex/apps/api/src/e2e/idempotency.e2e.test.ts:104:30
+
+  101 ).providerKey;
+  102 
+  103 await expectUniqueViolation(
+→ 104   () => prisma.okxSignal.create(
+Unique constraint failed on the fields: (`providerKey`)
+
+{"level":40,"time":1788609600000,"pid":38751,"hostname":"myrotecs-MacBook-Pro.local","code":"[REDACTED]","msg":"PAPER-агент: входы по сигналам OKX приостановлены — источник недоступен"}
+stdout | src/e2e/idempotency.e2e.test.ts > ключ события журнала защищает от повторной записи > повторная запись открытия отвергается базой
+prisma:error 
+Invalid `prisma.paperAgentCapitalLedger.create()` invocation in
+/Users/myrotec/Desktop/memex-dex/apps/api/src/e2e/idempotency.e2e.test.ts:274:44
+
+  271 expect(open, 'запись открытия должна быть').toBeTruthy();
+  272 
+  273 await expectUniqueViolation(
+→ 274   () => prisma.paperAgentCapitalLedger.create(
+Unique constraint failed on the fields: (`eventKey`)
+
+ ✓ src/e2e/idempotency.e2e.test.ts (12 tests) 2770ms
+   ✓ прерывание между резервом и созданием позиции > незавершённое решение доводится следующим проходом ровно один раз  357ms
+   ✓ прерывание между закрытием позиции и следующим проходом > закрытие не применяется дважды  420ms
+   ✓ бухгалтерия equity > повторная отметка при той же цене ничего не меняет  300ms
+{"level":20,"time":1788986333715,"pid":38753,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9tku000izowhhmprolte","tokenId":"cmtuk9tju000fzowh42pqsoof","admission":"accepted","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986333722,"pid":38753,"hostname":"myrotecs-MacBook-Pro.local","tokenId":"cmtuk9tju000fzowh42pqsoof","chain":"ROBINHOOD","outcome":"POOL_DATE_SAVED","msg":"PAPER: результат получения даты пула"}
+{"level":20,"time":1788986333737,"pid":38753,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9tli000jzowhnynz4wtb","tokenId":"cmtuk9tju000fzowh42pqsoof","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986333747,"pid":38753,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9tm2000kzowhlgnxg0z2","tokenId":"cmtuk9tju000fzowh42pqsoof","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986333757,"pid":38753,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9tmc000lzowhq1dzp87q","tokenId":"cmtuk9tju000fzowh42pqsoof","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986333767,"pid":38753,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9tmm000mzowhxjjiwhk7","tokenId":"cmtuk9tju000fzowh42pqsoof","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986334145,"pid":38753,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9twx001nzowhuflkvz2a","tokenId":"cmtuk9tw1001kzowh8wu5byx7","admission":"accepted","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986334147,"pid":38753,"hostname":"myrotecs-MacBook-Pro.local","tokenId":"cmtuk9tw1001kzowh8wu5byx7","chain":"ROBINHOOD","outcome":"POOL_DATE_UNAVAILABLE","msg":"PAPER: результат получения даты пула"}
+{"level":20,"time":1788986334158,"pid":38753,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9txf001ozowh4bdwtl94","tokenId":"cmtuk9tw1001kzowh8wu5byx7","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986334167,"pid":38753,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9txr001pzowh2pwywl2t","tokenId":"cmtuk9tw1001kzowh8wu5byx7","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986334175,"pid":38753,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9ty0001qzowhacj1r6cz","tokenId":"cmtuk9tw1001kzowh8wu5byx7","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986334184,"pid":38753,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9ty9001rzowh1bny1njb","tokenId":"cmtuk9tw1001kzowh8wu5byx7","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986334412,"pid":38753,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9u4c002azowh0zxcfntw","tokenId":"cmtuk9u3h0027zowhf8t5mnvf","admission":"accepted","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986334414,"pid":38753,"hostname":"myrotecs-MacBook-Pro.local","tokenId":"cmtuk9u3h0027zowhf8t5mnvf","chain":"ROBINHOOD","outcome":"POOL_NOT_FOUND","msg":"PAPER: результат получения даты пула"}
+{"level":20,"time":1788986334424,"pid":38753,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9u4u002bzowh2r7dzzd8","tokenId":"cmtuk9u3h0027zowhf8t5mnvf","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986334433,"pid":38753,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9u56002czowh6snj84eq","tokenId":"cmtuk9u3h0027zowhf8t5mnvf","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986334442,"pid":38753,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9u5e002dzowh47gtp9p0","tokenId":"cmtuk9u3h0027zowhf8t5mnvf","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986334451,"pid":38753,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9u5n002ezowh49afl9t1","tokenId":"cmtuk9u3h0027zowhf8t5mnvf","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986334672,"pid":38753,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9ubk002xzowhez5zbppp","tokenId":"cmtuk9uaq002uzowhrvihp48n","admission":"accepted","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986334678,"pid":38753,"hostname":"myrotecs-MacBook-Pro.local","tokenId":"cmtuk9uaq002uzowhrvihp48n","chain":"ROBINHOOD","outcome":"POOL_DATE_SAVED","msg":"PAPER: результат получения даты пула"}
+{"level":20,"time":1788986334686,"pid":38753,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9uc2002yzowhjwh0mybv","tokenId":"cmtuk9uaq002uzowhrvihp48n","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986334695,"pid":38753,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9ucf002zzowh9ge7ct8v","tokenId":"cmtuk9uaq002uzowhrvihp48n","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986334704,"pid":38753,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9uco0030zowhxsynmvhs","tokenId":"cmtuk9uaq002uzowhrvihp48n","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986334714,"pid":38753,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9ucx0031zowhc4w3t9z5","tokenId":"cmtuk9uaq002uzowhrvihp48n","admission":"completed","msg":"PAPER: ожидание метаданных"}
+ ✓ src/e2e/metadata-http.e2e.test.ts (6 tests) 1566ms
+   ✓ Robinhood worker → actual metadata service → real HTTP adapter → PostgreSQL → one PAPER entry  481ms
+   ✓ old pool date cannot bypass age/deadline filters or rewrite the final decision  315ms
+ ✓ src/e2e/live-devnet.e2e.test.ts (42 tests) 1076ms
+{"level":20,"time":1788986337137,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9w880010zowlf54z3x5s","tokenId":"cmtuk9w7l000uzowl7jvvdfmp","admission":"waiting_capacity","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337147,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9w8j0011zowln9jnsgpu","tokenId":"cmtuk9w7l000uzowl7jvvdfmp","admission":"waiting_capacity","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337155,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9w8s0012zowlc4pkvrs9","tokenId":"cmtuk9w7l000uzowl7jvvdfmp","admission":"waiting_capacity","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337164,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9w910013zowlo3hnn9bq","tokenId":"cmtuk9w7l000uzowl7jvvdfmp","admission":"waiting_capacity","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337172,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9w990014zowlmrnatcu8","tokenId":"cmtuk9w7l000uzowl7jvvdfmp","admission":"waiting_capacity","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337187,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9w9m0015zowll329wls3","tokenId":"cmtuk9w7t000xzowl77fgo9jn","admission":"waiting_capacity","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337195,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9w9w0016zowld39k5qyw","tokenId":"cmtuk9w7t000xzowl77fgo9jn","admission":"waiting_capacity","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337204,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9wa40017zowlakbaugne","tokenId":"cmtuk9w7t000xzowl77fgo9jn","admission":"waiting_capacity","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337212,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9wad0018zowlkrlwvsyd","tokenId":"cmtuk9w7t000xzowl77fgo9jn","admission":"waiting_capacity","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337221,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9wal0019zowlv1lr4b19","tokenId":"cmtuk9w7t000xzowl77fgo9jn","admission":"waiting_capacity","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337252,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9w880010zowlf54z3x5s","tokenId":"cmtuk9w7l000uzowl7jvvdfmp","admission":"accepted","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337257,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","tokenId":"cmtuk9w7l000uzowl7jvvdfmp","chain":"SOLANA","outcome":"POOL_DATE_SAVED","msg":"PAPER: результат получения даты пула"}
+{"level":20,"time":1788986337260,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9w8j0011zowln9jnsgpu","tokenId":"cmtuk9w7l000uzowl7jvvdfmp","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337266,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9w8s0012zowlc4pkvrs9","tokenId":"cmtuk9w7l000uzowl7jvvdfmp","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337272,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9w910013zowlo3hnn9bq","tokenId":"cmtuk9w7l000uzowl7jvvdfmp","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337278,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9w990014zowlmrnatcu8","tokenId":"cmtuk9w7l000uzowl7jvvdfmp","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337288,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9w9m0015zowll329wls3","tokenId":"cmtuk9w7t000xzowl77fgo9jn","admission":"waiting_capacity","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337294,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9w9w0016zowld39k5qyw","tokenId":"cmtuk9w7t000xzowl77fgo9jn","admission":"waiting_capacity","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337300,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9wa40017zowlakbaugne","tokenId":"cmtuk9w7t000xzowl77fgo9jn","admission":"waiting_capacity","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337305,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9wad0018zowlkrlwvsyd","tokenId":"cmtuk9w7t000xzowl77fgo9jn","admission":"waiting_capacity","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337311,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9wal0019zowlv1lr4b19","tokenId":"cmtuk9w7t000xzowl77fgo9jn","admission":"waiting_capacity","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337396,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9w9m0015zowll329wls3","tokenId":"cmtuk9w7t000xzowl77fgo9jn","admission":"accepted","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337402,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9w9w0016zowld39k5qyw","tokenId":"cmtuk9w7t000xzowl77fgo9jn","admission":"in_flight","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337403,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","tokenId":"cmtuk9w7t000xzowl77fgo9jn","chain":"SOLANA","outcome":"POOL_DATE_SAVED","msg":"PAPER: результат получения даты пула"}
+{"level":20,"time":1788986337407,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9wa40017zowlakbaugne","tokenId":"cmtuk9w7t000xzowl77fgo9jn","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337414,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9wad0018zowlkrlwvsyd","tokenId":"cmtuk9w7t000xzowl77fgo9jn","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337419,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9wal0019zowlv1lr4b19","tokenId":"cmtuk9w7t000xzowl77fgo9jn","admission":"completed","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337682,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9wne002szowlgy266ct7","tokenId":"cmtuk9wn3002pzowlhe93h7zx","admission":"accepted","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337690,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9wnn002tzowl93x5mp5i","tokenId":"cmtuk9wn3002pzowlhe93h7zx","admission":"in_flight","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337699,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9wnw002uzowlp5138xcs","tokenId":"cmtuk9wn3002pzowlhe93h7zx","admission":"in_flight","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337708,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9wo5002vzowlgeoftb7o","tokenId":"cmtuk9wn3002pzowlhe93h7zx","admission":"in_flight","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337717,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9woe002wzowlf11qwtvl","tokenId":"cmtuk9wn3002pzowlhe93h7zx","admission":"in_flight","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337740,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9wne002szowlgy266ct7","tokenId":"cmtuk9wn3002pzowlhe93h7zx","admission":"accepted","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337746,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9wnn002tzowl93x5mp5i","tokenId":"cmtuk9wn3002pzowlhe93h7zx","admission":"in_flight","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337752,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9wnw002uzowlp5138xcs","tokenId":"cmtuk9wn3002pzowlhe93h7zx","admission":"in_flight","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337758,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9wo5002vzowlgeoftb7o","tokenId":"cmtuk9wn3002pzowlhe93h7zx","admission":"in_flight","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337764,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9woe002wzowlf11qwtvl","tokenId":"cmtuk9wn3002pzowlhe93h7zx","admission":"in_flight","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337791,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9wne002szowlgy266ct7","tokenId":"cmtuk9wn3002pzowlhe93h7zx","admission":"exhausted","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337797,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9wnn002tzowl93x5mp5i","tokenId":"cmtuk9wn3002pzowlhe93h7zx","admission":"exhausted","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337803,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9wnw002uzowlp5138xcs","tokenId":"cmtuk9wn3002pzowlhe93h7zx","admission":"exhausted","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337809,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9wo5002vzowlgeoftb7o","tokenId":"cmtuk9wn3002pzowlhe93h7zx","admission":"exhausted","msg":"PAPER: ожидание метаданных"}
+{"level":20,"time":1788986337815,"pid":38757,"hostname":"myrotecs-MacBook-Pro.local","runId":"cmtuk9woe002wzowlf11qwtvl","tokenId":"cmtuk9wn3002pzowlhe93h7zx","admission":"exhausted","msg":"PAPER: ожидание метаданных"}
+ ✓ src/e2e/metadata-admission.e2e.test.ts (3 tests) 957ms
+   ✓ different tokens and all enabled strategies wait for capacity; reconciliation resumes with no in-memory delivery  563ms
+{"level":40,"time":1788912000000,"pid":38759,"hostname":"myrotecs-MacBook-Pro.local","code":"[REDACTED]","msg":"PAPER-агент: входы по сигналам OKX приостановлены — источник недоступен"}
+ ✓ src/e2e/metadata-wait.e2e.test.ts (3 tests) 656ms
+   ✓ persisted waiting run is recovered without queue, receives date and opens exactly once  331ms
+ ✓ src/e2e/schema-migration.e2e.test.ts (5 tests) 47ms
+
+ Test Files  8 passed (8)
+      Tests  100 passed (100)
+   Start at  22:38:27
+   Duration  31.37s (transform 513ms, setup 18ms, collect 2.50s, tests 26.32s, environment 1ms, prepare 275ms)
+

@@ -21,6 +21,8 @@ let signalPeakArgs: Record<string, unknown>[] = [];
 
 /** Что база отдаёт на запрос списка токенов. */
 let tokenRows: Record<string, unknown>[] = [];
+let paperPositionRows: Array<{ tokenId: string }> = [];
+let paperPositionArgs: Record<string, unknown>[] = [];
 
 /** Сколько строк «обновилось»: ноль означает, что запись отклонена. */
 let updateCount = 1;
@@ -45,6 +47,10 @@ vi.mock('../lib/prisma.js', () => ({
       },
     },
     position: { findMany: async () => [] },
+    paperAgentRun: { findMany: async (args: Record<string, unknown>) => {
+      paperPositionArgs.push(args);
+      return paperPositionRows;
+    } },
   },
   serializable: vi.fn(),
 }));
@@ -133,6 +139,8 @@ beforeEach(() => {
   updateManyArgs = [];
   signalPeakArgs = [];
   tokenRows = [];
+  paperPositionRows = [];
+  paperPositionArgs = [];
   updateCount = 1;
   batchPrices = new Map();
   priceInfoCalls = 0;
@@ -325,6 +333,33 @@ describe('запись не затирает более свежее', () => {
 });
 
 describe('горячий цикл', () => {
+  it('обновляет цену открытой PAPER-позиции без посетителей и после очистки памяти горячих токенов', async () => {
+    paperPositionRows = [{ tokenId: 'paper' }];
+    tokenRows = [token('paper')];
+    batchPrices.set('SOLANA:Addrpaper', { priceUsd: 2, at: new Date() });
+    resetHotTokensForTests();
+
+    const result = await updateHotPrices();
+
+    expect(result.written).toBe(1);
+    expect(priceInfoCalls).toBe(1);
+    expect(findManyArgs[0]).toMatchObject({ where: { id: { in: ['paper'] } } });
+    expect(paperPositionArgs[0]).toMatchObject({ where: {
+      tokenId: { not: null },
+      OR: [{ state: 'PAPER_OPEN' }, { allocations: { some: { state: 'OPEN' } } }],
+    } });
+    expect(rpcCalls).toEqual([]);
+  });
+
+  it('один токен в PAPER и открытой карточке запрашивается один раз', async () => {
+    markHot('paper');
+    paperPositionRows = [{ tokenId: 'paper' }, { tokenId: 'paper' }];
+    tokenRows = [token('paper')];
+    await updateHotPrices();
+    expect(findManyArgs[0]).toMatchObject({ where: { id: { in: ['paper'] } } });
+    expect(priceInfoCalls).toBe(1);
+  });
+
   it('пустой список никого не трогает', async () => {
     expect((await updateHotPrices()).written).toBe(0);
     expect(findManyArgs).toEqual([]);

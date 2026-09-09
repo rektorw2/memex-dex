@@ -108,3 +108,28 @@ it('a provider 429 is retained across module restart and a second real adapter i
   expect(await request('t', 'ROBINHOOD', address, NOW + 30000)).toBe('expired');
   expect(mocks.http).toHaveBeenCalledTimes(1);
 });
+
+it('social research cannot bypass a shared Gecko 429 while metadata waits for capacity', async () => {
+  const market = await import('./market-data.js');
+  const socials = await import('./token-intel.js');
+  mocks.http.mockResolvedValueOnce(new Response('', { status: 429, headers: { 'retry-after': '60' } }));
+  await market.fetchPools('SOLANA');
+  const pending = socials.fetchSocialFacts('SOLANA', 'mint');
+  await flush();
+  expect(mocks.http).toHaveBeenCalledTimes(1);
+  mocks.http.mockResolvedValue(new Response(JSON.stringify({ data: { attributes: { description: 'project' } } })));
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect((await pending).description).toBe('project');
+  expect(mocks.http).toHaveBeenCalledTimes(2);
+});
+
+it('429 from social research blocks urgent metadata across a module restart', async () => {
+  const socials = await import('./token-intel.js');
+  mocks.http.mockResolvedValueOnce(new Response('', { status: 429, headers: { 'retry-after': '120' } }));
+  await socials.fetchSocialFacts('SOLANA', 'mint');
+  vi.resetModules();
+  const { requestPaperTokenMetadata: request } = await import('./paper-token-metadata.js');
+  expect(await request('t', 'ROBINHOOD', address, NOW + 30_000)).toBe('waiting_capacity');
+  expect(mocks.http).toHaveBeenCalledTimes(1);
+  expect((gate.snapshot() as any).provider.blockedUntil).toBe(NOW + 120_000);
+});

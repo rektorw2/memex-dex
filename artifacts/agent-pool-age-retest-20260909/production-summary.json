@@ -1,0 +1,49 @@
+{
+  "provenance": "Selected fields transcribed from Render Web Shell read-only Prisma transaction; no production writes.",
+  "at": "2026-09-09T20:59:54.597Z",
+  "revision": "2b0060e74764f517864ac3396487dc50d5e4da3e",
+  "since": "2026-09-09T20:32:31.000Z",
+  "count": 43,
+  "lateOver30Seconds": 41,
+  "decisions": {
+    "DECISION_DEADLINE_EXCEEDED": 34,
+    "AMOUNT_BELOW_THRESHOLD": 6,
+    "TOKEN_TOO_OLD": 3
+  },
+  "tokens": 27,
+  "tokensWithPoolDate": 3,
+  "positions": [],
+  "freshAtLeast600": [
+    {
+      "symbol": "STEPZ",
+      "tokenId": "cmtukx7u10a6wkl07lpmygwzj",
+      "chain": "ROBINHOOD",
+      "address": "0xc1a0fe7b31fd287c23d81bdeac859e3aa1e67d66",
+      "receivedAt": "2026-09-09T20:57:05.294Z",
+      "latencyMs": 4202,
+      "amountUsd": "1502.0466615",
+      "poolCreatedAt": null,
+      "decision": "DECISION_DEADLINE_EXCEEDED",
+      "originalDeadline": "2026-09-09T20:57:31.092Z"
+    },
+    {
+      "symbol": "Unbox",
+      "tokenId": "cmtukjy620641kl07i50brx6s",
+      "chain": "ROBINHOOD",
+      "address": "0xa50e01931ff8fb6f1011fffa7fbac9a144c407cd",
+      "receivedAt": "2026-09-09T20:46:46.207Z",
+      "latencyMs": 29608,
+      "amountUsd": "1046.411008",
+      "poolCreatedAt": null,
+      "decision": "DECISION_DEADLINE_EXCEEDED",
+      "remainingMsOnDelivery": 392
+    }
+  ],
+  "gateProvider": {
+    "nextAt": 1788987583556,
+    "urgentUntil": 1788987451092,
+    "blockedUntil": 1788987485969,
+    "backgroundNextAt": 1788987606056
+  },
+  "pendingMetadataRequests": 0
+}

@@ -433,13 +433,10 @@ export async function updateHotPrices(): Promise<CycleResult> {
   if (providerPaused()) return EMPTY_CYCLE;
 
   /*
-   * Нет зрителей — нет запросов.
-   *
-   * Это главное свойство горячего цикла и главная причина, по которой
-   * простой просмотр списка больше не переводит токены в горячие.
-   * Пустое приложение обязано стоить ноль: раньше открытая вкладка
-   * GEMS держала первые карточки горячими бесконечно, и «живой
-   * продукт» означал секундный Premium-запрос круглые сутки.
+   * Открытые позиции требуют цен и без посетителей. PAPER хранится
+   * отдельно от Position; читаем его из базы на каждом проходе,
+   * чтобы закрытие браузера и перезапуск не прекращали сопровождение.
+   * Без зрителей и позиций горячий цикл не обращается к провайдеру.
    */
   const ids = hotTokens();
 
@@ -452,7 +449,18 @@ export async function updateHotPrices(): Promise<CycleResult> {
     })
     .catch(() => []);
 
-  const all = [...new Set([...ids, ...withPositions.map((p) => p.tokenId)])];
+  const withPaperPositions = await prisma.paperAgentRun.findMany({
+    where: {
+      tokenId: { not: null },
+      OR: [{ state: 'PAPER_OPEN' }, { allocations: { some: { state: 'OPEN' } } }],
+    },
+    select: { tokenId: true },
+    distinct: ['tokenId'],
+    take: 100,
+  });
+
+  const paperIds = withPaperPositions.map((p) => p.tokenId).filter((id): id is string => id != null);
+  const all = [...new Set([...paperIds, ...withPositions.map((p) => p.tokenId), ...ids])];
   if (all.length === 0) return EMPTY_CYCLE;
 
   const rows = await prisma.token.findMany({

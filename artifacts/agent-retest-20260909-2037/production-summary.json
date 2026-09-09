@@ -1,0 +1,51 @@
+{
+  "provenance": "Aggregate of JSON read via Render Web Shell in a Prisma transaction with SET TRANSACTION READ ONLY. Selected fields transcribed from the tool output. No production mutation.",
+  "at": "2026-09-09T20:41:06.976Z",
+  "revision": "2b0060e74764f517864ac3396487dc50d5e4da3e",
+  "since": "2026-09-09T20:32:31.000Z",
+  "control": {
+    "isEnabled": true,
+    "baselineStrategyKey": "okx-signal-v3-baseline",
+    "activeAllocationMode": "FIXED"
+  },
+  "count": 21,
+  "states": {
+    "SKIPPED": 21
+  },
+  "decisions": {
+    "DECISION_DEADLINE_EXCEEDED": 18,
+    "AMOUNT_BELOW_THRESHOLD": 2,
+    "TOKEN_TOO_OLD": 1
+  },
+  "lateOver30Seconds": 21,
+  "latencyMs": {
+    "min": 52894,
+    "max": 367735
+  },
+  "paperOpenOrClosedRunCounts": [],
+  "sessions": [
+    {
+      "kind": "ACTIVE",
+      "status": "ACTIVE",
+      "freeBalanceUsd": "700",
+      "inPositionsUsd": "0",
+      "openPositions": 0,
+      "dailyEntries": 0
+    },
+    {
+      "kind": "SHADOW",
+      "status": "ACTIVE",
+      "freeBalanceUsd": "700",
+      "inPositionsUsd": "0",
+      "openPositions": 0,
+      "dailyEntries": 0
+    }
+  ],
+  "providerGate": {
+    "nextAt": 1788986471508,
+    "urgentUntil": 0,
+    "blockedUntil": 0,
+    "backgroundNextAt": 1788986494008
+  },
+  "metadataRequests": 0
+}
