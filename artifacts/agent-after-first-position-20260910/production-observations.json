@@ -1,0 +1,31 @@
+{
+  "source": "Render service shell; Prisma transaction SET TRANSACTION READ ONLY; selected fields only, no credentials or actor identities",
+  "observedAt": "2026-09-10T01:36:51.776Z",
+  "revision": "275a4fb8622aa91816336e1439fc3933bc6d171e",
+  "control": {"isEnabled": false, "baselineStrategyKey": "okx-signal-v3-baseline", "activeAllocationMode": "FIXED"},
+  "firstAndOnlyRunWithPosition": {
+    "id": "cmtul2gue0byrkl07oot5p3se", "symbol": "$INVEST", "chain": "SOLANA",
+    "state": "PAPER_CLOSED", "entryAt": "2026-09-09T21:01:15.550Z",
+    "exitAt": "2026-09-09T21:07:19.608Z", "exitReason": "TRAILING_STOP",
+    "entrySourcePriceUsd": "0.000096298623512106", "exitSourcePriceUsd": "0.000024875226909237",
+    "realizedPnlUsd": "-130.98080499", "activeAllocatedUsd": "175", "shadowAllocatedUsd": "150",
+    "activeAllocationState": "CLOSED", "shadowAllocationState": "CLOSED"
+  },
+  "activeSession": {
+    "freeBalanceUsd": "569.019195", "reservedBalanceUsd": "300", "inPositionsUsd": "0",
+    "equityUsd": "869.019195", "openPositions": 0, "maxOpenPositions": 4,
+    "dailyEntries": 1, "dailyEntryLimit": 10000, "drawdownPct": "13.098081", "drawdownStopPct": "100"
+  },
+  "baselineDecisionQuery": {"strategyKey": "okx-signal-v3-baseline", "receivedAtGte": "2026-09-09T21:01:15.550Z", "take": 1000},
+  "baselineDecisions": {"count": 95, "AMOUNT_BELOW_THRESHOLD": 15, "DECISION_DEADLINE_EXCEEDED": 40, "TOKEN_TOO_OLD": 40},
+  "deliveryLatencyGreaterThan30000Ms": 81,
+  "timelySignalsAtLeast600Usd": {
+    "count": 12, "TOKEN_TOO_OLD": 11, "missingPoolDateThenDeadline": 1,
+    "missingPoolDateSignal": {"symbol": "ASSDAQ", "amountUsd": "1000.5874648", "receivedAt": "2026-09-09T21:23:33.800Z", "providerDeliveryLatencyMs": 23051, "poolCreatedAt": null, "decisionCode": "DECISION_DEADLINE_EXCEEDED"}
+  },
+  "latestIngestedSignal": {"symbol": "MIDORI", "receivedAt": "2026-09-10T00:22:14.932Z", "signaledAt": "2026-09-10T00:17:16.180Z", "ingestOrigin": "REST_RECONCILIATION"},
+  "ledger": [
+    {"eventType": "OPEN", "isShadow": false, "amountUsd": "175", "freeAfterUsd": "525", "inPositionsAfterUsd": "175", "createdAt": "2026-09-09T21:01:15.726Z"},
+    {"eventType": "CLOSE", "isShadow": false, "amountUsd": "44.01919501", "freeAfterUsd": "569.019195", "inPositionsAfterUsd": "0", "createdAt": "2026-09-09T21:07:19.663Z"}
+  ]
+}

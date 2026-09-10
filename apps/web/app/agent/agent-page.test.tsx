@@ -623,15 +623,24 @@ describe('правило выхода и Panic', () => {
     expect(screen.getByRole('radio', { name: /Защищённый/ }).getAttribute('aria-checked')).toBe('true');
   });
 
-  it('полуавтомат оставляет только «Цель 2×», выбранный ранее защищённый режим сбрасывается', () => {
+  it('администратор PAPER видит все пять правил при LIVE semi-auto, сохранённый трейлинг не сбрасывается', () => {
     adminState();
+    state.publicData.wallet.exitPlan = { mode: 'TRAILING_PURE', label: 'Чистый трейлинг' };
     state.publicData.phase4.controlMode = 'semi-auto';
     state.publicData.phase4.allowedExitModes = ['TARGET'];
     const { container } = render(<SettingsPage />); fireEvent.click(screen.getByRole('button', { name: 'Далее' }));
     const radios = screen.getAllByRole('radio');
-    expect(radios.map((r) => r.getAttribute('data-exit-mode'))).toEqual(['TARGET']);
-    expect(radios[0]!.getAttribute('aria-checked')).toBe('true');
-    expect(container.querySelector('[data-control-mode="semi-auto"]')!.textContent).toContain('только правило «Цель 2×»');
+    expect(radios.map((r) => r.getAttribute('data-exit-mode'))).toEqual(['TARGET', 'PROTECTED', 'LADDER', 'TRAILING', 'TRAILING_PURE']);
+    expect(screen.getByRole('radio', { name: /Чистый трейлинг/ }).getAttribute('aria-checked')).toBe('true');
+    expect(container.querySelector('[data-control-mode="semi-auto"]')).toBeNull();
+    expect(apiMock).not.toHaveBeenCalled();
+  });
+
+  it('обычный пользователь не получает мастер выбора PAPER-правил', () => {
+    adminState(); state.publicData.viewer.isAdmin = false;
+    render(<SettingsPage />);
+    expect(screen.queryByRole('radiogroup', { name: 'Режим выхода' })).toBeNull();
+    expect(screen.getByText('Настройки доступны только администратору')).toBeTruthy();
   });
 
   it('выбранный режим и правки уходят вместе с распределением', async () => {

@@ -231,51 +231,39 @@ describe('ручное управление paper-agent', () => {
     await server.close();
   });
 
-  it('в semi-auto прямой запрос с другим режимом выхода получает 400, а Цель 2× проходит', async () => {
-    // Тестовое окружение фиксирует LIVE_AGENT_CONTROL_MODE=semi-auto.
+  it.each(['TARGET', 'PROTECTED', 'LADDER', 'TRAILING', 'TRAILING_PURE'])('администратор PAPER сохраняет %s при LIVE semi-auto', async (exitMode) => {
     const server = await app();
-    const denied = await server.inject({
+    const response = await server.inject({
       method: 'PUT', url: '/admin/paper-agent/allocation',
-      payload: { mode: 'FIXED', capitalUsd: '100', maxOpenPositions: 4, exitMode: 'LADDER', confirm: true },
+      payload: { mode: 'FIXED', capitalUsd: '100', maxOpenPositions: 4, exitMode, confirm: true },
     });
-    expect(denied.statusCode).toBe(400);
-    expect(denied.json()).toMatchObject({ code: 'EXIT_MODE_NOT_ALLOWED' });
-    expect(configureAllocation).not.toHaveBeenCalled();
-    const allowed = await server.inject({
-      method: 'PUT', url: '/admin/paper-agent/allocation',
-      payload: { mode: 'FIXED', capitalUsd: '100', maxOpenPositions: 4, exitMode: 'TARGET', confirm: true },
-    });
-    expect(allowed.statusCode).toBe(200);
+    expect(response.statusCode).toBe(200);
+    expect(configureAllocation).toHaveBeenLastCalledWith(expect.objectContaining({
+      exitPlan: expect.objectContaining({ mode: exitMode }),
+    }), expect.objectContaining({ actorId: 'admin-1' }));
     await server.close();
   });
 
-  it('в semi-auto «Цель 2×» с переопределённой целью, трейлингом, стопом или ступенями — обход, 400 EXIT_PRESET_MODIFIED', async () => {
-    const server = await app();
-    for (const exitOverrides of [
-      { targetMultiple: 3, trailingPct: 50 },
-      { targetMultiple: 2.5 },
-      { stopLossPct: 35 },
-      { trailingPct: 40 },
-      { legs: [{ multiple: 1.5, sellPct: 50 }] },
-      { maxHoldHours: 5 },
-    ]) {
-      const denied = await server.inject({
-        method: 'PUT', url: '/admin/paper-agent/allocation',
-        payload: { mode: 'FIXED', capitalUsd: '100', maxOpenPositions: 4, exitMode: 'TARGET', exitOverrides, confirm: true },
-      });
-      expect(denied.statusCode, JSON.stringify(exitOverrides)).toBe(400);
-      expect(denied.json()).toMatchObject({ code: 'EXIT_PRESET_MODIFIED' });
-    }
-    expect(configureAllocation).not.toHaveBeenCalled();
-    // Переопределение тем же значением, что в пресете, — не изменение.
-    const same = await server.inject({
+  it.each(['TARGET', 'PROTECTED', 'LADDER', 'TRAILING', 'TRAILING_PURE'])('обычный пользователь не может сохранить PAPER-правило %s прямым запросом', async (exitMode) => {
+    const server = await nonAdminApp();
+    const response = await server.inject({
       method: 'PUT', url: '/admin/paper-agent/allocation',
-      payload: { mode: 'AUTOPILOT', capitalUsd: '100', riskProfile: 'BALANCED', exitMode: 'TARGET', exitOverrides: { targetMultiple: 2 }, confirm: true },
+      payload: { mode: 'FIXED', capitalUsd: '100', maxOpenPositions: 4, exitMode, confirm: true },
     });
-    expect(same.statusCode).toBe(200);
+    expect(response.statusCode).toBe(403);
+    expect(configureAllocation).not.toHaveBeenCalled();
+    await server.close();
+  });
+
+  it('администратор задаёт параметры PAPER-трейлинга без изменения режима LIVE', async () => {
+    const server = await app();
+    const response = await server.inject({
+      method: 'PUT', url: '/admin/paper-agent/allocation',
+      payload: { mode: 'FIXED', capitalUsd: '100', maxOpenPositions: 4, exitMode: 'TRAILING_PURE', exitOverrides: { trailingPct: 40, maxHoldHours: 5 }, confirm: true },
+    });
+    expect(response.statusCode).toBe(200);
     expect(configureAllocation).toHaveBeenLastCalledWith(expect.objectContaining({
-      mode: 'AUTOPILOT',
-      exitPlan: expect.objectContaining({ mode: 'TARGET', targetMultiple: 2, stopLossPct: null, trailingPct: null }),
+      exitPlan: expect.objectContaining({ mode: 'TRAILING_PURE', trailingPct: 40, maxHoldMs: 18000000 }),
     }), expect.anything());
     await server.close();
   });

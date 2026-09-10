@@ -1318,17 +1318,9 @@ function AdminSettings(props: {
   try { plan = paperExitPlan(exitMode, overrides); }
   catch { exitError = 'Проверьте стоп и время удержания'; }
   const exitLabel = EXIT_MODES.find((item) => item.key === exitMode)!.label;
-  /*
-   * Полуавтомат ведёт только «Цель 2×»: остальные карточки не
-   * показываются, и сервер отклонит их независимо от интерфейса.
-   * Уже выбранный, но теперь недопустимый режим сбрасывается на первый
-   * допустимый, чтобы форма не отправляла то, что не пройдёт.
-   */
-  const allowed = data.phase4?.allowedExitModes;
-  const visibleModes = allowed ? EXIT_MODES.filter((item) => allowed.includes(item.key)) : EXIT_MODES;
-  useEffect(() => {
-    if (allowed && !allowed.includes(exitMode) && visibleModes[0]) setExitMode(visibleModes[0].key);
-  }, [allowed?.join(',')]);
+  // Settings are admin-only and configure PAPER. phase4.allowedExitModes
+  // describes LIVE; it must not hide PAPER plans or reset the saved choice.
+  const visibleModes = EXIT_MODES;
   const profileLabel = { CONSERVATIVE: 'Conservative', BALANCED: 'Balanced', AGGRESSIVE: 'Aggressive' }[profile];
   const summary = `${money(capitalNumber)}, ${mode === 'FIXED' ? `Fixed: до ${positions} позиций` : `Autopilot ${profileLabel}`}, ${exitLabel}: ${plan?.legs.map((leg) => `${leg.sellPct}% на ${leg.multiple}×`).join(', ') || (plan?.targetMultiple ? `выход на ${plan.targetMultiple}×` : '')}${plan?.stopLossPct != null ? `, стоп −${plan.stopLossPct}%` : plan?.trailingPct != null ? `, трейлинг −${plan.trailingPct}% с момента входа` : ', без стопа'}`;
   return <div className="space-y-4">
@@ -1356,11 +1348,7 @@ function AdminSettings(props: {
       {step === 2 && (    <div aria-label="Правило выхода">
       <div className="flex flex-wrap items-baseline justify-between gap-2"><h2 className="font-semibold">Правило выхода</h2><span className="text-xs text-muted">сейчас: {data.wallet?.exitPlan?.label ?? 'Цель 2×'}</span></div>
       <p className="mt-1 text-sm text-muted">Применяется к позициям, открытым после настройки. Уже открытые ведутся по своему плану до конца.</p>
-      {data.phase4?.controlMode === 'semi-auto' && (
-        <p data-control-mode="semi-auto" className="mt-2 rounded-lg border border-border bg-raised px-3 py-2 text-xs text-muted">
-          Полуавтомат: доступно только правило «Цель 2×» — полный выход на 2× без стопа. Остальные правила открываются в режиме авто.
-        </p>
-      )}
+      <p className="mt-2 text-xs text-muted">Администратору доступны все пять правил PAPER. Ограничения LIVE не меняются.</p>
       <div className="mt-4 grid gap-3" role="radiogroup" aria-label="Режим выхода">
         {visibleModes.map((item, index) => (
           <ExitModeCard

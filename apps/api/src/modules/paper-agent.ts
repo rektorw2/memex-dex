@@ -16,9 +16,7 @@ import {
   PAPER_EXIT_MODE_LABELS,
   PAPER_EXIT_PRESETS,
   allowedExitModes,
-  exitPlanAllowed,
   AGENT_NETWORK_INFO,
-  isExitModeAllowed,
   describePaperExitPlan,
   paperExitPlan,
   type PaperExitPlan,
@@ -943,9 +941,8 @@ export const paperAgentRoutes: FastifyPluginAsync = async (app) => {
         mode: 'SEMI_AUTO',
         network: 'SOLANA',
         /*
-         * Режим управления и доступные ему правила выхода. Одно правило
-         * с сервером: интерфейс прячет лишние карточки, а PUT allocation
-         * отклоняет режим не из этого списка.
+         * Ограничения LIVE. Административная настройка PAPER имеет
+         * отдельный доступ ко всем пяти правилам и не использует этот список.
          */
         controlMode: env.LIVE_AGENT_CONTROL_MODE,
         allowedExitModes: allowedExitModes(env.LIVE_AGENT_CONTROL_MODE),
@@ -1275,19 +1272,9 @@ export const paperAgentRoutes: FastifyPluginAsync = async (app) => {
      * который никогда не закрывается или продаёт больше позиции,
      * отклоняется как 400, а не живёт в базе до первой сделки.
      */
-    /*
-     * Semi-auto допускает только «Цель 2×». Проверка здесь, а не
-     * только в интерфейсе: прямой запрос к API обязан получить тот же
-     * отказ, что и спрятанная карточка.
-     */
+    // This admin-only route configures virtual PAPER accounts. LIVE's
+    // semi-auto restrictions remain in core and the LIVE execution paths.
     const requestedMode = body.exitMode ?? 'TARGET';
-    if (!isExitModeAllowed(env.LIVE_AGENT_CONTROL_MODE, requestedMode)) {
-      throw Object.assign(new Error(`Режим выхода ${requestedMode} недоступен в ${env.LIVE_AGENT_CONTROL_MODE}`), {
-        statusCode: 400,
-        code: 'EXIT_MODE_NOT_ALLOWED',
-        allowed: allowedExitModes(env.LIVE_AGENT_CONTROL_MODE),
-      });
-    }
     let exitPlan: PaperExitPlan;
     try {
       exitPlan = paperExitPlan(requestedMode, body.exitOverrides ?? {});
@@ -1295,19 +1282,6 @@ export const paperAgentRoutes: FastifyPluginAsync = async (app) => {
       throw Object.assign(new Error('Некорректный план выхода'), {
         statusCode: 400,
         code: cause instanceof Error ? cause.message : 'INVALID_EXIT_PLAN',
-      });
-    }
-    /*
-     * Проверяется итоговый план, а не имя режима: «Цель 2×» с
-     * переопределённой целью или трейлингом в полуавтомате — обход,
-     * и прямой запрос к API получает тот же отказ.
-     */
-    const planVerdict = exitPlanAllowed(env.LIVE_AGENT_CONTROL_MODE, exitPlan);
-    if (!planVerdict.ok) {
-      throw Object.assign(new Error(planVerdict.message), {
-        statusCode: 400,
-        code: planVerdict.code,
-        allowed: allowedExitModes(env.LIVE_AGENT_CONTROL_MODE),
       });
     }
     if (body.mode === 'FIXED' && body.maxOpenPositions == null) {

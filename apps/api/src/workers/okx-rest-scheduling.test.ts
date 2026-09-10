@@ -23,6 +23,7 @@ beforeEach(async () => {
     state.calls.push({ at: Date.now(), chain: JSON.parse(options.body as string)[0].chainIndex });
     if (state.delay) await new Promise<void>(resolve => state.releases.push(resolve));
     return state.reply === '429' ? new Response('', { status: 429, headers: { 'retry-after': '120' } })
+      : state.reply === '402' ? new Response('', { status: 402 })
       : new Response(JSON.stringify({ code: '0', data: [] }));
   }));
   ingest = await import('./okx-signal-ingest.js'); ingest.startOkxSignalIngest(); await vi.advanceTimersByTimeAsync(0);
@@ -53,6 +54,21 @@ it('shared usage denial spends no HTTP and does not spin; recovery is bounded', 
   expect(ingest.getOkxSignalIngestStatus().lastRestErrorCode).toBe('budget');
   await vi.advanceTimersByTimeAsync(60000); expect(state.calls).toHaveLength(count);
   state.allow = true; await vi.advanceTimersByTimeAsync(240000); expect(state.calls).toHaveLength(count + 1);
+});
+it('HTTP 402 pauses all signal chains for five minutes and resumes after quota recovery without a burst', async () => {
+  state.reply = '402'; await vi.advanceTimersByTimeAsync(3000);
+  const count = state.calls.length;
+  expect(ingest.getOkxSignalIngestStatus().lastRestErrorCode).toBe('quota');
+  state.reply = 'ok';
+  await vi.advanceTimersByTimeAsync(299999);
+  expect(state.calls).toHaveLength(count);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(state.calls).toHaveLength(count + 1);
+  expect(ingest.getOkxSignalIngestStatus().lastRestErrorCode).toBeNull();
+  await vi.advanceTimersByTimeAsync(2999);
+  expect(state.calls).toHaveLength(count + 1);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(state.calls).toHaveLength(count + 2);
 });
 it('slow response prevents overlapping polls and catch-up requests', async () => {
   state.delay = true; await vi.advanceTimersByTimeAsync(3000); const count = state.calls.length;

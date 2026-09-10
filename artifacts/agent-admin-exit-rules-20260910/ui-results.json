@@ -1,0 +1,22 @@
+{
+  "fixture": true,
+  "productionWrites": false,
+  "results": [
+    {
+      "width": 390,
+      "modes": 5,
+      "savedTrailingPreserved": true,
+      "submittedMode": "LADDER",
+      "overflow": false,
+      "errors": []
+    },
+    {
+      "width": 1280,
+      "modes": 5,
+      "savedTrailingPreserved": true,
+      "submittedMode": "LADDER",
+      "overflow": false,
+      "errors": []
+    }
+  ]
+}
