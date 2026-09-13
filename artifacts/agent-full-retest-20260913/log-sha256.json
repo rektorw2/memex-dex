@@ -1,0 +1,11 @@
+{
+  "logs/api-build.log": "b59b78fa73e500c16cb30cd7f8bf39892393835b9cab40e599e33c28baf8c6cc",
+  "logs/core-build.log": "03f56d578660b0b138ba273b3c98db12df691e15909e5eed792dc58b25696c8d",
+  "logs/diff-check.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "logs/e2e.log": "bb5bd37db90524e8f45b8c7773df15a1b4f987be9e28ed838c455cc5f5519c8b",
+  "logs/observer.log": "ac776d09a5c367d557b06ba754f3a8b886e2ab9e928de87f6f6e7520e381362a",
+  "logs/prisma-generate.log": "694a693f7612e390a9a43c9cc89c431ba21cd636ea3c876ca395f65d27ae7d43",
+  "logs/static-build.log": "75fe1a2629f6e2a074e1c13fb0c840df3c56b045d438cc87a0d03f03a770af55",
+  "logs/test-database-cleanup.log": "8e1c2d2176b239d75b62ca479babb498d925ccdab42bc2c4e97626492c560da0",
+  "logs/unit-all.log": "e2254c62c92b814b4cd0ae33276be2d85e887830040162505dcdb79a6c7d4f82"
+}

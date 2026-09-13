@@ -159,6 +159,8 @@ export interface RetryOptions {
   /** Задержка перед первым повтором; дальше удваивается. */
   baseDelayMs?: number;
   label?: string;
+  /** A caller can defer provider-specific failures to its scheduler. */
+  shouldRetry?: (error: unknown) => boolean;
 }
 
 /**
@@ -179,7 +181,7 @@ export async function withRetry<T>(fn: () => Promise<T>, opts: RetryOptions = {}
       return await fn();
     } catch (e: any) {
       lastErr = e;
-      if (e?.permanent === true) throw e;
+      if (e?.permanent === true || opts.shouldRetry?.(e) === false) throw e;
       if (i === attempts - 1) break;
 
       // Небольшой случайный разброс: без него все ждущие клиенты

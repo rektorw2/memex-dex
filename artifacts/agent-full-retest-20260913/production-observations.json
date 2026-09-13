@@ -1,0 +1,35 @@
+{
+  "method": "Selected results of Prisma queries in SET TRANSACTION READ ONLY through the current Render shell; no database writes",
+  "initial": {
+    "at": "2026-09-13T01:01:38.285Z",
+    "revision": "275a4fb8622aa91816336e1439fc3933bc6d171e",
+    "executionMode": "paper",
+    "liveEnabled": "false",
+    "control": {"isEnabled": true, "baselineStrategyKey": "okx-signal-v3-baseline", "activeAllocationMode": "FIXED"},
+    "config": {"minAmountUsd": 600, "maxTokenAgeMs": 900000, "maxDecisionLatencyMs": 30000},
+    "since": "2026-09-13T00:57:00.000Z",
+    "runCount": 200,
+    "counts": {"AMOUNT_BELOW_THRESHOLD": 81, "DECISION_DEADLINE_EXCEEDED": 61, "TOKEN_TOO_OLD": 58},
+    "late": 199,
+    "timelyOver600": [],
+    "accounts": [{"mode": "FIXED", "freeBalanceUsd": "569.019195", "reservedBalanceUsd": "300", "inPositionsUsd": "0", "openPositions": 0, "maxOpenPositions": 4, "dailyEntries": 1, "dailyEntryLimit": 10000, "drawdownPct": "13.098081", "drawdownStopPct": "100"}],
+    "positions": [{"symbol": "$INVEST", "chain": "SOLANA", "state": "PAPER_CLOSED", "entryAt": "2026-09-09T21:01:15.550Z", "exitAt": "2026-09-09T21:07:19.608Z", "exitReason": "TRAILING_STOP", "lastMarkedAt": "2026-09-09T21:07:19.608Z"}]
+  },
+  "detail": {
+    "at": "2026-09-13T01:03:36.852Z",
+    "since": "2026-09-13T00:57:00.000Z",
+    "chains": {
+      "ROBINHOOD": {"total": 100, "late": 100, "poolKnown": 37, "over600": 91},
+      "BNB": {"total": 100, "late": 100, "poolKnown": 52, "over600": 61},
+      "SOLANA": {"total": 100, "late": 99, "poolKnown": 50, "over600": 58}
+    },
+    "timelyOver600": [],
+    "poolExamples": [
+      {"chain": "ROBINHOOD", "decisionCode": "TOKEN_TOO_OLD", "poolCreatedAt": "2026-09-11T19:25:38.000Z", "tokenAgeMs": 106581107, "signalAmountUsd": "2474.103255", "receivedAt": "2026-09-13T01:01:58.943Z", "signaledAt": "2026-09-12T20:09:23.122Z", "state": "SKIPPED"},
+      {"chain": "ROBINHOOD", "decisionCode": "TOKEN_TOO_OLD", "poolCreatedAt": "2026-09-12T13:41:55.000Z", "tokenAgeMs": 40804419, "signalAmountUsd": "5210.84127828", "receivedAt": "2026-09-13T01:01:59.001Z", "signaledAt": "2026-09-12T20:12:25.086Z", "state": "SKIPPED"},
+      {"chain": "ROBINHOOD", "decisionCode": "TOKEN_TOO_OLD", "poolCreatedAt": "2026-09-12T17:08:02.000Z", "tokenAgeMs": 28437695, "signalAmountUsd": "8610.846255", "receivedAt": "2026-09-13T01:01:59.043Z", "signaledAt": "2026-09-12T20:23:41.647Z", "state": "SKIPPED"}
+    ],
+    "duplicateSignalStrategyGroups": 0,
+    "unfinishedSinceRecovery": []
+  }
+}

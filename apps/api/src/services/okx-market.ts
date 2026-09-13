@@ -254,6 +254,20 @@ async function call<T>(method: 'GET' | 'POST', path: string, body?: unknown): Pr
   return json.data as T;
 }
 
+/** Count physical attempts, including failures followed by a successful retry. */
+async function countedCall<T>(method: 'GET' | 'POST', path: string, body: unknown, purpose: OkxCallPurpose): Promise<T | null> {
+  if (!isOkxConfigured()) return null;
+  try {
+    const value = await call<T>(method, path, body);
+    recordOkxCall(path, purpose, value == null ? 'empty' : 'ok');
+    return value;
+  } catch (error) {
+    const status = (error as OkxError)?.status;
+    recordOkxCall(path, purpose, status === 429 ? 'rate-limit' : status === 402 ? 'payment-required' : 'error');
+    throw error;
+  }
+}
+
 /**
  * Запрос с повторами. Возвращает null вместо исключения.
  *
@@ -281,18 +295,21 @@ export async function safeCall<T>(
 
   try {
     const value = await pool.run(() =>
-      withRetry(() => call<T>(method, path, body), { label: path, attempts: 3 }),
+      withRetry(() => {
+        // A failed attempt may have consumed the remaining background budget.
+        if (!canSpendOkxCall(path, purpose).allow) return Promise.resolve(null);
+        return countedCall<T>(method, path, body, purpose);
+      }, {
+        label: path,
+        attempts: 3,
+        // Quota/rate-limit recovery belongs to the next scheduled refresh.
+        // Do not turn these temporary refusals into permanent failures.
+        shouldRetry: (error) => ![402, 429].includes((error as OkxError)?.status ?? 0),
+      }),
     );
 
-    recordOkxCall(path, purpose, value == null ? 'empty' : 'ok');
     return value;
   } catch (e: any) {
-    recordOkxCall(
-      path,
-      purpose,
-      e?.status === 429 ? 'rate-limit' : e?.status === 402 ? 'payment-required' : 'error',
-    );
-
     logger.debug({ path, err: e?.message }, 'OKX недоступен');
     return null;
   }
@@ -377,11 +394,10 @@ export async function reportedCall<T>(
      * назначает одну общую паузу hot/cold циклам. Три мгновенных
      * повтора 429 до передачи `Retry-After` наверх уже были бы тем
      * самым штормом, от которого эта ветка защищает. Старый safeCall
-     * сохраняет локальные повторы для обычных одиночных запросов.
+     * сохраняет локальные повторы только сетевых ошибок и временных 5xx.
      */
-    const value = await pool.run(() => call<T>(method, path, body));
+    const value = await pool.run(() => countedCall<T>(method, path, body, purpose));
 
-    recordOkxCall(path, purpose, value == null ? 'empty' : 'ok');
     return { value, kind: value == null ? 'empty' : 'ok', retryAfterMs: null };
   } catch (e: unknown) {
     const err = e as OkxError;
@@ -402,16 +418,6 @@ export async function reportedCall<T>(
           : err?.permanent === true
             ? 'permanent'
             : 'transient';
-
-    recordOkxCall(
-      path,
-      purpose,
-      kind === 'rate-limit'
-        ? 'rate-limit'
-        : kind === 'payment-required'
-          ? 'payment-required'
-          : 'error',
-    );
 
     // Журнал один на запрос, а не на токен: сто токенов одной пачки
     // дали бы сто одинаковых строк об одной и той же беде.

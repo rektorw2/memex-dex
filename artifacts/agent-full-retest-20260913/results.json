@@ -1,0 +1,25 @@
+{
+  "tests": {
+    "core": 2072,
+    "api": 1913,
+    "web": 457,
+    "total": 4442,
+    "e2e": 112,
+    "observer": 12
+  },
+  "observation": {
+    "samples": 7,
+    "first": "2026-09-13T01:03:15.608Z",
+    "last": "2026-09-13T01:06:16.979Z",
+    "healthyAll": true,
+    "sourceAvailableAll": true,
+    "tickFailuresMax": 0,
+    "processingErrorsMax": 0,
+    "heartbeatWriteErrorsMax": 0,
+    "rssRangeMb": [
+      204,
+      241
+    ],
+    "full24hVerdict": "NOT_CONFIRMED"
+  }
+}
