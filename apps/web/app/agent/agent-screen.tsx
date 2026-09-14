@@ -5,13 +5,15 @@ import { SemiAutoProposals } from '@/components/SemiAutoProposals';
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import useSWR from 'swr';
 import { ApiError, api, errorMessage, fetcher } from '@/lib/api';
-import { agentFailureVerdict, paperExitPlan, type AgentFailureKind, type AgentNetworkReadiness } from '@memex/core';
+import { agentFailureVerdict, paperExitPlan, describePaperExitPlan, type AgentFailureKind, type AgentNetworkReadiness } from '@memex/core';
 import { EXIT_MODE_COPY, ExitModeCard } from '@/components/agent/ExitModeCard';
+import { PositionPriceChart, OperationDetail, positionPrice } from '@/components/agent/PositionPriceChart';
+import { agentChartHref, splitAgentDecisions, OPERATION_LABELS, type PositionEvidence, type PositionOperation } from '@/lib/agent-position';
 
 type MaybeNumber = number | null;
 type AgentTab = 'overview' | 'positions' | 'history' | 'live';
 
-interface AgentRun {
+interface AgentRun extends PositionEvidence {
   id: string;
   tokenId: string | null;
   token: { id: string; symbol: string; name: string; logoUrl: string | null } | null;
@@ -201,6 +203,7 @@ interface PublicAgentData {
   metrics24h: { uniqueSignals: number; runs: number; openPositions: number; closedPositions: number; capitalUtilizationPct: number };
   wallet: PaperWallet | null;
   positions: AgentRun[];
+  tradePositions?: AgentRun[];
   recentDecisions: AgentRun[];
   analytics: { strategyCount: number; decisionLatencyP50Ms: MaybeNumber; decisionLatencyP95Ms: MaybeNumber; validLatencySampleSize: number };
   phase4: Phase4Status;
@@ -256,7 +259,7 @@ export default function AgentPage() {
     <div key={tab} id={`agent-panel-${tab}`} role="tabpanel" aria-labelledby={`agent-tab-${tab}`} className="agent-fade">
       {tab === 'overview' && <Overview data={data} onPositions={() => setTab('positions')} />}
       {tab === 'positions' && <Positions rows={data.positions} />}
-      {tab === 'history' && <History rows={data.recentDecisions} ledger={data.wallet?.ledger ?? []} />}
+      {tab === 'history' && <><AgentActivity data={data} /><div className="mt-4 grid gap-4 lg:grid-cols-2">{(data.tradePositions ?? []).filter(run => run.state === 'PAPER_CLOSED').map(run => <details key={run.id} className="panel p-3"><summary className="min-h-11 cursor-pointer p-2 text-sm">{run.token?.symbol ?? run.symbol} · завершённая позиция</summary><RunCard run={run} /></details>)}</div>{data.wallet?.ledger.length && !(data.tradePositions?.length || data.recentDecisions.length) ? <History rows={[]} ledger={data.wallet.ledger} /> : null}</>}
       {tab === 'live' && <div className="space-y-4"><AgentModeBoundary data={data} /><SemiAutoProposals /><Phase4Foundation status={data.phase4} />{data.viewer.isAdmin && <LiveDiagnostics data={data} mutate={mutate} />}</div>}
     </div>
     <button className="inline-flex min-h-11 items-center gap-2 text-xs text-muted hover:text-white" onClick={() => setTab('live')}>
@@ -519,59 +522,62 @@ function LockIcon() {
 }
 
 function AgentActivity({ data }: { data: PublicAgentData }) {
-  const decisions = [...data.recentDecisions].sort((a, b) => Date.parse(b.exitAt ?? b.decidedAt ?? b.signaledAt) - Date.parse(a.exitAt ?? a.decidedAt ?? a.signaledAt));
-  const skips = decisions.filter((run) => run.state === 'SKIPPED');
-  const reasons = new Map<string, number>();
-  skips.forEach((run) => { const label = humanDecision(run.decisionCode, true); reasons.set(label, (reasons.get(label) ?? 0) + 1); });
-  const events = decisions.filter((run) => run.state !== 'SKIPPED').flatMap((run) => {
-    const symbol = run.token?.symbol ?? run.symbol;
-    const entry = { id: `entry:${run.id}`, time: run.entryAt ?? run.decidedAt ?? run.signaledAt, symbol, label: 'Позиция открыта', detail: 'Сигнал → вход', pnl: null as MaybeNumber };
-    if (run.state === 'PAPER_OPEN') return [entry];
-    if (run.state === 'PAPER_CLOSED') return [
-      ...(run.entryAt ? [entry] : []),
-      { id: `exit:${run.id}`, time: run.exitAt ?? run.decidedAt ?? run.signaledAt, symbol, label: 'Позиция закрыта', detail: run.allocation?.exit?.exitReason ? exitReasonLabel(run.allocation.exit.exitReason) : 'Выход выполнен', pnl: run.realizedPnlUsd },
+  const [tab, setTab] = useState<'trades' | 'skips'>('trades');
+  const [kind, setKind] = useState('ALL');
+  const [reason, setReason] = useState('ALL');
+  const { skipped, pending } = splitAgentDecisions(data.recentDecisions);
+  const legacyPartials = data.tradePositions == null ? (data.wallet?.ledger ?? []).filter(event => event.eventType === 'PARTIAL_EXIT') : [];
+  const tradeRuns = [...new Map([...(data.tradePositions ?? data.recentDecisions.filter(row => row.entryAt)), ...data.positions].filter(run => ['PAPER_OPEN', 'PAPER_CLOSED'].includes(run.state)).map(run => [run.id, run])).values()];
+  const trades = tradeRuns.flatMap(run => {
+    const operations: PositionOperation[] = run.operations?.length ? run.operations : [
+      ...(run.entryAt ? [{ id: run.id + ':entry', kind: 'OPEN' as const, at: run.entryAt, executionPriceUsd: run.entryPriceUsd, quantity: null, pnlUsd: null, netUsd: null, targetPriceUsd: null, evidence: 'LEGACY' }] : []),
+      ...(run.exitAt ? [{ id: run.id + ':exit', kind: 'CLOSE' as const, at: run.exitAt, executionPriceUsd: null, quantity: null, pnlUsd: run.realizedPnlUsd, netUsd: null, targetPriceUsd: null, evidence: 'LEGACY' }] : []),
     ];
-    return [{ id: `run:${run.id}`, time: run.decidedAt ?? run.signaledAt, symbol,
-      label: EVENT_LABELS[run.state] ?? humanDecision(run.decisionCode), detail: humanDecision(run.decisionCode), pnl: null as MaybeNumber }];
-  });
-  // Partial exits do not change the run state; they only appear in the ledger.
-  data.wallet?.ledger.filter((event) => event.eventType === 'PARTIAL_EXIT').forEach((event) => events.push({
-    id: `ledger:${event.id}`, time: event.createdAt, symbol: event.allocation?.token?.symbol ?? event.allocation?.symbol ?? 'PAPER',
-    label: 'Часть позиции продана', detail: 'Ступень фиксации', pnl: null,
-  }));
-  const recent = events.sort((a, b) => Date.parse(b.time) - Date.parse(a.time)).slice(0, skips.length ? 4 : 5);
-  return <section aria-label="Последние события" className="panel p-4 sm:p-5">
-    <h2 className="text-sm font-semibold">Последние события</h2>
-    {recent.length === 0 && skips.length === 0 && <p className="mt-3 text-xs text-muted">Событий пока нет</p>}
-    <ol className="mt-2 divide-y divide-border">
-      {recent.map((event) => <li key={event.id} className="agent-row flex items-center gap-3 py-3 text-xs">
-        <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent" />
-        <div className="min-w-0 flex-1"><div><strong>{event.symbol}</strong> · {event.label}</div><div className="mt-1 text-muted">{event.detail}</div></div>
-        <div className="shrink-0 text-right"><time dateTime={event.time} title={timestamp(event.time)} className="text-muted">{new Date(event.time).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</time>{event.pnl != null && <div className={`num ${pnlClass(event.pnl)}`}>{money(event.pnl)}</div>}</div>
-      </li>)}
-      {skips.length > 0 && <li className="agent-row py-3 text-xs text-muted"><details><summary className="min-h-6 cursor-pointer">Пропущено: {skips.length} · последние решения</summary><ul className="mt-2 flex flex-wrap gap-x-4 gap-y-2">{[...reasons].map(([reason, count]) => <li key={reason}>{reason}: {count}</li>)}</ul></details></li>}
-    </ol>
+    return operations.map(operation => ({ run, operation }));
+  }).sort((a, b) => Date.parse(b.operation.at ?? '') - Date.parse(a.operation.at ?? ''));
+  const visible = trades.filter(row => kind === 'ALL' || row.operation.kind === kind);
+  const skips = skipped.filter(row => reason === 'ALL' || row.decisionCode === reason);
+  const reasons = [...new Set(skipped.map(row => row.decisionCode).filter(Boolean))] as string[];
+  return <section className="panel overflow-hidden" aria-label="Последние события">
+    <div className="border-b border-border p-4 sm:p-5">
+      <h2 className="font-semibold">Последние события</h2>
+      <p className="mt-1 text-xs text-muted">Исполнения отдельно от решений не входить. Счётчики — по загруженной истории.</p>
+      <div className="mt-4 flex gap-2" role="tablist" aria-label="Вид событий" onKeyDown={event => {
+        if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+        event.preventDefault();
+        const next = event.key === 'Home' ? 'trades' : event.key === 'End' ? 'skips' : tab === 'trades' ? 'skips' : 'trades';
+        setTab(next); event.currentTarget.querySelector<HTMLButtonElement>('#activity-' + next)?.focus();
+      }}>
+        <button role="tab" id="activity-trades" tabIndex={tab === 'trades' ? 0 : -1} aria-selected={tab === 'trades'} aria-controls="activity-panel" onClick={() => setTab('trades')} className={'min-h-11 rounded-lg px-3 text-sm transition-colors ' + (tab === 'trades' ? 'bg-accent/15 text-accent' : 'text-muted hover:text-white')}>Сделки <span className="num ml-1">{trades.length + legacyPartials.length}</span></button>
+        <button role="tab" id="activity-skips" tabIndex={tab === 'skips' ? 0 : -1} aria-selected={tab === 'skips'} aria-controls="activity-panel" onClick={() => setTab('skips')} className={'min-h-11 rounded-lg px-3 text-sm transition-colors ' + (tab === 'skips' ? 'bg-accent/15 text-accent' : 'text-muted hover:text-white')}>Пропущенные сигналы <span className="num ml-1">{skipped.length}</span></button>
+      </div>
+    </div>
+    <div key={tab} id="activity-panel" role="tabpanel" aria-labelledby={'activity-' + tab} className="agent-fade p-4 sm:p-5">
+      {tab === 'trades' ? <>
+        <label className="flex items-center justify-between gap-3 text-xs text-muted">Операции<select aria-label="Фильтр сделок" value={kind} onChange={event => setKind(event.target.value)} className="input !w-auto !py-2 text-xs"><option value="ALL">Все</option><option value="OPEN">Входы</option><option value="PARTIAL_EXIT">Частичные фиксации</option><option value="CLOSE">Выходы</option></select></label>
+        {!visible.length && !legacyPartials.length ? <p className="py-8 text-center text-sm text-muted">Исполненных сделок пока нет. Пропуски не считаются сделками.</p> : <div className="mt-3 divide-y divide-border">{visible.slice(0, 20).map(({ run, operation }) => {
+          const href = chartHref(run);
+          return <article key={operation.id} className="agent-operation py-3" data-trade-operation={operation.kind}>
+            <div className="flex items-start gap-3"><TokenMark run={run} /><div className="min-w-0 flex-1">{href ? <Link href={href} className="block min-h-10 text-sm hover:text-accent"><strong>{run.token?.symbol ?? run.symbol}</strong><span className="mt-0.5 block text-xs text-muted">{OPERATION_LABELS[operation.kind]}</span></Link> : <strong>{run.symbol} · {OPERATION_LABELS[operation.kind]}</strong>}<time dateTime={operation.at ?? undefined} className="text-[11px] text-muted">{timestamp(operation.at)}</time>{operation.kind === 'CLOSE' && <p className="mt-1 text-xs text-muted">{exitReasonLabel(operation.reason ?? run.allocation?.exit?.exitReason ?? '')}</p>}</div><span className={'num text-sm ' + pnlClass(operation.pnlUsd)}>{operation.kind === 'OPEN' ? positionPrice(run.positionUsd) : money(operation.pnlUsd)}</span>{!href && <ChartLink target={run} compact />}</div>
+            <details className="disclosure mt-2 text-xs text-muted"><summary className="min-h-8 cursor-pointer py-2">Исполнение и результат</summary><OperationDetail operation={operation} /></details>
+          </article>;
+        })}{(kind === 'ALL' || kind === 'PARTIAL_EXIT') && legacyPartials.map(event => <LedgerRow key={event.id} event={event} />)}</div>}
+      </> : <>
+        {reasons.length > 1 && <label className="block text-xs text-muted">Причина<select className="input mt-2 text-xs" value={reason} onChange={event => setReason(event.target.value)}><option value="ALL">Все причины</option>{reasons.map(code => <option key={code} value={code}>{humanDecision(code)}</option>)}</select></label>}
+        {pending.length > 0 && <p className="my-3 rounded-lg border border-accent/20 bg-accent/5 p-3 text-xs text-muted">Ещё ожидают решения: {pending.length}. Они не включены в пропущенные.</p>}
+        {!skips.length ? <p className="py-8 text-center text-sm text-muted">Пропущенных сигналов нет.</p> : <div className="mt-2 divide-y divide-border">{skips.slice(0, 30).map(run => <article key={run.id} className="py-3">
+          <div className="flex items-center gap-3"><TokenMark run={run} /><div className="min-w-0 flex-1"><p className="text-sm">{humanDecision(run.decisionCode)}</p><p className="mt-1 text-xs text-muted">{run.symbol} · {timestamp(run.decidedAt ?? run.signaledAt)}</p></div><ChartLink target={run} symbol={run.symbol} compact /></div>
+          <details className="disclosure mt-2 text-xs text-muted"><summary className="min-h-8 cursor-pointer py-2">Диагностика</summary><p className="break-words">{run.decisionCode ?? 'Без кода'} · {run.strategyLabel}</p><p>Сигнал: {timestamp(run.signaledAt)}</p></details>
+        </article>)}</div>}
+      </>}
+    </div>
   </section>;
 }
 
 function CompactPositions({ rows, onExpand }: { rows: AgentRun[]; onExpand: () => void }) {
-  return <section aria-label="Открытые позиции" className="panel p-4 sm:p-5">
-    <div className="flex items-center justify-between"><h2 className="text-sm font-semibold">Открытые позиции <span className="ml-1 text-muted">{rows.length}</span></h2>{rows.length > 0 && <button onClick={onExpand} className="min-h-8 text-xs text-accent">Подробнее →</button>}</div>
-    {rows.length === 0 ? <p className="mt-3 text-sm text-muted">Ждёт подходящий сигнал</p> : <div className="mt-1 divide-y divide-border">
-      {rows.slice(0, 5).map((run) => {
-        const exit = run.allocation?.exit;
-        const multiple = run.entryPriceUsd && run.currentPriceUsd != null ? run.currentPriceUsd / run.entryPriceUsd : null;
-        const ratio = (price: MaybeNumber | undefined) => price != null && run.entryPriceUsd ? `${(price / run.entryPriceUsd).toFixed(2)}×` : '—';
-        return <details key={run.id} className="agent-row group" data-compact-position={run.id}>
-          <summary className="cursor-pointer list-none py-3 sm:flex sm:items-center sm:gap-6 [&::-webkit-details-marker]:hidden">
-            <div className="flex items-center gap-2 sm:flex-1"><TokenMark run={run} /><strong className="min-w-0 flex-1 truncate text-sm">{run.token?.symbol ?? run.symbol}</strong><span className={`num text-sm ${pnlClass(run.unrealizedPnlUsd)}`}>{money(run.unrealizedPnlUsd)}</span><span className="num min-w-12 text-right text-xs text-muted">{multiple == null ? '—' : `${multiple.toFixed(2)}×`}</span></div>
-            <div className="mt-1 flex justify-end gap-3 text-[11px] text-muted sm:mt-0"><span>Стоп {exit ? exit.stopPriceUsd == null ? 'без стопа' : ratio(exit.stopPriceUsd) : '—'}</span><span>Цель {exit?.nextTargetPriceUsd == null ? '—' : ratio(exit.nextTargetPriceUsd)}</span><span aria-hidden className="group-open:rotate-90">›</span></div>
-          </summary>
-          <div className="pb-3"><RunCard run={run} /></div>
-        </details>;
-      })}
-      {rows.length > 5 && <button onClick={onExpand} className="min-h-11 text-xs text-accent">Все позиции: {rows.length} →</button>}
-    </div>}
+  return <section aria-label="Открытые позиции" className="space-y-3">
+    <div className="flex items-center justify-between gap-3"><div><h2 className="font-semibold">Открытые позиции <span className="num ml-1 text-muted">{rows.length}</span></h2><p className="mt-1 text-xs text-muted">Что уже исполнено и где сработает следующий выход</p></div>{rows.length > 0 && <button onClick={onExpand} className="min-h-11 text-xs text-accent">Подробнее →</button>}</div>
+    {!rows.length ? <StateCard title="Ждёт подходящий сигнал">Открытые PAPER-позиции появятся здесь после входа.</StateCard> : <div className="grid gap-4 lg:grid-cols-2">{rows.slice(0, 4).map((run, index) => <RunCard key={run.id} run={run} index={index} />)}</div>}
   </section>;
 }
 
@@ -1108,12 +1114,7 @@ function exitReasonLabel(code: string) { return EXIT_REASON_LABELS[code] ?? 'Д�
  * графика нет, и это сказано словами, а не пустым местом.
  */
 function chartHref(target: { tokenId?: string | null; chain?: string | null; address?: string | null }): string | null {
-  const query = new URLSearchParams();
-  if (target.tokenId) query.set('token', target.tokenId);
-  if (target.chain) query.set('chain', target.chain);
-  if (target.address) query.set('address', target.address);
-  if (!target.tokenId && !(target.chain && target.address)) return null;
-  return `/terminal/?${query}`;
+  return agentChartHref(target);
 }
 
 function ChartLink({ target, symbol, compact = false }: { target: { tokenId?: string | null; chain?: string | null; address?: string | null }; symbol?: string | null; compact?: boolean }) {
@@ -1150,40 +1151,31 @@ function LedgerRow({ event }: { event: LedgerEvent }) {
 function RunCard({ run, index = 0 }: { run: AgentRun; index?: number }) {
   const exit = run.allocation?.exit ?? null;
   const multiple = run.entryPriceUsd && run.currentPriceUsd ? run.currentPriceUsd / run.entryPriceUsd : null;
-  /*
-   * Полоса ведёт к ближайшей цели плана — первой ступени или полной
-   * цели, — а не всегда к 2×: у лестницы первая ступень на 1.6×,
-   * и полоса до 2× показывала бы «ещё далеко» там, где продажа уже прошла.
-   */
-  const targetMultiple = exit?.nextTargetPriceUsd && run.entryPriceUsd ? exit.nextTargetPriceUsd / run.entryPriceUsd : 2;
-  const progress = multiple == null ? null : Math.max(0, Math.min(100, ((multiple - 1) / Math.max(0.01, targetMultiple - 1)) * 100));
-  const stopMultiple = exit?.stopPriceUsd && run.entryPriceUsd ? exit.stopPriceUsd / run.entryPriceUsd : null;
-  const pnl = run.unrealizedPnlUsd ?? 0;
-  return <article className="agent-card panel p-4" style={{ '--i': index } as CSSProperties}>
+  const closed = run.state === 'PAPER_CLOSED';
+  const href = chartHref(run);
+  return <article className="agent-card agent-position panel relative min-w-0 p-4 sm:p-5" style={{ '--i': index } as CSSProperties} data-position={run.id}>
     <div className="flex items-start gap-3">
       <TokenMark run={run} />
-      <div className="min-w-0 flex-1"><div className="truncate font-semibold">{run.token?.symbol ?? run.symbol}</div><div className="truncate text-xs text-muted">{run.token?.name ?? run.address}</div></div>
-      <div className="text-right">
-        <div className={`num text-sm font-semibold ${pnlClass(run.unrealizedPnlUsd)}`}>{money(run.unrealizedPnlUsd)}</div>
-        {multiple != null && <div className={`num text-[11px] ${pnlClass(pnl)}`}>{multiple.toFixed(2)}×</div>}
-      </div>
+      <div className="min-w-0 flex-1">{href ? <Link href={href} className="block truncate text-base font-semibold hover:text-accent">{run.token?.symbol ?? run.symbol} <span aria-hidden className="text-xs text-muted">↗</span></Link> : <strong>{run.symbol}</strong>}<div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted"><span className="rounded-md border border-border px-1.5 py-0.5">{run.chain}</span><span>{exit?.label ?? 'Сохранённый план'}</span></div></div>
+      <div className="text-right"><div className="num text-base font-semibold">{positionPrice(run.currentPriceUsd)}</div><div className={'num mt-1 text-xs ' + pnlClass(multiple == null ? null : multiple - 1)}>{multiple == null ? '—' : percent((multiple - 1) * 100) + ' · ' + multiple.toFixed(2) + '×'}</div></div>
     </div>
-    {progress != null && (
-      <div className="mt-3" aria-label={`Путь к цели ${targetMultiple.toFixed(2)}×`}>
-        <div className="h-1.5 overflow-hidden rounded-full bg-border"><div className={`agent-bar h-full rounded-full ${pnl >= 0 ? 'bg-up' : 'bg-down'}`} style={{ width: `${progress}%` }} /></div>
-        <div className="mt-1 flex justify-between text-[10px] text-muted"><span>вход</span><span>{exit && exit.legsTotal > 0 && exit.legsFilled < exit.legsTotal ? `ступень ${exit.legsFilled + 1}/${exit.legsTotal} · ${targetMultiple.toFixed(2)}×` : `цель ${targetMultiple.toFixed(2)}×`}</span></div>
-      </div>
-    )}
-    {exit && (
-      <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted" data-exit-mode={exit.mode}>
-        <span className="text-accent">{exit.label}</span>
-        {exit.remainingPct < 100 && <span>открыто {Math.round(exit.remainingPct)}%</span>}
-        {stopMultiple != null && <span className={stopMultiple >= 1 ? 'text-up' : ''}>стоп {stopMultiple.toFixed(2)}× {exit.stopReason === 'TRAILING_STOP' ? '(трейлинг)' : exit.stopReason === 'BREAKEVEN_STOP' ? '(безубыток)' : ''}</span>}
-        {stopMultiple == null && <span>без стопа</span>}
-      </div>
-    )}
-    <div className="mt-3 grid grid-cols-2 gap-3"><Metric label="Позиция" value={money(run.positionUsd)} tone="neutral" /><Metric label="Максимум" value={run.maxMultiple == null ? '—' : `${run.maxMultiple.toFixed(2)}×`} tone="neutral" /></div>
-    <div className="mt-3"><ChartLink target={{ tokenId: run.tokenId, chain: run.chain, address: run.address }} symbol={run.token?.symbol ?? run.symbol} /></div>
+    <PositionPriceChart position={run} />
+    <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3">
+      <Metric label="Вход · исполнение" value={positionPrice(run.entryPriceUsd)} tone="neutral" />
+      <Metric label="Реализованный PnL" value={money(run.realizedPnlUsd)} tone={pnlTone(run.realizedPnlUsd ?? 0)} />
+      <Metric label="Нереализованный PnL" value={money(closed ? 0 : run.unrealizedPnlUsd)} tone={pnlTone(run.unrealizedPnlUsd ?? 0)} />
+      <Metric label="Остаток токенов" value={run.remainingQuantity == null ? '—' : run.remainingQuantity.toLocaleString('ru-RU', { maximumSignificantDigits: 6 })} tone="neutral" />
+      <Metric label="Осталось от входа" value={closed ? '0%' : exit ? percent(exit.remainingPct) : '—'} tone="neutral" />
+      <Metric label="Начальный капитал" value={money(run.positionUsd)} tone="neutral" />
+    </div>
+    <div className="mt-4 flex flex-wrap items-center gap-2 text-xs" data-exit-mode={exit?.mode}>
+      {closed ? <span className="text-muted">Позиция закрыта · {exit?.exitReason ? exitReasonLabel(exit.exitReason) : 'выход исполнен'}</span> : <>
+        <span className="rounded-md border border-down/20 bg-down/5 px-2 py-1.5 text-down">{!exit ? 'Стоп неизвестен' : exit.stopPriceUsd == null ? 'Без стопа' : (exit.stopReason === 'TRAILING_STOP' ? 'Трейлинг ' : 'Стоп ') + positionPrice(exit.stopPriceUsd)}</span>
+        <span className="rounded-md border border-up/20 bg-up/5 px-2 py-1.5 text-up">{!exit ? 'Цель неизвестна' : exit.nextTargetPriceUsd == null ? 'Фиксированной цели нет' : 'Следующая цель ' + positionPrice(exit.nextTargetPriceUsd)}</span>
+      </>}
+    </div>
+    {exit && <details className="disclosure mt-3 text-xs text-muted"><summary className="min-h-9 cursor-pointer py-2">Сохранённое правило позиции</summary><p className="leading-relaxed">{exit.description}</p></details>}
+    <div className="mt-3 flex flex-wrap items-center justify-between gap-2"><ChartLink target={run} symbol={run.token?.symbol ?? run.symbol} /><span className="text-[10px] text-muted">Котировка: {timestamp(run.priceUpdatedAt ?? null)}</span></div>
   </article>;
 }
 
@@ -1322,7 +1314,7 @@ function AdminSettings(props: {
   // describes LIVE; it must not hide PAPER plans or reset the saved choice.
   const visibleModes = EXIT_MODES;
   const profileLabel = { CONSERVATIVE: 'Conservative', BALANCED: 'Balanced', AGGRESSIVE: 'Aggressive' }[profile];
-  const summary = `${money(capitalNumber)}, ${mode === 'FIXED' ? `Fixed: до ${positions} позиций` : `Autopilot ${profileLabel}`}, ${exitLabel}: ${plan?.legs.map((leg) => `${leg.sellPct}% на ${leg.multiple}×`).join(', ') || (plan?.targetMultiple ? `выход на ${plan.targetMultiple}×` : '')}${plan?.stopLossPct != null ? `, стоп −${plan.stopLossPct}%` : plan?.trailingPct != null ? `, трейлинг −${plan.trailingPct}% с момента входа` : ', без стопа'}`;
+  const summary = `${money(capitalNumber)}, ${mode === 'FIXED' ? `Fixed: до ${positions} позиций` : `Autopilot ${profileLabel}`}, ${exitLabel}: ${plan ? describePaperExitPlan(plan) : ''}. Только для новых позиций после сохранения; открытые сохраняют свой план.`;
   return <div className="space-y-4">
     <div aria-label="Управление агентом" className="sticky z-30 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-panel p-3" style={{ top: 'calc(var(--header, 60px) + env(safe-area-inset-top, 0px))' }}>
       <div><p className={`text-xs font-medium ${STATUS[data.health].tone}`}>● {STATUS[data.health].label}</p><p className="mt-1 text-[11px] text-muted">Stop — пауза входов</p></div>
@@ -1559,9 +1551,9 @@ function humanDecision(code: string | null, short = false) {
     SCORE_BELOW_THRESHOLD: ['Сигнал слишком слабый', 'Слабый'], DUPLICATE_POSITION: ['Позиция уже открыта', 'Повтор'],
     WAITING_PRICE: ['Ожидается цена', 'Нет цены'], NO_PRICE: ['Цена недоступна', 'Нет цены'],
     POOL_TOO_OLD: ['Пул слишком старый', 'Старый пул'], STALE_SIGNAL: ['Сигнал устарел', 'Устарел'],
-    AMOUNT_BELOW_THRESHOLD: ['Объём сигнала слишком мал', 'Мало средств'],
+    AMOUNT_BELOW_THRESHOLD: ['Недостаточная сумма сигнала', 'Сумма сигнала'],
     WAITING_FOR_TOKEN_METADATA: ['Ожидается дата создания пула (до 30 с)', 'Ожидание метаданных'],
-    TOKEN_AGE_UNKNOWN: ['Возраст пула неизвестен', 'Возраст неизвестен'], TOKEN_TOO_OLD: ['Пул слишком старый', 'Старый пул'],
+    TOKEN_AGE_UNKNOWN: ['Возраст пула неизвестен', 'Возраст неизвестен'], TOKEN_TOO_OLD: ['Пул старше допустимого возраста', 'Возраст пула'],
     WAITING_FOR_PRICE: ['Ожидается цена', 'Нет цены'], WAITING_FOR_ENTRY_DELAY: ['Ожидается время входа', 'Ожидание'],
     PRICE_UNAVAILABLE_BEFORE_DEADLINE: ['Цена не получена вовремя', 'Нет цены'],
     DECISION_DEADLINE_EXCEEDED: ['Сигнал устарел', 'Устарел'], INVALID_SIGNAL_TIMESTAMPS: ['Время сигнала некорректно', 'Время'],

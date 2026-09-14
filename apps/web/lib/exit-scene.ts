@@ -28,7 +28,7 @@ import {
  *
  * Подобрана так, чтобы на одном движении сработало всё, что есть в
  * пресетах: ранний откат (проверить, что стоп не задет), ступени на
- * 1.6× и 2×, максимум 2.4× и откат, глубокий ровно настолько, чтобы
+ * 1.6×, 2× и 3×, максимум 3.4× и откат, глубокий ровно настолько, чтобы
  * трейлинг −25% и −50% успели закрыть остаток. Время условное:
  * вся сцена укладывается в 30 минут, и выходы по времени не
  * вмешиваются — они не про форму движения, а про его отсутствие.
@@ -43,9 +43,9 @@ export const SCENE_KEYPOINTS: ReadonlyArray<readonly [t: number, multiple: numbe
   [0.44, 1.5],
   [0.52, 1.84],
   [0.58, 2.02],
-  [0.66, 2.24],
-  [0.72, 2.42],
-  [0.78, 2.2],
+  [0.66, 3.04],
+  [0.72, 3.4],
+  [0.78, 3.1],
   [0.84, 1.9],
   [0.9, 1.56],
   [0.95, 1.3],
@@ -108,7 +108,7 @@ export function scenePoints(samples = SCENE_SAMPLES): ScenePoint[] {
 export function buildExitScene(plan: PaperExitPlan, samples = SCENE_SAMPLES): ExitScene {
   const points = scenePoints(samples);
   const entryAt = 0;
-  let state: PaperExitState = initialPaperExitState(1, entryAt);
+  let state: PaperExitState = initialPaperExitState(1, entryAt, 1);
   const stops: SceneStopPoint[] = [];
   const events: SceneEvent[] = [];
   let closedAt: number | null = null;
@@ -142,7 +142,7 @@ export function buildExitScene(plan: PaperExitPlan, samples = SCENE_SAMPLES): Ex
 
   const levels: ExitScene['levels'] = plan.legs.map((leg) => ({
     multiple: leg.multiple,
-    label: `${leg.multiple}× · продать ${leg.sellPct}%`,
+    label: `${leg.multiple}× · ${leg.sellPct}%${leg.sellBasis === 'REMAINING' ? ' остатка' : ' исходного'}`,
     kind: 'leg' as const,
   }));
   if (plan.targetMultiple != null) levels.push({ multiple: plan.targetMultiple, label: `${plan.targetMultiple}× · выход`, kind: 'target' });
@@ -166,7 +166,7 @@ export const DEFAULT_FRAME: SceneFrame = {
   height: 150,
   padding: { top: 14, right: 14, bottom: 12, left: 14 },
   minMultiple: 0.45,
-  maxMultiple: 2.6,
+  maxMultiple: 3.6,
 };
 
 export function sceneScales(frame: SceneFrame) {

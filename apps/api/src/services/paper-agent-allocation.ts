@@ -7,6 +7,7 @@
  * at all. There is deliberately no execution, wallet, KMS, RPC or order import.
  */
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { Prisma as P } from '@prisma/client';
 import {
   allocatePaperCapital,
@@ -22,6 +23,7 @@ import {
   evaluatePaperExit,
   initialPaperExitState,
   paperStopPrice,
+  paperLegTargetPrice,
   partialExitPaperCapitalLedger,
   policyExitPlan,
   validatePaperExitPlan,
@@ -632,7 +634,7 @@ async function allocateForSession(input: {
             entryQuantity: priceDecimal(entry.quantity),
             targetSourcePriceUsd: priceDecimal(entryTargetPriceUsd),
             exitPlan: json(exitPlan),
-            exitState: json(exitStateForStorage(exitPlan, initialPaperExitState(entry.sourcePriceUsd, input.now.getTime()))),
+            exitState: json(exitStateForStorage(exitPlan, initialPaperExitState(entry.sourcePriceUsd, input.now.getTime(), entry.executionPriceUsd))),
             currentSourcePriceUsd: priceDecimal(entry.sourcePriceUsd),
             unrealizedPnlUsd: decimal(mark.pnlUsd),
             peakSourcePriceUsd: priceDecimal(entry.sourcePriceUsd),
@@ -668,6 +670,7 @@ async function allocateForSession(input: {
               policyVersion: policy.policyVersion,
               signalScore: decision.score.score,
               signalBand: decision.score.band,
+              execution: { version: 1, at: input.now.toISOString(), sourcePriceUsd: entry.sourcePriceUsd, executionPriceUsd: entry.executionPriceUsd, quantity: entry.quantity, grossUsd: entry.quantity * entry.executionPriceUsd, pnlUsd: null, targetPriceUsd: null },
             }),
           },
         });
@@ -1025,6 +1028,7 @@ function allocationExitState(row: OpenAllocationRow, entrySource: number): Paper
   if (stored && typeof stored.remainingPct === 'number' && typeof stored.legsFilled === 'number') {
     return {
       entrySourcePriceUsd: stored.entrySourcePriceUsd ?? entrySource,
+      entryExecutionPriceUsd: numberOf(row.entryExecutionPriceUsd) ?? undefined,
       entryAtMs: stored.entryAtMs ?? entryAtMs,
       peakSourcePriceUsd: stored.peakSourcePriceUsd ?? numberOf(row.peakSourcePriceUsd) ?? entrySource,
       legsFilled: stored.legsFilled,
@@ -1032,7 +1036,7 @@ function allocationExitState(row: OpenAllocationRow, entrySource: number): Paper
     };
   }
   return {
-    ...initialPaperExitState(entrySource, entryAtMs),
+    ...initialPaperExitState(entrySource, entryAtMs, numberOf(row.entryExecutionPriceUsd) ?? undefined),
     peakSourcePriceUsd: numberOf(row.peakSourcePriceUsd) ?? entrySource,
   };
 }
@@ -1041,12 +1045,12 @@ function allocationExitState(row: OpenAllocationRow, entrySource: number): Paper
 function exitStateForStorage(plan: PaperExitPlan, state: PaperExitState) {
   const stop = paperStopPrice(plan, state);
   const nextLeg = plan.legs[state.legsFilled] ?? null;
-  const nextMultiple = nextLeg?.multiple ?? plan.targetMultiple ?? null;
+  const nextTarget = nextLeg ? paperLegTargetPrice(nextLeg, state) : plan.targetMultiple == null ? null : state.entrySourcePriceUsd * plan.targetMultiple;
   return {
     ...state,
     stopSourcePriceUsd: stop?.priceUsd ?? null,
     stopReason: stop?.reason ?? null,
-    nextTargetSourcePriceUsd: nextMultiple == null ? null : state.entrySourcePriceUsd * nextMultiple,
+    nextTargetSourcePriceUsd: state.remainingPct > 0 ? nextTarget : null,
     legsTotal: plan.legs.length,
   };
 }
@@ -1129,6 +1133,10 @@ export async function settlePaperAllocation(
     const fresh = await tx.paperAgentAllocation.findUnique({ where: { id: allocation.id } });
     const session = await tx.paperAgentAccountSession.findUnique({ where: { id: allocation.sessionId } });
     if (!fresh || fresh.state !== 'OPEN' || !session) { result = { outcome: 'SKIPPED' }; return; }
+    // The quote decision was computed from a persisted position snapshot. A
+    // second process may already have sold a leg (or raised the trailing peak).
+    // Never apply a stale decision using a newly-read account ledgerVersion.
+    if (!isDeepStrictEqual(fresh.exitState, allocation.exitState) || (fresh.lastMarkedAt && fresh.lastMarkedAt.getTime() > now.getTime())) return;
     const otherOpen = await tx.paperAgentAllocation.findMany({
       where: { sessionId: session.id, state: 'OPEN', id: { not: fresh.id } },
       select: { unrealizedPnlUsd: true },
@@ -1297,7 +1305,21 @@ export async function settlePaperAllocation(
         tradingFeesAfterUsd: decimal(after.tradingFeesUsd),
         slippageAfterUsd: decimal(after.slippageUsd),
         networkCostsAfterUsd: decimal(after.networkCostsUsd),
-        metadata: json({ paper: true, exitReason: decision.reason, exitMode: plan.mode, sellPct: decision.sellPct, remainingPct: nextState.remainingPct }),
+        metadata: json({
+          paper: true, exitReason: decision.reason, exitMode: plan.mode,
+          sellPct: decision.sellPct, remainingPct: nextState.remainingPct,
+          execution: {
+            version: 1, at: now.toISOString(), sourcePriceUsd: sold.sourcePriceUsd,
+            executionPriceUsd: sold.executionExitPriceUsd, quantity: soldEntry.quantity,
+            grossUsd: sold.grossExitUsd, netUsd: sold.netExitUsd, pnlUsd: sold.pnlUsd,
+            targetPriceUsd: decision.reason === 'TAKE_PROFIT_LEG'
+              ? paperLegTargetPrice(plan.legs[decision.legsFilledAfter - 1]!, state)
+              : decision.reason === 'TARGET_REACHED' && plan.targetMultiple != null
+                ? state.entrySourcePriceUsd * plan.targetMultiple
+                : ['STOP_LOSS', 'BREAKEVEN_STOP', 'TRAILING_STOP'].includes(decision.reason) ? paperStopPrice(plan, state)?.priceUsd ?? null : null,
+            legs: plan.legs.slice(state.legsFilled, decision.legsFilledAfter).map(leg => ({ ...leg, targetPriceUsd: paperLegTargetPrice(leg, state) })),
+          },
+        }),
       },
     });
     if (!fresh.isShadow) {

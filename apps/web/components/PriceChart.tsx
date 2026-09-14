@@ -18,6 +18,8 @@ export interface AgentChartMarker {
   strategyLabel: string;
   priceUsd: number | null;
   pnlUsd: number | null;
+  /** Compact labels for position cards; full operation details live alongside. */
+  label?: string;
   shadow?: boolean;
   allocationMode?: string;
   allocatedUsd?: number | null;
@@ -70,6 +72,8 @@ interface Props {
   focusTime?: number | null;
   focusNonce?: number;
   focusWindowSeconds?: number;
+  levels?: Array<{ price: number; label: string; color: string; kind: 'target' | 'execution' | 'stop' }>;
+  onMarkerSelect?: (id: string) => void;
 }
 
 /**
@@ -111,6 +115,8 @@ export function PriceChart({
   focusTime = null,
   focusNonce = 0,
   focusWindowSeconds = 3_600,
+  levels = [],
+  onMarkerSelect,
 }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -366,7 +372,7 @@ export function PriceChart({
         position: marker.side === 'BUY' ? 'belowBar' : 'aboveBar',
         color: marker.side === 'BUY' ? '#22C7B8' : '#FF5C6C',
         shape: marker.side === 'BUY' ? 'arrowUp' : 'arrowDown',
-        text: [
+        text: marker.label ?? [
           `PAPER ${marker.side}`,
           marker.shadow ? 'SHADOW' : null,
           marker.allocationMode,
@@ -394,6 +400,31 @@ export function PriceChart({
     // В production lightweight-charts 4.2 предоставляет setMarkers.
     if (typeof series.setMarkers === 'function') series.setMarkers(chartMarkers);
   }, [markers, resetKey, secondsVisible]);
+
+  useEffect(() => {
+    const series = seriesRef.current;
+    if (!series || !levels.length) return;
+    const lines = levels.filter(level => Number.isFinite(level.price) && level.price > 0).map(level => series.createPriceLine({
+      price: level.price, color: level.color, lineWidth: 1,
+      lineStyle: level.kind === 'execution' ? 0 : 2,
+      axisLabelVisible: true, title: level.label,
+    }));
+    // Chart teardown owns its lines. React cleans earlier effects first, so
+    // unmount/recreation may already have disposed this particular series.
+    return () => { if (seriesRef.current === series) for (const line of lines) series.removePriceLine(line); };
+  }, [levels, resetKey, secondsVisible, height]);
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || !onMarkerSelect) return;
+    const pick = (event: { hoveredObjectId?: unknown; time?: Time }) => {
+      const exact = markers.find(marker => marker.id === event.hoveredObjectId);
+      const atBar = markers.find(marker => marker.time === event.time);
+      if (exact ?? atBar) onMarkerSelect((exact ?? atBar)!.id);
+    };
+    chart.subscribeCrosshairMove(pick); chart.subscribeClick(pick);
+    return () => { if (chartRef.current === chart) { chart.unsubscribeCrosshairMove(pick); chart.unsubscribeClick(pick); } };
+  }, [markers, onMarkerSelect, resetKey, secondsVisible, height]);
 
   useEffect(() => {
     if (focusTime == null || focusNonce === 0) return;

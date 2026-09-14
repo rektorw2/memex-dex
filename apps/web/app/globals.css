@@ -333,6 +333,19 @@ body {
   to   { opacity: 1; transform: none; }
 }
 .agent-fade { animation: agent-fade 220ms ease-out both; }
+.agent-position { background: linear-gradient(145deg, #141823, #10151d 60%); }
+.agent-position .agent-metric { padding: .65rem; }
+.agent-position .agent-metric > div:first-child { font-size: 10px; line-height: 1.5; }
+.agent-position .agent-metric > div:last-child { overflow-wrap: anywhere; font-size: 12px; }
+.agent-operation { animation: agent-operation-in 280ms ease-out both; }
+.agent-operation-detail { min-height: 132px; }
+.agent-position details[open] > :not(summary) { animation: agent-fade 160ms ease-out; }
+.agent-position :is(a, button, summary):focus-visible,
+[aria-label="Последние события"] :is(a, button, summary, select):focus-visible { outline: 2px solid #a78bfa; outline-offset: 3px; border-radius: 6px; }
+@keyframes agent-operation-in { from { background-color: rgb(139 92 246 / .1); } to { background-color: transparent; } }
+@media (prefers-reduced-motion: reduce) {
+  .agent-operation, .agent-operation-detail, .agent-position details[open] > :not(summary) { animation: none !important; transition: none !important; }
+}
 
 /* Строки истории появляются каскадом; после десятой — без задержки,
    иначе длинный список «догружается» слишком долго. */

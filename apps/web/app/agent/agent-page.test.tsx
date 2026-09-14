@@ -206,7 +206,7 @@ describe('/agent для обычного пользователя', () => {
 
   it('пустая история имеет отдельное состояние', () => {
     state.publicData = data({ wallet }); render(<AgentPage />); fireEvent.click(screen.getByRole('tab', { name: 'История' }));
-    expect(screen.getByText('История пока пуста')).toBeTruthy();
+    expect(screen.getByText('Исполненных сделок пока нет. Пропуски не считаются сделками.')).toBeTruthy();
   });
 
   it('история не остаётся пустой при одном событии PAPER-счёта', () => {
@@ -680,9 +680,9 @@ describe('правило выхода и Panic', () => {
     }] });
     render(<AgentPage />); fireEvent.click(screen.getByRole('tab', { name: 'Позиции' }));
     expect(screen.getByText('Лестница')).toBeTruthy();
-    expect(screen.getByText('открыто 60%')).toBeTruthy();
-    expect(screen.getByText(/стоп 1\.00× \(безубыток\)/)).toBeTruthy();
-    expect(screen.getByText('ступень 2/2 · 2.00×')).toBeTruthy();
+    expect(screen.getByText('Осталось от входа').parentElement!.textContent).toContain('60');
+    expect(screen.getByText('Стоп $1')).toBeTruthy();
+    expect(screen.getByText('Следующая цель $2')).toBeTruthy();
   });
 });
 
@@ -702,12 +702,12 @@ describe('простой обзор', () => {
   it('первый экран содержит позиции, а подготовка LIVE монтируется только по запросу', () => {
     state.publicData = data({ wallet, positions: [run()] });
     const { container } = render(<AgentPage />);
-    const row = container.querySelector('[data-compact-position]')!;
+    const row = container.querySelector('[data-position]')!;
     expect(row.textContent).toContain('GEM');
     expect(row.textContent).toContain('$50.00');
     expect(row.textContent).toContain('1.50×');
-    expect(row.textContent).toContain('Стоп 0.65×');
-    expect(row.textContent).toContain('Цель 1.60×');
+    expect(row.textContent).toContain('Стоп $0.65');
+    expect(row.textContent).toContain('Следующая цель $1.6');
     expect(screen.queryByRole('radiogroup', { name: 'Сеть кошелька' })).toBeNull();
     expect(container.querySelector('[data-live-stage]')).toBeNull();
     expect(screen.queryByText('Путь решения')).toBeNull();
@@ -718,9 +718,9 @@ describe('простой обзор', () => {
   it('старый API без плана выхода не выдумывает стоп и цель', () => {
     state.publicData = data({ wallet, positions: [run({ allocation: undefined })] });
     const { container } = render(<AgentPage />);
-    const summary = container.querySelector('[data-compact-position] summary')!;
-    expect(summary.textContent).toContain('Стоп —');
-    expect(summary.textContent).toContain('Цель —');
+    const summary = container.querySelector('[data-position]')!;
+    expect(summary.textContent).toContain('Стоп неизвестен');
+    expect(summary.textContent).toContain('Цель неизвестна');
     expect(screen.getByText('выход: Цель 2×')).toBeTruthy();
   });
 
@@ -729,17 +729,18 @@ describe('простой обзор', () => {
     expect(screen.getAllByText('Ждёт подходящий сигнал')).toHaveLength(1);
   });
 
-  it('раскрывает полную позицию и открывает расширенный список', () => {
+  it('показывает график сразу, раскрывает правило и открывает расширенный список', () => {
     state.publicData = data({ wallet, positions: [run()] });
     const { container } = render(<AgentPage />);
-    fireEvent.click(container.querySelector('[data-compact-position] summary')!);
-    expect(container.querySelector('[data-compact-position]')!.hasAttribute('open')).toBe(true);
+    expect(container.querySelector('[aria-label="История цены GEM"]')).toBeTruthy();
+    fireEvent.click(container.querySelector('[data-position] summary')!);
+    expect(container.querySelector('[data-position] details')!.hasAttribute('open')).toBe(true);
     expect(screen.getAllByRole('link', { name: /Открыть график/ })[0]!.getAttribute('href')).toContain('token=token-a');
     fireEvent.click(screen.getByRole('button', { name: 'Подробнее →' }));
     expect(screen.getByRole('tab', { name: 'Позиции' }).getAttribute('aria-selected')).toBe('true');
   });
 
-  it('лента ограничена пятью строками, пропуски сгруппированы по реальным кодам', () => {
+  it('сделки не вытесняются пропусками; причины доступны отдельно', () => {
     state.publicData = data({ wallet, recentDecisions: [
       ...Array.from({ length: 7 }, (_, i) => run({ id: `entry-${i}`, entryAt: `2026-09-08T10:0${i}:00Z` })),
       run({ id: 'skip-1', state: 'SKIPPED', decisionCode: 'TOKEN_TOO_OLD' }),
@@ -748,20 +749,22 @@ describe('простой обзор', () => {
     ] });
     const { container } = render(<AgentPage />);
     const feed = container.querySelector('[aria-label="Последние события"]')!;
-    expect(feed.querySelectorAll('ol > li')).toHaveLength(5);
+    expect(feed.querySelectorAll('[data-trade-operation]')).toHaveLength(7);
     expect(feed.querySelector('time')?.getAttribute('datetime')).toBe('2026-09-08T10:06:00Z');
-    expect(feed.textContent).toContain('Пропущено: 3');
-    expect(feed.textContent).toContain('Старый пул: 2');
-    expect(feed.textContent).toContain('Нет цены: 1');
     expect(feed.textContent).not.toContain('TOKEN_TOO_OLD');
+    fireEvent.click(screen.getByRole('tab', { name: /Пропущенные сигналы 3/ }));
+    expect(feed.querySelectorAll('[data-trade-operation]')).toHaveLength(0);
+    expect(screen.getAllByText('Пул старше допустимого возраста')).toHaveLength(3); // filter option + two rows
+    expect(screen.getAllByText('Цена не получена вовремя')).toHaveLength(2);
+    expect(feed.querySelectorAll('details summary')).toHaveLength(3);
   });
 
   it('лента содержит вход, выход и частичную продажу', () => {
     state.publicData = data({ wallet: { ...wallet, ledger: [{ id: 'partial', eventType: 'PARTIAL_EXIT', createdAt: '2026-09-08T10:02:00Z', allocation: { symbol: 'GEM' } }] }, recentDecisions: [run({ state: 'PAPER_CLOSED', exitAt: '2026-09-08T10:03:00Z', realizedPnlUsd: 20, allocation: { exit: { exitReason: 'STOP_LOSS' } } })] });
     render(<AgentPage />);
     expect(screen.getByText(/Позиция открыта/)).toBeTruthy();
-    expect(screen.getByText(/Позиция закрыта/)).toBeTruthy();
-    expect(screen.getByText(/Часть позиции продана/)).toBeTruthy();
+    expect(screen.getAllByText('Выход').length).toBeGreaterThan(0);
+    expect(screen.getByText('Часть PAPER-позиции зафиксирована')).toBeTruthy();
     expect(screen.getByText('стоп-лосс')).toBeTruthy();
   });
 
@@ -806,7 +809,7 @@ describe('мастер настроек на отдельном маршруте
     fireEvent.click(screen.getByRole('button', { name: 'Далее' }));
     fireEvent.click(screen.getByRole('radio', { name: /Лестница/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Далее' }));
-    expect(screen.getByText(/\$2,500.00, Autopilot Balanced, Лестница: 40% на 1.6×, 30% на 2×, стоп −35%/)).toBeTruthy();
+    expect(screen.getByText(/\$2,500.00, Autopilot Balanced, Лестница: 40% исходного объёма на 1.6×, 30% исходного объёма на 2× · стоп −35%/)).toBeTruthy();
     expect(apiMock).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Применить' }));
     await vi.waitFor(() => expect(apiMock).toHaveBeenCalledTimes(1));
@@ -862,7 +865,7 @@ describe('карточки правил выхода', () => {
     adminState(); toExitStep();
     const scenes = screen.getAllByRole('img', { name: /На общей траектории/ });
     expect(scenes).toHaveLength(5);
-    expect(screen.getByRole('img', { name: /Лестница: .*40% на 1\.62×, 30% на 2\.02×, остаток закрыт на 1\.77× — трейлинг/ })).toBeTruthy();
+    expect(screen.getByRole('img', { name: /Лестница: .*40% на 1\.62×, 30% на 2\.02×, остаток закрыт на 2\.49× — трейлинг/ })).toBeTruthy();
     expect(screen.getByRole('img', { name: /Цель 2×: .*остаток закрыт на 2\.02× — выход по цели/ })).toBeTruthy();
   });
 
@@ -953,7 +956,9 @@ describe('финальная проверка карточек', () => {
     fireEvent.click(screen.getByRole('radio', { name: /Чистый трейлинг/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Далее' }));
     const summary = document.querySelector('[data-settings-summary]')!.textContent;
-    expect(summary).toContain('Чистый трейлинг: 50% на 2×');
+    expect(summary).toContain('Чистый трейлинг: 50% исходного объёма на 2×');
+    expect(summary).toContain('50% остатка на 3× цены исполнения входа');
+    expect(summary).toContain('открытые сохраняют свой план');
     expect(summary).toContain('трейлинг −50% с момента входа');
     expect(summary).not.toContain('без стопа');
     expect(document.body.textContent).not.toContain('после ступени 0');
@@ -979,7 +984,7 @@ describe('история → график монеты', () => {
     expect(links.length).toBeGreaterThanOrEqual(1);
     const params = new URLSearchParams(links[0]!.getAttribute('href')!.split('?')[1]);
     expect(params.get('token')).toBe('token-h');
-    expect(params.get('chain')).toBe('solana');
+    expect(params.get('chain')).toBe('SOLANA');
     expect(params.get('address')).toBe('MintH');
   });
 
@@ -987,7 +992,7 @@ describe('история → график монеты', () => {
     state.publicData = data({ wallet, recentDecisions: [closed({ id: 'h2', tokenId: null, token: null }), closed({ id: 'h3', tokenId: null, token: null, address: '', symbol: 'NOPE' })] });
     const { container } = render(<AgentPage />); fireEvent.click(screen.getByRole('tab', { name: 'История' }));
     const byAddress = screen.getAllByRole('link', { name: 'Открыть график HIS' });
-    for (const link of byAddress) expect(link.getAttribute('href')).toBe('/terminal/?chain=solana&address=MintH');
+    for (const link of byAddress) expect(link.getAttribute('href')).toBe('/terminal/?chain=SOLANA&address=MintH');
     expect(container.querySelectorAll('[data-chart-link="none"]').length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText('Графика нет').length).toBeGreaterThanOrEqual(1);
   });

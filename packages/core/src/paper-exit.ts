@@ -22,6 +22,8 @@
  * а при равенстве важнее не потерять.
  */
 
+import Decimal from 'decimal.js';
+
 export type PaperExitMode = 'TARGET' | 'PROTECTED' | 'LADDER' | 'TRAILING' | 'TRAILING_PURE';
 
 export type PaperExitReason =
@@ -52,11 +54,15 @@ export interface PaperExitLeg {
   multiple: number;
   /** Доля ИСХОДНОЙ позиции, которая продаётся на этой ступени, в процентах. */
   sellPct: number;
+  /** Absent on historical plans: percentage of the original position. */
+  sellBasis?: 'ORIGINAL' | 'REMAINING';
+  /** Historical levels remain based on the source quote, not execution. */
+  priceBasis?: 'SOURCE' | 'EXECUTION';
 }
 
 export interface PaperExitPlan {
   mode: PaperExitMode;
-  version: 1;
+  version: 1 | 2;
   /**
    * Кратное полного выхода. `null` — полной цели нет: остаток ведёт
    * трейлинг или стоп (режимы LADDER и TRAILING).
@@ -137,10 +143,10 @@ export const PAPER_EXIT_PRESETS: Record<PaperExitMode, PaperExitPlan> = {
   },
   TRAILING: {
     mode: 'TRAILING',
-    version: 1,
+    version: 2,
     targetMultiple: null,
     stopLossPct: 50,
-    legs: [{ multiple: 2, sellPct: 50 }],
+    legs: [{ multiple: 2, sellPct: 50 }, { multiple: 3, sellPct: 50, sellBasis: 'REMAINING', priceBasis: 'EXECUTION' }],
     trailingPct: 50,
     trailingAfterLeg: 1,
     breakevenAfterLeg: 1,
@@ -157,10 +163,10 @@ export const PAPER_EXIT_PRESETS: Record<PaperExitMode, PaperExitPlan> = {
    */
   TRAILING_PURE: {
     mode: 'TRAILING_PURE',
-    version: 1,
+    version: 2,
     targetMultiple: null,
     stopLossPct: null,
-    legs: [{ multiple: 2, sellPct: 50 }],
+    legs: [{ multiple: 2, sellPct: 50 }, { multiple: 3, sellPct: 50, sellBasis: 'REMAINING', priceBasis: 'EXECUTION' }],
     trailingPct: 50,
     trailingAfterLeg: 0,
     breakevenAfterLeg: 1,
@@ -175,8 +181,8 @@ export const PAPER_EXIT_MODE_LABELS: Record<PaperExitMode, { label: string; summ
   TARGET: { label: 'Цель 2×', summary: 'Только полный выход на 2×. Без стопа — контрольный режим.' },
   PROTECTED: { label: 'Защищённый', summary: 'Стоп −35%, выход через 45 мин без +30%, не дольше 4 ч, цель 2×.' },
   LADDER: { label: 'Лестница', summary: '40% на +60%, 30% на 2×, остаток по трейлингу −25%; стоп −35%, безубыток после первой ступени.' },
-  TRAILING: { label: 'Трейлинг', summary: 'На 2× фиксируется 50% тела, остаток ведёт трейлинг-стоп −50% от максимума.' },
-  TRAILING_PURE: { label: 'Чистый трейлинг', summary: 'Трейлинг-стоп −50% от максимума с самого входа; на 2× фиксируется 50% тела, остаток продолжает трейлинг.' },
+  TRAILING: { label: 'Трейлинг', summary: 'На 2× возвращаем тело. На 3× фиксируем 50%, остаток ведём по трейлингу −50% от максимума.' },
+  TRAILING_PURE: { label: 'Чистый трейлинг', summary: 'Трейлинг −50% с входа; тело на 2×. На 3× фиксируем 50%, остаток ведём по трейлингу.' },
 };
 
 export interface PaperExitOverrides {
@@ -224,6 +230,7 @@ export function paperExitPlan(mode: PaperExitMode, overrides: PaperExitOverrides
 }
 
 export function validatePaperExitPlan(plan: PaperExitPlan): string | null {
+  if (plan.version !== 1 && plan.version !== 2) return 'INVALID_EXIT_VERSION';
   if (!PAPER_EXIT_MODES.includes(plan.mode)) return 'INVALID_EXIT_MODE';
   if (plan.targetMultiple != null && !(plan.targetMultiple > 1)) return 'INVALID_TARGET_MULTIPLE';
   if (plan.stopLossPct != null && !(plan.stopLossPct > 0 && plan.stopLossPct < 100)) return 'INVALID_STOP_LOSS';
@@ -233,10 +240,13 @@ export function validatePaperExitPlan(plan: PaperExitPlan): string | null {
   let sold = 0;
   let previous = 1;
   for (const leg of plan.legs) {
+    if (leg.sellBasis != null && leg.sellBasis !== 'ORIGINAL' && leg.sellBasis !== 'REMAINING') return 'INVALID_LEG_BASIS';
+    if (leg.priceBasis != null && leg.priceBasis !== 'SOURCE' && leg.priceBasis !== 'EXECUTION') return 'INVALID_LEG_PRICE_BASIS';
+    if (plan.version === 1 && (leg.sellBasis === 'REMAINING' || leg.priceBasis === 'EXECUTION')) return 'INVALID_EXIT_VERSION';
     if (!(leg.multiple > previous)) return 'LEGS_NOT_ASCENDING';
     if (!(leg.sellPct > 0 && leg.sellPct <= 100)) return 'INVALID_LEG_SIZE';
     if (plan.targetMultiple != null && leg.multiple >= plan.targetMultiple) return 'LEG_ABOVE_TARGET';
-    sold += leg.sellPct;
+    sold += leg.sellBasis === 'REMAINING' ? (100 - sold) * leg.sellPct / 100 : leg.sellPct;
     previous = leg.multiple;
   }
   if (sold > 100 + 1e-9) return 'LEGS_EXCEED_POSITION';
@@ -257,6 +267,7 @@ export function validatePaperExitPlan(plan: PaperExitPlan): string | null {
 /** Состояние позиции, которое нужно правилу выхода. Хранится адаптером. */
 export interface PaperExitState {
   entrySourcePriceUsd: number;
+  entryExecutionPriceUsd?: number;
   entryAtMs: number;
   /** Лучшая цена с момента входа. */
   peakSourcePriceUsd: number;
@@ -265,14 +276,21 @@ export interface PaperExitState {
   remainingPct: number;
 }
 
-export function initialPaperExitState(entrySourcePriceUsd: number, entryAtMs: number): PaperExitState {
+export function initialPaperExitState(entrySourcePriceUsd: number, entryAtMs: number, entryExecutionPriceUsd?: number): PaperExitState {
   return {
     entrySourcePriceUsd,
+    ...(entryExecutionPriceUsd == null ? {} : { entryExecutionPriceUsd }),
     entryAtMs,
     peakSourcePriceUsd: entrySourcePriceUsd,
     legsFilled: 0,
     remainingPct: 100,
   };
+}
+
+/** Target and execution are separate; never guess an absent execution price. */
+export function paperLegTargetPrice(leg: PaperExitLeg, state: PaperExitState): number | null {
+  const basis = leg.priceBasis === 'EXECUTION' ? state.entryExecutionPriceUsd : state.entrySourcePriceUsd;
+  return basis != null && Number.isFinite(basis) && basis > 0 ? new Decimal(basis).mul(leg.multiple).toNumber() : null;
 }
 
 export type PaperExitDecision =
@@ -316,7 +334,7 @@ export function evaluatePaperExit(
   sourcePriceUsd: number,
   nowMs: number,
 ): PaperExitDecision {
-  if (!(sourcePriceUsd > 0) || !(state.remainingPct > 0)) return { action: 'HOLD' };
+  if (!Number.isFinite(sourcePriceUsd) || !(sourcePriceUsd > 0) || !(state.remainingPct > 0)) return { action: 'HOLD' };
   const sellAll = (reason: PaperExitReason): PaperExitDecision => ({
     action: 'SELL',
     reason,
@@ -349,8 +367,13 @@ export function evaluatePaperExit(
    */
   let legsFilled = state.legsFilled;
   let sellPct = 0;
-  while (legsFilled < plan.legs.length && multiple >= plan.legs[legsFilled]!.multiple) {
-    sellPct += plan.legs[legsFilled]!.sellPct;
+  while (legsFilled < plan.legs.length) {
+    const leg = plan.legs[legsFilled]!;
+    const target = paperLegTargetPrice(leg, state);
+    if (target == null || sourcePriceUsd < target) break;
+    // On a gap, earlier legs reduce the remainder before the next one sizes.
+    const remaining = Math.max(0, state.remainingPct - sellPct);
+    sellPct += Math.min(remaining, leg.sellBasis === 'REMAINING' ? remaining * leg.sellPct / 100 : leg.sellPct);
     legsFilled += 1;
   }
   if (sellPct > 0) {
@@ -389,10 +412,10 @@ export function advancePaperExitState(
 /** Короткое описание плана для интерфейса и журнала. */
 export function describePaperExitPlan(plan: PaperExitPlan): string {
   const parts: string[] = [];
-  if (plan.legs.length) parts.push(plan.legs.map((leg) => `${leg.sellPct}% на ${leg.multiple}×`).join(', '));
+  if (plan.legs.length) parts.push(plan.legs.map((leg) => `${leg.sellPct}%${leg.sellBasis === 'REMAINING' ? ' остатка' : ' исходного объёма'} на ${leg.multiple}×${leg.priceBasis === 'EXECUTION' ? ' цены исполнения входа' : ''}`).join(', '));
   if (plan.targetMultiple != null) parts.push(`цель ${plan.targetMultiple}×`);
   if (plan.stopLossPct != null) parts.push(`стоп −${plan.stopLossPct}%`);
-  if (plan.trailingPct != null) parts.push(`трейлинг −${plan.trailingPct}%${plan.trailingAfterLeg > 0 ? ` после ${plan.trailingAfterLeg}-й ступени` : ''}`);
+  if (plan.trailingPct != null) parts.push(`трейлинг −${plan.trailingPct}%${plan.trailingAfterLeg > 0 ? ` после ${plan.trailingAfterLeg}-й ступени` : ' с момента входа'}`);
   if (plan.breakevenAfterLeg != null) parts.push(`безубыток после ${plan.breakevenAfterLeg}-й ступени`);
   if (plan.timeStop) parts.push(`выход через ${Math.round(plan.timeStop.afterMs / MINUTE)} мин без ${plan.timeStop.minMultiple}×`);
   if (plan.maxHoldMs != null) parts.push(`не дольше ${Math.round(plan.maxHoldMs / HOUR * 10) / 10} ч`);

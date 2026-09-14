@@ -172,11 +172,12 @@ describe('план выхода на счёте', () => {
     expect(store.outbox.map((event) => event.eventType)).toEqual(['PAPER_SELL', 'PAPER_SELL', 'PAPER_SELL', 'TRADE_RESULT']);
   });
 
-  it('TRAILING: половина на 2×, остаток по −50% от максимума', async () => {
+  it('TRAILING: тело на 2×, половина остатка после 3×, затем трейлинг', async () => {
     openPosition('TRAILING');
     expect(await settlePaperAllocation(store.allocation as any, 2, at(1))).toMatchObject({ outcome: 'PARTIAL' });
     expect(store.allocation.exitState).toMatchObject({ remainingPct: 50 });
-    expect((await settlePaperAllocation(store.allocation as any, 5, at(2))).outcome).toBe('HELD');
+    expect((await settlePaperAllocation(store.allocation as any, 5, at(2))).outcome).toBe('PARTIAL');
+    expect(store.allocation.exitState).toMatchObject({ remainingPct: 25, legsFilled: 2 });
     expect(store.allocation.exitState.stopSourcePriceUsd).toBeCloseTo(2.5, 9);
     expect(await settlePaperAllocation(store.allocation as any, 2.5, at(3))).toMatchObject({ outcome: 'CLOSED', reason: 'TRAILING_STOP' });
   });

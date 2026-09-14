@@ -1,4 +1,5 @@
 import type { FastifyPluginAsync, FastifyReply } from 'fastify';
+import type { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import {
   isLivePaperSignalOrigin,
@@ -23,6 +24,7 @@ import {
 } from '@memex/core';
 import { env } from '../lib/env.js';
 import { prisma } from '../lib/prisma.js';
+import { positionOperations, storedPositionCandles } from '../services/paper-position-view.js';
 import { getOkxSignalIngestStatus } from '../workers/okx-signal-ingest.js';
 import { agentNetworksReadiness, readyAgentNetworks } from '../services/agent-networks.js';
 import { readFundingSafetyState } from '../services/prisma-solana-reconciliation-repository.js';
@@ -51,6 +53,13 @@ import {
 const CONTROL_ID = 'primary';
 const SAMPLE_LIMIT = 5_000;
 const MIN_CLOSED_FOR_COMPARISON = 30;
+const POSITION_INCLUDE = {
+  strategy: { select: { key: true, label: true } },
+  allocations: { where: { isShadow: false }, include: { ledger: {
+    where: { eventType: { in: ['OPEN', 'PARTIAL_EXIT', 'CLOSE'] as string[] } },
+    orderBy: { createdAt: 'asc' as const }, take: 32,
+  } } },
+} as const satisfies Prisma.PaperAgentRunInclude;
 
 /** Результат чтения дополнительного раздела. */
 type SectionResult<T> = { ok: true; value: T } | { ok: false };
@@ -222,7 +231,12 @@ function serializeRun(run: any) {
     entryAt: run.entryAt?.toISOString() ?? null,
     entryPriceUsd: numberOf(run.entryExecutionPriceUsd),
     targetPriceUsd: numberOf(run.targetSourcePriceUsd),
-    currentPriceUsd: numberOf(run.currentSourcePriceUsd),
+    currentPriceUsd: numberOf(run.state === 'PAPER_CLOSED' ? run.exitSourcePriceUsd : run.token?.priceUsd) ?? numberOf(run.currentSourcePriceUsd),
+    priceUpdatedAt: run.token?.priceUpdatedAt?.toISOString() ?? null,
+    quoteStale: !run.token?.priceUpdatedAt || Date.now() - run.token.priceUpdatedAt.getTime() > 60_000,
+    valuationAt: run.lastMarkedAt?.toISOString() ?? null,
+    remainingQuantity: activeAllocation?.entryQuantity == null ? null : Number(activeAllocation.entryQuantity) * (activeAllocation.exitState?.remainingPct ?? (activeAllocation.state === 'CLOSED' ? 0 : 100)) / 100,
+    operations: activeAllocation ? positionOperations(activeAllocation) : [],
     unrealizedPnlUsd: numberOf(run.unrealizedPnlUsd),
     realizedPnlUsd: numberOf(run.realizedPnlUsd),
     maxMultiple: numberOf(run.maxMultiple),
@@ -290,7 +304,7 @@ function allocationExitView(allocation: any) {
     legsTotal: state?.legsTotal ?? plan.legs.length,
     stopPriceUsd: state?.stopSourcePriceUsd ?? null,
     stopReason: state?.stopReason ?? null,
-    nextTargetPriceUsd: state?.nextTargetSourcePriceUsd ?? numberOf(allocation.targetSourcePriceUsd),
+    nextTargetPriceUsd: allocation.state === 'CLOSED' ? null : state && 'nextTargetSourcePriceUsd' in state ? state.nextTargetSourcePriceUsd : numberOf(allocation.targetSourcePriceUsd),
     exitReason: allocation.exitReason ?? null,
   };
 }
@@ -412,6 +426,12 @@ export function publicSnapshotOf(snapshot: any, isAdmin: boolean) {
     exitAt: run.exitAt,
     entryPriceUsd: run.entryPriceUsd,
     currentPriceUsd: run.currentPriceUsd,
+    priceUpdatedAt: run.priceUpdatedAt ?? null,
+    quoteStale: run.quoteStale ?? true,
+    valuationAt: run.valuationAt ?? null,
+    remainingQuantity: run.remainingQuantity ?? null,
+    operations: run.operations ?? [],
+    chart: run.chart ?? { state: 'missing', candles: [] },
     realizedPnlUsd: run.realizedPnlUsd,
     unrealizedPnlUsd: run.unrealizedPnlUsd,
     maxMultiple: run.maxMultiple,
@@ -479,6 +499,7 @@ export function publicSnapshotOf(snapshot: any, isAdmin: boolean) {
     },
     wallet: activeAccount,
     positions: activeRuns.map(publicRun),
+    tradePositions: (snapshot.tradePositions ?? []).map(publicRun),
     recentDecisions: snapshot.decisions.slice(0, 60).map(publicRun),
     analytics: {
       strategyCount: snapshot.comparison.length,
@@ -732,6 +753,29 @@ export const paperAgentRoutes: FastifyPluginAsync = async (app) => {
           },
         }),
       ]);
+
+    // These independent windows cannot be displaced by a flood of skipped signals.
+    const [openPositions, tradedPositions] = await Promise.all([
+      prisma.paperAgentRun.findMany({ where: { state: 'PAPER_OPEN', allocations: { some: { isShadow: false } } }, include: POSITION_INCLUDE, orderBy: { entryAt: 'desc' }, take: 100 }),
+      prisma.paperAgentRun.findMany({ where: { entryAt: { not: null }, allocations: { some: { isShadow: false } } }, include: POSITION_INCLUDE, orderBy: [{ exitAt: { sort: 'desc', nulls: 'last' } }, { entryAt: 'desc' }], take: 40 }),
+    ]);
+    const positionWindows = [...new Map([...openPositions, ...tradedPositions].map(row => [row.id, row])).values()];
+    const tokenIds = [...new Set(positionWindows.map(row => row.tokenId).filter((id): id is string => id != null))];
+    let positionTokens = new Map<string, any>();
+    if (tokenIds.length) {
+      try {
+        const tokens = await prisma.token.findMany({ where: { id: { in: tokenIds } }, select: { id: true, symbol: true, name: true, logoUrl: true, priceUsd: true, priceUpdatedAt: true } });
+        positionTokens = new Map(tokens.map(token => [token.id, token]));
+      } catch (err) { log.error({ err }, 'PAPER: сохранённые котировки недоступны'); }
+    }
+    let positionCandles: Awaited<ReturnType<typeof storedPositionCandles>> = new Map();
+    let chartUnavailable = false;
+    try { positionCandles = await storedPositionCandles(positionWindows); }
+    catch (err) { chartUnavailable = true; log.error({ err }, 'PAPER: сохранённая история графика недоступна'); }
+    const positionView = (row: any) => ({ ...serializeRun({ ...row, token: positionTokens.get(row.tokenId) ?? null }), chart: {
+      state: chartUnavailable ? 'unavailable' : (positionCandles.get(row.id)?.length ?? 0) >= 2 ? 'ready' : 'missing',
+      interval: '5m', candles: positionCandles.get(row.id) ?? [],
+    } });
 
     const [allocationAccounts, allocationPolicies, allocationRows] = await Promise.all([
       prisma.paperAgentAccountSession.findMany({
@@ -1188,9 +1232,10 @@ export const paperAgentRoutes: FastifyPluginAsync = async (app) => {
           })),
       },
       positions: {
-        open: recent.filter((row) => row.state === 'PAPER_OPEN').map(serializeRun),
-        closed: recent.filter((row) => row.state === 'PAPER_CLOSED').map(serializeRun),
+        open: openPositions.filter((row) => row.state === 'PAPER_OPEN').map(positionView),
+        closed: tradedPositions.filter((row) => row.state === 'PAPER_CLOSED').map(positionView),
       },
+      tradePositions: tradedPositions.filter(row => row.entryAt != null).map(positionView),
       decisions: recent.map(serializeRun),
     };
   };
