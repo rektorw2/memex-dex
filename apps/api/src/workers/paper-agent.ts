@@ -659,7 +659,7 @@ export async function processPaperAgentSignal(signalId: string): Promise<void> {
   // Phase 3 не отменяет четыре threshold shadow-стратегии Phase 2.
   // Только baseline получает два капиталовых контура; остальные продолжают
   // eligibility/exit как прежде, поэтому произведения 5×2 не возникает.
-  for (const row of strategies) {
+  for (const row of [...strategies].sort((a, b) => Number(b.key === control.baselineStrategyKey) - Number(a.key === control.baselineStrategyKey))) {
     const config = strategyConfig(row.config);
     if (!config) {
       runtime.processingErrors++;
@@ -960,7 +960,7 @@ async function runTickBody(): Promise<void> {
           paperAgentRuns: { none: { strategyId: strategy.id } },
         },
         select: { id: true },
-        orderBy: { signaledAt: 'asc' },
+        orderBy: { signaledAt: 'desc' },
         take: BATCH_SIZE,
       }),
     ),
@@ -972,7 +972,7 @@ async function runTickBody(): Promise<void> {
       signalOrigin: { in: actionable },
     },
     select: { signalId: true },
-    orderBy: { updatedAt: 'asc' },
+    orderBy: { signaledAt: 'desc' },
     take: BATCH_SIZE,
   });
 
@@ -981,7 +981,19 @@ async function runTickBody(): Promise<void> {
     ...missingByStrategy.flat().map((row) => row.id),
     ...waiting.map((row) => row.signalId),
   ]);
-  for (const id of ids) await processPaperAgentSignal(id);
+  // In-memory arrival order and old shadow backlogs are not entry priority.
+  // Read persisted timestamps, including waiting metadata, before selecting work.
+  const candidates = await prisma.okxSignal.findMany({
+    where: { id: { in: [...ids] } }, select: { id: true },
+    orderBy: [{ signaledAt: 'desc' }, { id: 'asc' }], take: BATCH_SIZE,
+  });
+  // Revisit newly arrived events on the next tick rather than spending tens of
+  // seconds draining historical runs. DB recovery retains all unfinished work.
+  const batchUntil = Date.now() + 1_000;
+  for (const { id } of candidates) {
+    await processPaperAgentSignal(id);
+    if (Date.now() >= batchUntil) break;
+  }
 }
 
 /**

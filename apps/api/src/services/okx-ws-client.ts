@@ -27,6 +27,7 @@ import {
   parseLiveTrade,
   parseOkxSignalMessage,
   OKX_SIGNAL_CHANNEL,
+  OKX_CHAIN_INDEX,
   reconnectDelay,
   LiveParseError,
   type LiveTradeEvent,
@@ -181,6 +182,8 @@ export class OkxWalletWebSocketClient {
    */
   private lastProviderCode: string | null = null;
   private signalAccessDeniedCode: string | null = null;
+  private retryingSignalAccess = false;
+  private confirmedSignalChains = new Set<string>();
   private stopped = false;
   private commandSeq = 0;
 
@@ -278,13 +281,10 @@ export class OkxWalletWebSocketClient {
     const clean = [...new Set(next)].filter(Boolean);
     const added = clean.filter((chainIndex) => !this.signalChains.includes(chainIndex));
     this.signalChains = clean;
-    if (added.length === 0 || this.signalAccessDeniedCode != null) return;
+    if (added.length === 0 || (this.signalAccessDeniedCode != null && !this.retryingSignalAccess)) return;
     if (this.state !== 'connected' && this.state !== 'subscribing') return;
-    this.enqueue(
-      'subscribe',
-      OKX_SIGNAL_CHANNEL,
-      added.map((chainIndex) => ({ channel: OKX_SIGNAL_CHANNEL, chainIndex })),
-    );
+    this.enqueueSignalChains(added);
+    this.setState('subscribing');
     this.pump();
   }
 
@@ -324,6 +324,7 @@ export class OkxWalletWebSocketClient {
 
     this.queue = [];
     this.inFlight = null;
+    this.confirmedSignalChains.clear();
     this.setState('disconnected');
   }
 
@@ -371,6 +372,7 @@ export class OkxWalletWebSocketClient {
     this.generation++;
     this.queue = [];
     this.inFlight = null;
+    this.confirmedSignalChains.clear();
 
     let socket: SocketLike;
     try {
@@ -382,10 +384,15 @@ export class OkxWalletWebSocketClient {
 
     this.socket = socket;
 
-    socket.onopen = () => this.onOpen();
-    socket.onmessage = (ev) => this.onMessage(ev.data);
-    socket.onerror = () => this.fail('socket_error');
-    socket.onclose = () => this.onClose();
+    // Detaching prevents future dispatch, but an already queued callback can
+    // still hold the old function. Neither its events nor ACKs belong to a new
+    // connection, even if that connection has subscribed to the same chains.
+    const generation = this.generation;
+    const isCurrent = () => !this.stopped && this.socket === socket && this.generation === generation;
+    socket.onopen = () => { if (isCurrent()) this.onOpen(); };
+    socket.onmessage = (ev) => { if (isCurrent()) this.onMessage(ev.data); };
+    socket.onerror = () => { if (isCurrent()) this.fail('socket_error'); };
+    socket.onclose = () => { if (isCurrent()) this.onClose(); };
 
     this.armStage(env.OKX_WS_CONNECT_TIMEOUT_MS, 'connect_timeout');
   }
@@ -469,7 +476,7 @@ export class OkxWalletWebSocketClient {
     // ─── Подтверждение подписки ─────────────────────────────────
     if (msg?.event === 'subscribe' || msg?.event === 'unsubscribe') {
       const channel = String(msg?.arg?.channel ?? msg?.args?.[0]?.channel ?? '');
-      this.confirmCommand(channel, this.generation);
+      this.confirmCommand(channel, this.generation, msg.event, msg?.arg?.chainIndex);
       return;
     }
 
@@ -523,8 +530,23 @@ export class OkxWalletWebSocketClient {
       const signals = parseOkxSignalMessage(msg);
 
       if (signals.length === 0) this.opts.onRejected?.('signal_parse_failed');
-      if (signals.length > 0 && this.state === 'connected') this.lastChannelEventAt = this.now();
-      for (const signal of signals) this.opts.onSignal?.(signal);
+      for (const signal of signals) {
+        // The parser resolves each row independently and already implements the
+        // envelope fallback. Authorize that resolved chain, never the envelope
+        // alone. A non-null explicit envelope must agree with every emitted row.
+        const chainIndex = OKX_CHAIN_INDEX[signal.chain];
+        const envelopeChainIndex = msg?.arg?.chainIndex;
+        if (envelopeChainIndex != null && String(envelopeChainIndex) !== chainIndex) {
+          this.opts.onRejected?.('signal_chain_mismatch');
+          continue;
+        }
+        if (chainIndex == null || !this.confirmedSignalChains.has(chainIndex)) {
+          this.opts.onRejected?.('signal_subscription_unconfirmed');
+          continue;
+        }
+        this.lastChannelEventAt = this.now();
+        this.opts.onSignal?.(signal);
+      }
       return;
     }
 
@@ -567,15 +589,8 @@ export class OkxWalletWebSocketClient {
     }
 
     const signalChains = this.signalChains;
-    if (signalChains.length > 0 && this.signalAccessDeniedCode == null) {
-      this.enqueue(
-        'subscribe',
-        OKX_SIGNAL_CHANNEL,
-        signalChains.map((chainIndex) => ({
-          channel: OKX_SIGNAL_CHANNEL,
-          chainIndex,
-        })),
-      );
+    if (signalChains.length > 0 && (this.signalAccessDeniedCode == null || this.retryingSignalAccess)) {
+      this.enqueueSignalChains(signalChains);
     }
 
     if (this.queue.length === 0) {
@@ -587,6 +602,14 @@ export class OkxWalletWebSocketClient {
   }
 
   /** Поставить команду в очередь. */
+  private enqueueSignalChains(chains: readonly string[]): void {
+    // Signal's documented acknowledgement is per chain (unlike wallet batches).
+    // Serial single-chain commands also make a channel-only denial unambiguous.
+    for (const chainIndex of chains) {
+      this.enqueue('subscribe', OKX_SIGNAL_CHANNEL, [{ channel: OKX_SIGNAL_CHANNEL, chainIndex }]);
+    }
+  }
+
   private enqueue(op: 'subscribe' | 'unsubscribe', channel: string, args: unknown[]): void {
     this.queue.push({
       id: ++this.commandSeq,
@@ -603,6 +626,7 @@ export class OkxWalletWebSocketClient {
 
     const cmd = this.queue.shift()!;
     this.inFlight = cmd;
+    this.armStage(env.OKX_WS_SUBSCRIBE_TIMEOUT_MS, 'subscribe_timeout');
     this.send({ op: cmd.op, args: cmd.args });
   }
 
@@ -614,18 +638,19 @@ export class OkxWalletWebSocketClient {
    * Код в ответе тоже может отсутствовать — успехом считается сам
    * факт event=subscribe с ожидаемым каналом.
    */
-  private confirmCommand(channel: string, gen: number): void {
+  private confirmCommand(channel: string, gen: number, op: string, chainIndex?: unknown): void {
     const cmd = this.inFlight;
 
     // Ответ от прежнего соединения не закрывает команду нового.
     if (!cmd || cmd.generation !== gen) return;
-    if (cmd.channel !== channel) return;
+    if (cmd.channel !== channel || cmd.op !== op) return;
+    if (channel === OKX_SIGNAL_CHANNEL && String(chainIndex ?? '') !== (cmd.args[0] as { chainIndex: string }).chainIndex) return;
 
     this.inFlight = null;
+    this.clearStage();
     if (cmd.channel === OKX_SIGNAL_CHANNEL && cmd.op === 'subscribe') {
+      this.confirmedSignalChains.add(String(chainIndex));
       this.lastSubscriptionAt = this.now();
-      this.signalAccessDeniedCode = null;
-      this.opts.onSignalTransportChange?.('WEBSOCKET', null);
     }
 
     if (this.queue.length > 0) {
@@ -637,6 +662,11 @@ export class OkxWalletWebSocketClient {
   }
 
   private becomeConnected(): void {
+    if (this.signalChains.length > 0 && this.signalChains.every(chain => this.confirmedSignalChains.has(chain))) {
+      this.signalAccessDeniedCode = null;
+      this.retryingSignalAccess = false;
+      this.opts.onSignalTransportChange?.('WEBSOCKET', null);
+    }
     this.clearStage();
     this.setState('connected');
     this.consecutiveErrors = 0;
@@ -654,6 +684,8 @@ export class OkxWalletWebSocketClient {
   private denySignalChannel(providerCode: string): void {
     const normalizedCode = providerCode.trim().replace(/^-/, '') || '60029';
     this.signalAccessDeniedCode = normalizedCode;
+    this.retryingSignalAccess = false;
+    this.confirmedSignalChains.clear();
     this.lastProviderCode = normalizedCode;
     this.lastErrorCode = `signal_channel_denied_${normalizedCode}`;
     this.inFlight = null;
@@ -696,10 +728,10 @@ export class OkxWalletWebSocketClient {
 
   /** Explicit retry after access changes; also called by the hourly probe. */
   retrySignalAccess(): void {
-    if (this.stopped || this.signalAccessDeniedCode == null) return;
+    if (this.stopped || this.signalAccessDeniedCode == null || this.retryingSignalAccess) return;
     this.clearTimers();
     if (this.socket) { this.detach(this.socket); this.socket.close(); this.socket = null; }
-    this.signalAccessDeniedCode = null;
+    this.retryingSignalAccess = true;
     // REST_ONLY remains effective until a real subscribe acknowledgement.
     this.open();
   }
@@ -759,6 +791,7 @@ export class OkxWalletWebSocketClient {
 
     this.clearStage();
     this.clearHeartbeat();
+    this.confirmedSignalChains.clear();
 
     if (this.socket) {
       this.detach(this.socket);

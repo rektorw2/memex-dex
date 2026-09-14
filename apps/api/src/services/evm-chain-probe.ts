@@ -18,12 +18,29 @@ export interface EvmProbeResult {
 }
 
 const PROBE_TTL_MS = 10 * 60_000;
+const FAILURE_RETRY_MS = 15_000;
+const MAX_FAILURE_RETRY_MS = 60_000;
 const results = new Map<AgentNetwork, EvmProbeResult>();
+const retries = new Map<AgentNetwork, { failures: number; nextAt: number }>();
+const inFlight = new Map<AgentNetwork, Promise<EvmProbeResult>>();
 
 function rpcUrlOf(network: AgentNetwork): string | null {
   if (network === 'BNB') return env.BNB_RPC_URL || null;
   if (network === 'ROBINHOOD') return env.RHC_RPC_URL && env.RHC_CHAIN_ID ? env.RHC_RPC_URL : null;
   return null;
+}
+
+function chainIdOf(payload: unknown): number | null {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const response = payload as Record<string, unknown>;
+  // An error never proves the network, even if an upstream also sends result.
+  if ('error' in response) return null;
+  const value = response.result;
+  // Ethereum Quantity: validate the entire value before converting it.
+  // parseInt alone accepts a matching prefix of malformed data ("0x38junk").
+  if (typeof value !== 'string' || !/^0x(?:0|[1-9a-fA-F][0-9a-fA-F]*)$/.test(value)) return null;
+  const chainId = Number(value);
+  return Number.isSafeInteger(chainId) ? chainId : null;
 }
 
 export function evmProbeState(network: AgentNetwork, now = Date.now()): EvmProbeResult {
@@ -37,7 +54,15 @@ export function evmProbeState(network: AgentNetwork, now = Date.now()): EvmProbe
 }
 
 /** Один запрос `eth_chainId`; ответ — состояние, никаких исключений наружу. */
-export async function probeEvmChain(network: AgentNetwork, fetchImpl: typeof fetch = fetch, now = Date.now()): Promise<EvmProbeResult> {
+export function probeEvmChain(network: AgentNetwork, fetchImpl: typeof fetch = fetch, now = Date.now()): Promise<EvmProbeResult> {
+  const pending = inFlight.get(network);
+  if (pending) return pending;
+  const request = performProbe(network, fetchImpl, now).finally(() => { inFlight.delete(network); });
+  inFlight.set(network, request);
+  return request;
+}
+
+async function performProbe(network: AgentNetwork, fetchImpl: typeof fetch, now: number): Promise<EvmProbeResult> {
   const expected = AGENT_NETWORK_INFO[network].chainId;
   if (expected == null) return { state: 'NOT_APPLICABLE', chainId: null, checkedAt: null };
   const url = rpcUrlOf(network);
@@ -50,9 +75,9 @@ export async function probeEvmChain(network: AgentNetwork, fetchImpl: typeof fet
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_chainId', params: [] }),
       signal: AbortSignal.timeout(8_000),
     });
-    const json: any = res.ok ? await res.json().catch(() => null) : null;
-    const chainId = typeof json?.result === 'string' ? Number.parseInt(json.result, 16) : null;
-    result = chainId == null || !Number.isFinite(chainId)
+    const json: unknown = res.ok ? await res.json().catch(() => null) : null;
+    const chainId = chainIdOf(json);
+    result = chainId == null
       ? { state: 'FAILED', chainId: null, checkedAt: now }
       : chainId === expected
         ? { state: 'VERIFIED', chainId, checkedAt: now }
@@ -61,20 +86,31 @@ export async function probeEvmChain(network: AgentNetwork, fetchImpl: typeof fet
     result = { state: 'FAILED', chainId: null, checkedAt: now };
   }
   results.set(network, result);
+  if (result.state === 'VERIFIED') {
+    retries.delete(network);
+  } else {
+    const failures = Math.min(3, (retries.get(network)?.failures ?? 0) + 1);
+    retries.set(network, { failures, nextAt: now + Math.min(MAX_FAILURE_RETRY_MS, FAILURE_RETRY_MS * 2 ** (failures - 1)) });
+  }
   if (result.state !== 'VERIFIED') logger.warn({ network, state: result.state, chainId: result.chainId }, 'узел EVM-сети не подтверждён');
   return result;
 }
 
 /** Проверить, если давно не проверяли. Вызывается из фонового цикла. */
 export async function refreshEvmProbes(now = Date.now(), fetchImpl: typeof fetch = fetch): Promise<void> {
-  for (const network of ['BNB', 'ROBINHOOD'] as const) {
+  await Promise.all((['BNB', 'ROBINHOOD'] as const).map(async network => {
     const current = evmProbeState(network, now);
-    if (current.state === 'NOT_CONFIGURED' || current.state === 'NOT_APPLICABLE') continue;
-    if (current.checkedAt != null && now - current.checkedAt < PROBE_TTL_MS) continue;
+    if (current.state === 'NOT_CONFIGURED' || current.state === 'NOT_APPLICABLE') return;
+    // Ten minutes apply only to a successful confirmation. A failed request
+    // must not disable a network for the whole success TTL.
+    if (current.state === 'VERIFIED') return;
+    if (now < (retries.get(network)?.nextAt ?? 0)) return;
     await probeEvmChain(network, fetchImpl, now);
-  }
+  }));
 }
 
 export function resetEvmProbesForTests(): void {
   results.clear();
+  retries.clear();
+  inFlight.clear();
 }

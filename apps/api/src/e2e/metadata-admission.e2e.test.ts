@@ -59,9 +59,11 @@ it('different tokens and all enabled strategies wait for capacity; reconciliatio
   await editGate(s => {s.nextAt=0;});
   provider.fetch.mockResolvedValue({poolCreatedAt:new Date(Date.now()-60_000)});
   await runPaperAgentTickOnce();
-  await vi.waitFor(async () => expect((await prisma.token.findUniqueOrThrow({where:{id:a.token.id}})).poolCreatedAt).not.toBeNull());
-  await editGate(s => {s.nextAt=0;}); await runPaperAgentTickOnce();
+  // Newest persisted signal has priority; the older one still recovers next.
   await vi.waitFor(async () => expect((await prisma.token.findUniqueOrThrow({where:{id:b.token.id}})).poolCreatedAt).not.toBeNull());
+  expect((await prisma.token.findUniqueOrThrow({where:{id:a.token.id}})).poolCreatedAt).toBeNull();
+  await editGate(s => {s.nextAt=0;}); await runPaperAgentTickOnce();
+  await vi.waitFor(async () => expect((await prisma.token.findUniqueOrThrow({where:{id:a.token.id}})).poolCreatedAt).not.toBeNull());
   await runPaperAgentTickOnce();
   expect(provider.fetch).toHaveBeenCalledTimes(3);
   expect((await baselineRun(a.signal.id)).state).toBe('PAPER_OPEN');

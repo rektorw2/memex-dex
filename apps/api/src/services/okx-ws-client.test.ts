@@ -57,7 +57,7 @@ const loginOk = { event: 'login', code: '0' };
  * только канал, без адреса и без кода.
  */
 const subAck = (channel: string) => ({
-  event: 'subscribe', arg: { channel }, connId: 'a4d3ae55',
+  event: 'subscribe', arg: { channel, ...(channel === OKX_SIGNAL_CHANNEL ? { chainIndex: '501' } : {}) }, connId: 'a4d3ae55',
 });
 
 function makeClient(over: Partial<Parameters<typeof mk>[0]> = {}) { return mk(over as never); }
@@ -367,10 +367,11 @@ describe('OKX Signal', () => {
 
     expect(subscribe.args).toEqual([
       { channel: OKX_SIGNAL_CHANNEL, chainIndex: '501' },
-      { channel: OKX_SIGNAL_CHANNEL, chainIndex: '1' },
     ]);
 
     socket.deliver(subAck(OKX_SIGNAL_CHANNEL));
+    expect(c.getState()).toBe('subscribing');
+    socket.deliver({ event: 'subscribe', arg: { channel: OKX_SIGNAL_CHANNEL, chainIndex: '1' } });
     expect(c.getState()).toBe('connected');
 
     socket.deliver({
@@ -501,4 +502,53 @@ it('отклонённое subscribe acknowledgement не подтверждае
   c.start();sockets[0]!.open();sockets[0]!.deliver(loginOk);
   sockets[0]!.deliver({...subAck(OKX_SIGNAL_CHANNEL),code:'60036'});
   expect(c.getState()).toBe('rest_only');expect(c.stats().subscriptionsVerified).toBe(false);c.stop();
+});
+
+describe('Signal delivery regression', () => {
+  it('each Signal chain needs its own acknowledgement; duplicate or wrong-chain acknowledgements cannot finish another subscription', () => {
+    const { c } = makeClient({ platformFeed: false, signalChains: ['501', '56'] });
+    c.start(); const s = sockets[0]!; s.open(); s.deliver(loginOk);
+    s.deliver({ event: 'subscribe', arg: { channel: OKX_SIGNAL_CHANNEL, chainIndex: '501' } });
+    expect(c.stats().subscriptionsVerified).toBe(false);
+    s.deliver({ event: 'subscribe', arg: { channel: OKX_SIGNAL_CHANNEL, chainIndex: '501' } });
+    s.deliver({ event: 'unsubscribe', arg: { channel: OKX_SIGNAL_CHANNEL, chainIndex: '56' } });
+    expect(c.stats().subscriptionsVerified).toBe(false);
+    s.deliver({ event: 'subscribe', arg: { channel: OKX_SIGNAL_CHANNEL, chainIndex: '56' } });
+    expect(c.stats().subscriptionsVerified).toBe(true);
+    const requests = s.sent.map(t => JSON.parse(t)).filter(m => m.op === 'subscribe');
+    expect(requests.map(m => m.args)).toEqual([
+      [{ channel: OKX_SIGNAL_CHANNEL, chainIndex: '501' }],
+      [{ channel: OKX_SIGNAL_CHANNEL, chainIndex: '56' }],
+    ]);
+    c.stop();
+  });
+
+  it('denial remains visible throughout an access retry until all chains are actually acknowledged', () => {
+    const { c, transports } = makeClient({ platformFeed: false, signalChains: ['501', '56'] });
+    c.start(); sockets[0]!.open(); sockets[0]!.deliver(loginOk);
+    sockets[0]!.deliver({ event: 'error', code: '60036' });
+    c.retrySignalAccess(); const s = sockets[1]!; s.open(); s.deliver(loginOk);
+    expect(c.stats()).toMatchObject({ channelTransportMode: 'REST_ONLY', channelAccessDeniedCode: '60036', subscriptionsVerified: false });
+    s.deliver({ event: 'subscribe', arg: { channel: OKX_SIGNAL_CHANNEL, chainIndex: '501' } });
+    expect(transports.at(-1)?.mode).toBe('REST_ONLY');
+    s.deliver({ event: 'subscribe', arg: { channel: OKX_SIGNAL_CHANNEL, chainIndex: '56' } });
+    expect(c.stats()).toMatchObject({ channelTransportMode: 'WEBSOCKET', channelAccessDeniedCode: null, subscriptionsVerified: true });
+    c.stop();
+  });
+
+  it('a chain discovered during access recovery is subscribed before declaring recovery complete', () => {
+    const { c } = makeClient({ platformFeed: false, signalChains: ['501'] });
+    try {
+      c.start(); sockets[0]!.open(); sockets[0]!.deliver(loginOk);
+      sockets[0]!.deliver({ event: 'error', code: '60036' });
+      c.retrySignalAccess(); const s = sockets[1]!; s.open(); s.deliver(loginOk);
+      c.setSignalChains(['501', '56']);
+      s.deliver({ event: 'subscribe', arg: { channel: OKX_SIGNAL_CHANNEL, chainIndex: '501' } });
+      expect(c.stats().subscriptionsVerified).toBe(false);
+      expect(s.sent.map(value => JSON.parse(value)).filter(m => m.op === 'subscribe').at(-1)?.args)
+        .toEqual([{ channel: OKX_SIGNAL_CHANNEL, chainIndex: '56' }]);
+      s.deliver({ event: 'subscribe', arg: { channel: OKX_SIGNAL_CHANNEL, chainIndex: '56' } });
+      expect(c.stats()).toMatchObject({ subscriptionsVerified: true, channelAccessDeniedCode: null });
+    } finally { c.stop(); }
+  });
 });

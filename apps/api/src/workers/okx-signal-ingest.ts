@@ -76,6 +76,15 @@ let lastReconciliationAt = 0;
 let lastRestSuccessAt = 0;
 let lastRestErrorCode: string | null = null;
 let lastSignalAt: number | null = null;
+// One bounded warm-up per known token after process restart. A replay of the
+// same 100-row REST history must not keep scheduling historical charts/prices.
+const restoredTokens = new Set<string>();
+function rememberRestoredToken(tokenId: string): boolean {
+  if (restoredTokens.has(tokenId)) return false;
+  restoredTokens.add(tokenId);
+  if (restoredTokens.size > 4_000) restoredTokens.delete(restoredTokens.values().next().value!);
+  return true;
+}
 let transportMode: 'WEBSOCKET' | 'REST_ONLY' | 'DISABLED' = 'WEBSOCKET';
 let permanentDenialCode: string | null = null;
 
@@ -125,7 +134,7 @@ async function reconcileExistingSignal(
   existing: ExistingSignal,
   origin: PaperSignalOrigin,
 ): Promise<SignalIngestResult> {
-  if (existing.tokenId) {
+  if (existing.tokenId && rememberRestoredToken(existing.tokenId)) {
     markHot(existing.tokenId);
     // После рестарта REST-сверка встречает уже сохранённое событие. Его
     // всё равно нужно поставить на исторический backfill: иначе ATH до
@@ -179,7 +188,6 @@ export async function ingestOkxSignal(
   signal: OkxSignal,
   origin: PaperSignalOrigin,
 ): Promise<SignalIngestResult> {
-  lastSignalAt = Date.now();
   try {
     const already = await prisma.okxSignal.findUnique({
       where: { providerKey: signal.providerKey },
@@ -276,6 +284,8 @@ export async function ingestOkxSignal(
 
     // Новая находка первой получает цену, свечи и место в очереди
     // проверки. Сам GEMS при этом уже доступен из записи выше.
+    lastSignalAt = Date.now(); // unique committed receipt, never a replay/failed insert
+    rememberRestoredToken(result.tokenId);
     markHot(result.tokenId);
     requestCandlesSoon(result.tokenId, '5m');
     if (goesToPaperAgent(signal.chain, origin)) {
@@ -380,11 +390,11 @@ export async function syncLatestOkxSignals(
   origin: PaperSignalOrigin = 'REST_BACKFILL',
 ) {
   const outcomes = await Promise.all(chains.map((chain) => fetchLatestSignalsOutcome(chain, 100)));
-  // Старые первыми: если один токен встречается несколько раз, в Token
-  // останется цена самого свежего сигнала, а не случайного Promise.
+  // Live opportunity first, history afterwards. ingestOkxSignal only updates a
+  // token's price from a newer timestamp, so older rows cannot rewind it.
   const signals = outcomes
     .flatMap((outcome) => (outcome.kind === 'ok' ? outcome.signals : []))
-    .sort((a, b) => a.signaledAt.getTime() - b.signaledAt.getTime());
+    .sort((a, b) => b.signaledAt.getTime() - a.signaledAt.getTime());
 
   const stats = { fetched: signals.length, created: 0, duplicate: 0, failed: 0 };
   for (const signal of signals) {
@@ -493,7 +503,7 @@ async function reconciliationTick(): Promise<void> {
         logger.warn({ chain, kind: outcome.kind, detail: outcome.detail }, 'OKX Signal: REST reconciliation отклонена провайдером');
         return;
       }
-      for (const signal of [...outcome.signals].reverse()) {
+      for (const signal of [...outcome.signals].sort((a, b) => b.signaledAt.getTime() - a.signaledAt.getTime())) {
         await ingestOkxSignal(signal, 'REST_RECONCILIATION');
       }
       recordRestSuccess();
@@ -565,6 +575,7 @@ export function stopOkxSignalIngest(): void {
   lastRestSuccessAt = 0;
   lastRestErrorCode = null;
   lastSignalAt = null;
+  restoredTokens.clear();
   transportMode = 'WEBSOCKET';
   permanentDenialCode = null;
   for (const check of Object.values(chainChecks)) { check.attemptedAt = null; check.failed = false; }

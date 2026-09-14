@@ -54,7 +54,8 @@ const wsSignalMessage = { arg: { channel: OKX_SIGNAL_CHANNEL, chainIndex: '501' 
 function happy(s: FakeSocket, tick: number) {
   if (tick === 1) s.open();
   if (tick === 2) s.deliver({ event: 'login', code: '0' });
-  if (tick === 3) s.deliver({ event: 'subscribe', arg: { channel: OKX_SIGNAL_CHANNEL }, connId: 'x' });
+  if (tick === 3) s.deliver({ event: 'subscribe', arg: { channel: OKX_SIGNAL_CHANNEL, chainIndex: '501' }, connId: 'x' });
+  if (tick === 4) s.deliver({ event: 'subscribe', arg: { channel: OKX_SIGNAL_CHANNEL, chainIndex: '56' }, connId: 'x' });
   if (tick === 5) s.deliver(wsSignalMessage);
 }
 
@@ -126,15 +127,17 @@ describe('ступени проверки источника сигналов', 
     expect(r.lines.some((line) => /7\. Локальный расчёт решения/.test(line))).toBe(true);
     expect(r.cleanedUp).toBe(true);
     // Подписка ушла на обе поддержанные сети, и только на них.
-    const subscribe = h.sockets[0]!.sent.map((s) => JSON.parse(s)).find((m) => m.op === 'subscribe');
-    expect(subscribe.args.map((a: any) => a.chainIndex).sort()).toEqual(['501', '56']);
+    const subscriptions = h.sockets[0]!.sent.map((s) => JSON.parse(s)).filter((m) => m.op === 'subscribe');
+    expect(subscriptions.map(m => m.args.length)).toEqual([1, 1]);
+    expect(subscriptions.flatMap(m => m.args.map((a: any) => a.chainIndex)).sort()).toEqual(['501', '56']);
   });
 
   it('нет сигналов ни по REST, ни по WebSocket — «неполно», а не успех', async () => {
     const h = harness((s, tick) => {
       if (tick === 1) s.open();
       if (tick === 2) s.deliver({ event: 'login', code: '0' });
-      if (tick === 3) s.deliver({ event: 'subscribe', arg: { channel: OKX_SIGNAL_CHANNEL }, connId: 'x' });
+      if (tick === 3) s.deliver({ event: 'subscribe', arg: { channel: OKX_SIGNAL_CHANNEL, chainIndex: '501' }, connId: 'x' });
+      if (tick === 4) s.deliver({ event: 'subscribe', arg: { channel: OKX_SIGNAL_CHANNEL, chainIndex: '56' }, connId: 'x' });
       // Спокойный рынок: сигналов не приходит.
     });
     const r = await runSignalPreflight(base(h, { fetchLatestSignals: async () => [], observeMs: 500 }));

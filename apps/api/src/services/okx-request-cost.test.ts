@@ -63,3 +63,34 @@ it('an unconfigured provider spends no HTTP and records no quota usage', async (
   expect(fetcher).not.toHaveBeenCalled();
   expect(usage.okxUsageSnapshot().premium.used).toBe(0);
 });
+
+it('slow background requests cannot occupy the Signal slot; total concurrency and physical accounting stay bounded', async () => {
+  const releases: (() => void)[] = [];
+  let active = 0; let peak = 0;
+  fetcher.mockImplementation(async (url: string) => {
+    active++; peak = Math.max(peak, active);
+    try {
+      if (!url.includes('/signal/list')) await new Promise<void>(resolve => releases.push(resolve));
+      return ok();
+    } finally { active--; }
+  });
+  const background = Array.from({ length: 6 }, (_, i) => market.safeCall('GET', `${endpoint}?token=${i}`));
+  await vi.advanceTimersByTimeAsync(0);
+  const signal = market.reportedCall('POST', '/api/v6/dex/market/signal/list', [{ chainIndex: '501' }], 'signal');
+  try {
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetcher.mock.calls.filter(([url]) => String(url).includes('/signal/list'))).toHaveLength(1);
+    expect(await signal).toMatchObject({ kind: 'ok' });
+    expect(releases).toHaveLength(5);
+    expect(peak).toBeLessThanOrEqual(6);
+  } finally {
+    // Also drain on a failing negative control, including the queued sixth job.
+    for (let round = 0; round < 3; round++) {
+      releases.splice(0).forEach(resolve => resolve());
+      await vi.advanceTimersByTimeAsync(0);
+    }
+    await Promise.all([...background, signal]);
+  }
+  expect(fetcher).toHaveBeenCalledTimes(7);
+  expect(usage.okxUsageSnapshot().premium.used).toBe(7);
+});

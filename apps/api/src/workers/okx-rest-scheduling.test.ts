@@ -74,6 +74,10 @@ it('slow response prevents overlapping polls and catch-up requests', async () =>
   state.delay = true; await vi.advanceTimersByTimeAsync(3000); const count = state.calls.length;
   await vi.advanceTimersByTimeAsync(6000); expect(state.calls).toHaveLength(count);
   state.delay = false; state.releases.splice(0).forEach(resolve => resolve()); await vi.advanceTimersByTimeAsync(0);
-  await vi.advanceTimersByTimeAsync(2999); expect(state.calls).toHaveLength(count);
-  await vi.advanceTimersByTimeAsync(1); expect(state.calls).toHaveLength(count + 1);
+  // The old slot elapsed during HTTP. Resume once on the next scheduler tick,
+  // then pace from that NEW start: no catch-up burst, no extra full cooldown.
+  await vi.advanceTimersByTimeAsync(250); expect(state.calls).toHaveLength(count + 1);
+  await vi.advanceTimersByTimeAsync(2999); expect(state.calls).toHaveLength(count + 1);
+  await vi.advanceTimersByTimeAsync(1); expect(state.calls).toHaveLength(count + 2);
+  for (let i = 1; i < state.calls.length; i++) expect(state.calls[i]!.at - state.calls[i - 1]!.at).toBeGreaterThanOrEqual(3000);
 });

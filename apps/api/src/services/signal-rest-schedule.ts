@@ -55,7 +55,10 @@ export class SignalRestSchedule {
   }
   complete(now: number, intervalMs: number, failure?: { kind: string; retryAfterMs?: number | null }) {
     this.inFlight = false;
-    this.nextAt = Math.max(this.nextAt, now + intervalMs);
+    // claim already reserved the start-to-start interval. HTTP/ingest time is
+    // part of that interval, not another full cooldown. Late completion grants
+    // only one next claim; claim moves nextAt forward, so there is no catch-up.
+    this.nextAt = Math.max(this.nextAt, now);
     if (!failure) { this.failures = 0; return; }
     this.failures++;
     const minimum = ['auth', 'quota', 'budget', 'not-configured', 'permanent'].includes(failure.kind) ? 300_000
@@ -81,7 +84,7 @@ export async function claimSharedSignalPoll<T>(chains: readonly T[], intervalMs:
 export async function finishSharedSignalPoll(owner: string, intervalMs: number, blockedUntil: number) {
   await withMetadataGate((gate, now) => {
     const state = gate.signalRest; if (!state || state.owner !== owner) return;
-    state.leaseUntil = 0; state.nextAt = Math.max(state.nextAt, now + intervalMs);
+    state.leaseUntil = 0; state.nextAt = Math.max(state.nextAt, now);
     state.blockedUntil = Math.max(state.blockedUntil, blockedUntil);
   });
 }

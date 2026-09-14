@@ -77,7 +77,9 @@ const prismaMock = {
   paperAgentAllocation: { findMany: vi.fn(async () => []) },
   okxSignal: {
     // Запрос «сигнал без run этой стратегии»: пока run нет — сигнал находится.
-    findMany: vi.fn(async ({ where }: any) => (storedRun ? [] : (where.ingestOrigin?.in ?? []).includes(signalOrigin) ? [{ id: signal.id }] : [])),
+    findMany: vi.fn(async ({ where }: any) => where.id?.in
+      ? (where.id.in.includes(signal.id) ? [{ id: signal.id }] : [])
+      : (storedRun ? [] : (where.ingestOrigin?.in ?? []).includes(signalOrigin) ? [{ id: signal.id }] : [])),
     findUnique: vi.fn(async () => ({
       ...signal,
       chain: signalChain,

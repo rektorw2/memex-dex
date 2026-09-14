@@ -17,6 +17,7 @@ const markedHot: string[] = [];
 const queuedSignals: Array<{ id: string; duplicate: boolean }> = [];
 const signalUpdates: Array<Record<string, any>> = [];
 let transactionRaceWinner: ExistingSignalFixture | null = null;
+let providerSignals: OkxSignal[] = [];
 
 vi.mock('../lib/prisma.js', () => {
   const tx = {
@@ -75,6 +76,7 @@ const chainConfirmations = vi.hoisted(() => ({signals:null as readonly string[] 
 vi.mock('../services/okx-market.js', () => ({
   isOkxConfigured: () => true,
   fetchLatestSignals: async () => [],
+  fetchLatestSignalsOutcome: async () => ({ kind: 'ok', signals: providerSignals }),
   fetchSignalSupportedChains: async () => null,
   fetchMarketSupportedChains: async () => null,
   getOkxSignalChainIndexes: () => chainConfirmations.signals,
@@ -104,7 +106,7 @@ vi.mock('./paper-agent.js', () => ({
 vi.mock('./candle-builder.js', () => ({ requestCandlesSoon: vi.fn() }));
 vi.mock('../services/evm-chain-probe.js', () => ({ evmProbeState: () => ({ state: 'VERIFIED', chainId: 56, checkedAt: 1 }), refreshEvmProbes: async () => undefined }));
 
-const { ingestOkxSignal, isRestReconciliationDue } = await import('./okx-signal-ingest.js');
+const { ingestOkxSignal, isRestReconciliationDue, syncLatestOkxSignals, getOkxSignalIngestStatus, stopOkxSignalIngest } = await import('./okx-signal-ingest.js');
 
 const signal: OkxSignal = {
   providerKey: 'okx-signal:one',
@@ -126,6 +128,8 @@ const signal: OkxSignal = {
 };
 
 beforeEach(() => {
+  stopOkxSignalIngest();
+  providerSignals = [];
   existingSignal = null;
   existingToken = null;
   createdTokenData = null;
@@ -135,6 +139,26 @@ beforeEach(() => {
   queuedSignals.length = 0;
   signalUpdates.length = 0;
   transactionRaceWinner = null;
+});
+
+it('newest event in a REST batch is persisted before expired history regardless of provider order', async () => {
+  const fresh = { ...signal, providerKey: 'fresh', signaledAt: new Date('2026-09-13T02:00:00Z') };
+  const old = { ...signal, providerKey: 'old' };
+  providerSignals = [old, fresh];
+  await syncLatestOkxSignals(['SOLANA'], 'REST_RECONCILIATION');
+  expect(createdSignals.map(s => s.providerKey)).toEqual(['fresh', 'old']);
+});
+
+it('repeated known deliveries do not refresh last unique signal or repeatedly warm historical charts/prices', async () => {
+  await ingestOkxSignal(signal, 'WEBSOCKET_LIVE');
+  const lastUnique = getOkxSignalIngestStatus().lastSignalAt;
+  existingSignal = { id: 'known-delivery', tokenId: 'restored-token', ingestOrigin: 'WEBSOCKET_LIVE', chain: 'SOLANA' };
+  const spy = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 60_000);
+  try {
+    for (let i = 0; i < 4; i++) await ingestOkxSignal(signal, 'REST_RECONCILIATION');
+    expect(getOkxSignalIngestStatus().lastSignalAt).toBe(lastUnique);
+    expect(markedHot.filter(id => id === 'restored-token')).toHaveLength(1);
+  } finally { spy.mockRestore(); }
 });
 
 describe('импорт OKX Signal', () => {

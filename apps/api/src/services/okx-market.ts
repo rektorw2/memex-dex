@@ -91,6 +91,13 @@ const TTL = {
  */
 const limiter = new RateLimit(20, 1_000);
 const pool = new Concurrency(6);
+// Reserve one of the SAME six slots for official Signal delivery. Background
+// retries must acquire their gate before the shared pool, so they cannot queue
+// ahead of Signal while occupying all slots. The physical RPS limiter is shared.
+const backgroundPool = new Concurrency(5);
+function withTransportSlot<T>(purpose: OkxCallPurpose, run: () => Promise<T>): Promise<T> {
+  return purpose === 'signal' ? pool.run(run) : backgroundPool.run(() => pool.run(run));
+}
 
 export function isOkxConfigured(): boolean {
   return Boolean(env.OKX_API_KEY && env.OKX_API_SECRET && env.OKX_PASSPHRASE);
@@ -294,7 +301,7 @@ export async function safeCall<T>(
   if (!budget.allow) return null;
 
   try {
-    const value = await pool.run(() =>
+    const value = await withTransportSlot(purpose, () =>
       withRetry(() => {
         // A failed attempt may have consumed the remaining background budget.
         if (!canSpendOkxCall(path, purpose).allow) return Promise.resolve(null);
@@ -396,7 +403,7 @@ export async function reportedCall<T>(
      * самым штормом, от которого эта ветка защищает. Старый safeCall
      * сохраняет локальные повторы только сетевых ошибок и временных 5xx.
      */
-    const value = await pool.run(() => countedCall<T>(method, path, body, purpose));
+    const value = await withTransportSlot(purpose, () => countedCall<T>(method, path, body, purpose));
 
     return { value, kind: value == null ? 'empty' : 'ok', retryAfterMs: null };
   } catch (e: unknown) {

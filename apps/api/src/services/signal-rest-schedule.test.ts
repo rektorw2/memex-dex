@@ -65,3 +65,20 @@ it('crashed poll lease expires once without an accumulated queue, late owner can
   await finishSharedSignalPoll('dead',3000,0);
   expect((await claimSharedSignalPoll(['SOL','BNB'],3000,'third')).chain).toBeNull();
 });
+
+it('response and ingest duration do not add a second full polling interval', async () => {
+  const s = new SignalRestSchedule();
+  expect(s.claim(['SOL', 'BNB'], 0, 3000)).toBe('SOL');
+  s.complete(2500, 3000);
+  expect(s.claim(['SOL', 'BNB'], 2999, 3000)).toBeNull();
+  expect(s.claim(['SOL', 'BNB'], 3000, 3000)).toBe('BNB');
+  s.complete(15000, 3000);
+  expect(s.claim(['SOL', 'BNB'], 15000, 3000)).toBe('SOL');
+  s.complete(15000, 3000);
+  expect(s.claim(['SOL', 'BNB'], 15001, 3000)).toBeNull();
+
+  expect((await claimSharedSignalPoll(['SOL', 'BNB'], 3000, 'one')).chain).toBe('SOL');
+  vi.setSystemTime(2500); await finishSharedSignalPoll('one', 3000, 0);
+  vi.setSystemTime(3000);
+  expect((await claimSharedSignalPoll(['SOL', 'BNB'], 3000, 'two')).chain).toBe('BNB');
+});
