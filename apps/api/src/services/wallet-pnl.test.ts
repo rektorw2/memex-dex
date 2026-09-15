@@ -7,6 +7,9 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../lib/prisma.js', () => ({
   prisma: {
+    $transaction: async (fn: (tx: unknown) => unknown) => fn({
+      $executeRaw: vi.fn(), walletEconomicTrade: { findMany: mocks.tradeFindMany },
+    }),
     walletEconomicTrade: { findMany: mocks.tradeFindMany },
     token: { findMany: mocks.tokenFindMany },
   },

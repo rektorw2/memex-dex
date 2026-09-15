@@ -75,7 +75,9 @@ vi.mock('../lib/prisma.js', () => {
     walletEconomicTrade: { findMany: async () => [] },
     token: { findMany: async () => [] },
     radarEvent: { findMany: async () => [] },
+    $executeRaw: vi.fn(),
   };
+  prisma.$transaction = async (fn: (tx: unknown) => unknown) => fn(prisma);
 
   return { prisma, serializable: vi.fn() };
 });

@@ -25,6 +25,7 @@
  */
 
 import { Prisma as P } from '@prisma/client';
+import { loadWalletHistory } from '../services/wallet-history.js';
 import {
   STATS_RECONCILIATION_STATES,
   WALLET_PNL_VERSION,
@@ -537,36 +538,18 @@ export class PrismaWalletLedgerRepository implements WalletLedgerRepository {
   }
 
   async loadCanonicalTrades(chain: string, wallet: string): Promise<CanonicalTrade[]> {
-    const rows = await prisma.walletEconomicTrade.findMany({
-      where: {
-        chain: chain as never,
-        walletAddress: wallet,
-        // Свёрнутые и неоднозначные записи в расчёт не идут.
-        //
-        // `superseded` уже учтена в канонической — считать её второй
-        // раз значит вернуть ровно те дубли, ради устранения которых
-        // всё это и делалось. `ambiguous` не учтена нигде, и это
-        // честнее, чем подставить в позицию число, в котором мы
-        // сами не уверены.
-        reconciliation: { in: [...STATS_RECONCILIATION_STATES] },
-      },
-      orderBy: [{ tradedAt: 'asc' }, { key: 'asc' }],
+    return loadWalletHistory({
+      chain: chain as never,
+      walletAddress: wallet,
+      // Свёрнутые и неоднозначные записи в расчёт не идут.
+      //
+      // `superseded` уже учтена в канонической — считать её второй
+      // раз значит вернуть ровно те дубли, ради устранения которых
+      // всё это и делалось. `ambiguous` не учтена нигде, и это
+      // честнее, чем подставить в позицию число, в котором мы
+      // сами не уверены.
+      reconciliation: { in: [...STATS_RECONCILIATION_STATES] },
     });
-
-    return rows.map((r: (typeof rows)[number]) => ({
-      key: r.key,
-      chain: r.chain as ChainKey,
-      wallet: r.walletAddress,
-      tokenAddress: r.tokenAddress,
-      tokenSymbol: r.tokenSymbol,
-      side: r.side as 'BUY' | 'SELL',
-      amount: r.amount.toString(),
-      valueUsd: r.valueUsd.toString(),
-      price: r.price.toString(),
-      marketCapUsd: r.marketCapUsd?.toString() ?? null,
-      providerPnlUsd: r.providerPnlUsd?.toString() ?? null,
-      tradedAt: r.tradedAt.getTime(),
-    }));
   }
 
   async lastTradeTime(chain: string, wallet: string): Promise<number | null> {

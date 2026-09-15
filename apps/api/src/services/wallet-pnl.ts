@@ -18,6 +18,7 @@ import {
 } from '@memex/core';
 import { prisma } from '../lib/prisma.js';
 import { markHotFromList } from '../workers/hot-tokens.js';
+import { loadWalletHistory } from './wallet-history.js';
 
 export interface WalletRef {
   chain: ChainKey;
@@ -47,41 +48,7 @@ export function walletPnlKey(chain: string, address: string): string {
   return `${chain}:${normalizeAddress(chain as ChainKey, address)}`;
 }
 
-function toCanonical(row: {
-  key: string;
-  chain: string;
-  walletAddress: string;
-  tokenAddress: string;
-  tokenSymbol: string | null;
-  side: string;
-  amount: { toString(): string };
-  valueUsd: { toString(): string };
-  price: { toString(): string };
-  marketCapUsd: { toString(): string } | null;
-  providerPnlUsd: { toString(): string } | null;
-  tradedAt: Date;
-  reconciliation: string;
-}): CanonicalTrade {
-  return {
-    key: row.key,
-    chain: row.chain as ChainKey,
-    wallet: row.walletAddress,
-    tokenAddress: row.tokenAddress,
-    tokenSymbol: row.tokenSymbol,
-    side: row.side as 'BUY' | 'SELL',
-    amount: row.amount.toString(),
-    valueUsd: row.valueUsd.toString(),
-    price: row.price.toString(),
-    marketCapUsd: row.marketCapUsd?.toString() ?? null,
-    // Сохраняется для аудита и сверки, calculateWalletLedger это
-    // поле принципиально не читает.
-    providerPnlUsd: row.providerPnlUsd?.toString() ?? null,
-    tradedAt: row.tradedAt.getTime(),
-    ambiguous: row.reconciliation === 'ambiguous',
-  };
-}
-
-/** Один запрос сделок и один запрос цен на весь набор кошельков. */
+/** История порциями из одного снимка БД, затем пакет сохранённых цен. */
 export async function walletPnlForWallets(
   input: WalletRef[],
   now = Date.now(),
@@ -95,40 +62,22 @@ export async function walletPnlForWallets(
   const out = new Map<string, WalletPnlSnapshot>();
   if (refs.size === 0) return out;
 
-  const rows = await prisma.walletEconomicTrade.findMany({
-    where: {
-      OR: [...refs.values()].map((wallet) => ({
-        chain: wallet.chain as never,
-        walletAddress: wallet.address,
-      })),
-      // `superseded` — старые fills уже входят в каноническую строку.
-      // `ambiguous` читается намеренно: число из неё не считается,
-      // но сам факт неоднозначности обязан попасть в публичное состояние.
-      reconciliation: { in: ['canonical', 'confirmed', 'ambiguous'] },
-    },
-    orderBy: [{ tradedAt: 'asc' }, { key: 'asc' }],
-    select: {
-      key: true,
-      chain: true,
-      walletAddress: true,
-      tokenAddress: true,
-      tokenSymbol: true,
-      side: true,
-      amount: true,
-      valueUsd: true,
-      price: true,
-      marketCapUsd: true,
-      providerPnlUsd: true,
-      tradedAt: true,
-      reconciliation: true,
-    },
+  const trades = await loadWalletHistory({
+    OR: [...refs.values()].map((wallet) => ({
+      chain: wallet.chain as never,
+      walletAddress: wallet.address,
+    })),
+    // `superseded` — старые fills уже входят в каноническую строку.
+    // `ambiguous` читается намеренно: число из неё не считается,
+    // но сам факт неоднозначности обязан попасть в публичное состояние.
+    reconciliation: { in: ['canonical', 'confirmed', 'ambiguous'] },
   });
 
   const tradesByWallet = new Map<string, CanonicalTrade[]>();
-  for (const row of rows) {
-    const key = walletPnlKey(row.chain, row.walletAddress);
+  for (const trade of trades) {
+    const key = walletPnlKey(trade.chain, trade.wallet);
     const list = tradesByWallet.get(key) ?? [];
-    list.push(toCanonical(row));
+    list.push(trade);
     tradesByWallet.set(key, list);
   }
 
